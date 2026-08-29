@@ -1,0 +1,162 @@
+/*
+ * tokens.css — 换肤核心层（CSS 变量）
+ * 所有具体样式只引用这里的变量，用户主题只需覆盖本文件即可换肤。
+ * 作用域统一在 .milkdown 下。
+ *
+ * 设计：定义 [data-theme="light"] 与 [data-theme="dark"] 两套变量。
+ * 默认（无 data-theme 或 light）走 :root 兜底值。
+ */
+
+.milkdown {
+  /* ============ 基础色彩（亮色） ============ */
+  --mt-color-fg: #2c3e50;
+  --mt-color-fg-soft: #5c6b7a;
+  --mt-color-fg-muted: #8a98a8;
+  --mt-color-bg: #ffffff;
+  --mt-color-bg-soft: #f7f8fa;
+  --mt-color-bg-elevated: #ffffff;
+
+  --mt-color-primary: #4285f4;
+  --mt-color-primary-soft: #e8f0fe;
+
+  --mt-color-border: #e3e6ea;
+  --mt-color-border-strong: #cdd2d8;
+
+  --mt-color-selection: rgba(66, 133, 244, 0.18);
+  --mt-color-link: #2b6cb0;
+
+  /* ============ 排版 ============ */
+  --mt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --mt-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono",
+    Menlo, Courier, monospace;
+
+  --mt-font-size-base: 16px;
+  --mt-line-height-base: 1.75;
+  --mt-content-width: 800px;
+  --mt-content-padding: 48px;
+
+  /* ============ 代码块 ============ */
+  --mt-code-bg: #f6f8fa;
+  --mt-code-fg: #24292e;
+  --mt-code-border: #e3e6ea;
+  --mt-code-font-size: 14px;
+  --mt-code-line-height: 1.6;
+  --mt-code-gutter-fg: #b3bac4;
+  --mt-code-gutter-bg: #eef1f4;
+
+  /* ============ 语法高亮（CM6，浅色 = GitHub Prettylights） ============
+   * 对齐 github.com 官方配色：
+   * - 运算符不上色（跟随代码前景色），--mt-token-operator 仅为兼容自定义主题保留
+   * - 变量/属性/标签均按 GitHub 官方取值
+   */
+  --mt-token-keyword: #cf222e;
+  --mt-token-string: #0a3069;
+  --mt-token-number: #0550ae;
+  --mt-token-comment: #6e7781;
+  --mt-token-function: #8250df;
+  --mt-token-operator: #cf222e;
+  --mt-token-variable: #953800;
+  --mt-token-type: #116329;
+  --mt-token-property: #0550ae;
+  --mt-token-tag: #116329;
+
+  /* ============ Mermaid ============ */
+  --mt-mermaid-bg: #ffffff;
+  --mt-mermaid-fg: #2c3e50;
+  --mt-mermaid-border: #cdd2d8;
+
+  /* ============ Alert 引用块（> [!NOTE] 等，各类型原配色：fg 图标/标题，bg 底色，border 左竖线） ============ */
+  --mt-alert-tip-fg: #1f883d;
+  --mt-alert-tip-bg: #e8f4eb90;
+  --mt-alert-tip-border: #1f883d;
+  --mt-alert-caution-fg: #cf222e;
+  --mt-alert-caution-bg: #f5ecec86;
+  --mt-alert-caution-border: #cf222e;
+  --mt-alert-warning-fg: #9a6700;
+  --mt-alert-warning-bg: #f4f1e97d;
+  --mt-alert-warning-border: #9a6700;
+  --mt-alert-important-fg: #8250df;
+  --mt-alert-important-bg: #eae6f286;
+  --mt-alert-important-border: #8250df;
+  --mt-alert-note-fg: #0969da;
+  --mt-alert-note-bg: #e5ebf179;
+  --mt-alert-note-border: #0969da;
+
+  /* ============ 阴影 / 圆角 ============ */
+  --mt-radius: 6px;
+  --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+
+  /* ============ 语义别名（供 base/code 直接引用） ============ */
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+/* ============ 暗色主题 ============ */
+.milkdown[data-theme="dark"] {
+  --mt-color-fg: #d6dde6;
+  --mt-color-fg-soft: #aab4c0;
+  --mt-color-fg-muted: #76808c;
+  --mt-color-bg: #1e2127;
+  --mt-color-bg-soft: #262a31;
+  --mt-color-bg-elevated: #2a2f37;
+
+  --mt-color-primary: #5b9bff;
+  --mt-color-primary-soft: #28344a;
+
+  --mt-color-border: #353b44;
+  --mt-color-border-strong: #444b56;
+
+  --mt-color-selection: rgba(91, 155, 255, 0.22);
+  --mt-color-link: #6cb0ff;
+
+  --mt-code-bg: #15181d;
+  --mt-code-fg: #c9d1d9;
+  --mt-code-border: #353b44;
+  --mt-code-gutter-fg: #5b636d;
+  --mt-code-gutter-bg: #1a1d22;
+
+  /* 语法高亮（GitHub Prettylights Dark） */
+  --mt-token-keyword: #ff7b72;
+  --mt-token-string: #a5d6ff;
+  --mt-token-number: #79c0ff;
+  --mt-token-comment: #8b949e;
+  --mt-token-function: #d2a8ff;
+  --mt-token-operator: #ff7b72;
+  --mt-token-variable: #ffa657;
+  --mt-token-type: #7ee787;
+  --mt-token-property: #79c0ff;
+  --mt-token-tag: #7ee787;
+
+  --mt-mermaid-bg: #1e2127;
+  --mt-mermaid-fg: #d6dde6;
+  --mt-mermaid-border: #444b56;
+
+  /* ============ Alert 引用块（暗色） ============ */
+  --mt-alert-tip-fg: #56d364;
+  --mt-alert-tip-bg: rgba(86, 211, 100, 0.14);
+  --mt-alert-tip-border: #56d364;
+  --mt-alert-caution-fg: #ff7b72;
+  --mt-alert-caution-bg: rgba(255, 123, 114, 0.14);
+  --mt-alert-caution-border: #ff8182;
+  --mt-alert-warning-fg: #e3b341;
+  --mt-alert-warning-bg: rgba(227, 179, 65, 0.14);
+  --mt-alert-warning-border: #d4a72c;
+  --mt-alert-important-fg: #d2a8ff;
+  --mt-alert-important-bg: rgba(210, 168, 255, 0.14);
+  --mt-alert-important-border: #a371f7;
+  --mt-alert-note-fg: #6cb0ff;
+  --mt-alert-note-bg: rgba(91, 155, 255, 0.14);
+  --mt-alert-note-border: #5b9bff;
+
+  --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+
+  /* ============ 语义别名（暗色映射） ============ */
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+/* ============ 亮色主题显式声明（与默认一致，便于切换） ============ */
+.milkdown[data-theme="light"] {
+  /* 变量已在 .milkdown 基类中定义，这里仅作语义锚点 */
+}

@@ -1,0 +1,146 @@
+/*
+ * typora-pro.css — Typora Pro 风格（Milkdown 适配版）
+ *
+ * 由桌面版 typora-pro.css 修正而来，三处关键修正：
+ *  1) 变量选择器由 :root 改为 ":root, .milkdown"：
+ *     内置 tokens.css 把变量显式声明在 .milkdown 根节点上，只写 :root
+ *     会被显式声明屏蔽（CSS 变量不向下继承）；双选择器同时作用于编辑区。
+ *     （注：导入时主题管理器也会自动做这个改写，双保险。）
+ *  2) 代码块补丁选择器对齐内置 code.css 的特异性
+ *     （.milkdown .editor .milkdown-code-block，后加载同特异性胜出）。
+ *  3) 补全工具栏等应用外壳变量（--mt-toolbar-bg / --mt-fg / --mt-border）。
+ *
+ * 使用方法：工具栏「主题」→「导入自定义主题...」→ 选择本文件
+ * 恢复默认：菜单点「内置主题（默认）」。
+ */
+
+/* ============ 色彩变量：编辑区 + 应用外壳共用 ============ */
+:root,
+.milkdown {
+  --mt-bg: #ffffff;
+  --mt-text: #333333;
+  --mt-color-bg: #ffffff;
+  --mt-color-fg: #333333;
+  --mt-color-fg-soft: #555555;
+  --mt-color-fg-muted: #888888;
+
+  --mt-color-primary: #428bca; /* Typora 经典链接蓝 */
+  --mt-color-primary-soft: #e8f0f8;
+  --mt-color-link: #428bca;
+
+  --mt-color-border: #d0d7de;
+  --mt-color-border-strong: #b6bec9;
+
+  --mt-code-bg: #f6f8fa;
+  --mt-code-fg: #24292f;
+  --mt-code-border: #e5e7eb;
+  --mt-code-gutter-fg: #9ca3af;
+  --mt-code-gutter-bg: transparent;
+
+  /* 自定义语义变量（供下方补丁规则引用） */
+  --mt-quote-bg: #f6f8fa;
+  --mt-quote-border: #d0d7de;
+  --mt-table-border: #d0d7de;
+  --mt-table-stripe: #fbfcfd;
+
+  --mt-line-height: 1.75;
+}
+
+/* ============ 应用外壳（工具栏 / 菜单 / 对话框） ============ */
+:root {
+  --mt-toolbar-bg: #ffffff;
+  --mt-fg: #333333;
+  --mt-muted: #888888;
+  --mt-border: #e5e7eb;
+  --mt-hover: #f3f4f6;
+  --mt-accent: #428bca;
+}
+
+/* ===== 代码块（选择器对齐内置 code.css 特异性） ===== */
+.milkdown .editor .milkdown-code-block {
+  background: var(--mt-code-bg);
+  border: 1px solid var(--mt-code-border);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.milkdown .editor .milkdown-code-block .tools {
+  border-bottom: 1px solid var(--mt-code-border);
+}
+
+.milkdown .editor .cm-editor .cm-gutters {
+  color: var(--mt-code-gutter-fg);
+}
+
+/* ===== 引用 / 备注 ===== */
+.milkdown blockquote {
+  margin: 12px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--mt-quote-border);
+  background: var(--mt-quote-bg);
+  color: var(--mt-color-fg-soft);
+  border-radius: 0 4px 4px 0;
+}
+
+.milkdown blockquote p {
+  margin: 6px 0;
+}
+
+/* ===== 表格 ===== */
+.milkdown table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  width: 100%;
+}
+
+.milkdown th,
+.milkdown td {
+  border: 1px solid var(--mt-table-border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.milkdown th {
+  background: var(--mt-code-bg);
+  font-weight: 600;
+}
+
+.milkdown tr:nth-child(even) td {
+  background: var(--mt-table-stripe);
+}
+
+/* ===== 暗色模式自动适配 ===== */
+@media (prefers-color-scheme: dark) {
+  :root,
+  .milkdown {
+    --mt-bg: #1e1e1e;
+    --mt-text: #d4d4d4;
+    --mt-color-bg: #1e1e1e;
+    --mt-color-fg: #d4d4d4;
+    --mt-color-fg-soft: #b0b0b0;
+    --mt-color-fg-muted: #808080;
+    --mt-color-primary: #569cd6;
+    --mt-color-primary-soft: #2a3a4a;
+    --mt-color-border: #444444;
+    --mt-color-border-strong: #555555;
+
+    --mt-code-bg: #2d2d2d;
+    --mt-code-fg: #dcdcdc;
+    --mt-code-border: #333333;
+    --mt-code-gutter-fg: #666666;
+
+    --mt-quote-bg: #262626;
+    --mt-quote-border: #444444;
+    --mt-table-border: #444444;
+    --mt-table-stripe: #232323;
+  }
+
+  :root {
+    --mt-toolbar-bg: #1e1e1e;
+    --mt-fg: #d4d4d4;
+    --mt-muted: #888888;
+    --mt-border: #333333;
+    --mt-hover: #2a2a2a;
+    --mt-accent: #569cd6;
+  }
+}

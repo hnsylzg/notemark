@@ -1,0 +1,102 @@
+/*
+ * custom-theme.example.css — MilkTypo 自定义主题示例（暗色）
+ *
+ * 使用方法：
+ *   工具栏「主题」→「导入自定义主题...」→ 选择本文件
+ *   再次导入其他 .css 即可覆盖；点「内置主题（默认）」恢复出厂样式
+ *
+ * 说明：
+ *  - 主题本质是一个独立 CSS 文件，无需修改 src/editor/theme/index.css
+ *  - 只需覆盖 CSS 变量即可全局换肤，变量清单见 src/editor/theme/tokens.css
+ *  - 用 ":root, .milkdown" 双选择器：
+ *      · :root      → 工具栏、对话框、菜单等应用外壳区域
+ *      · .milkdown  → 编辑区（内置变量定义在该作用域下，后加载的规则胜出）
+ *  - 禁止 @import 其他文件；样式必须全部写在本文件内（导入时会校验）
+ *  - 内置主题（base.css / code.css）所有元素规则已用 :where() 把特异性
+ *    压到最低（匹配结构仍与 Milkdown 官方一致 .milkdown .editor <element>），
+ *    因此想改任意元素（标题、引用、表格、代码块……），用最简前缀
+ *    .milkdown h1 / .milkdown blockquote / .milkdown table { … } 即可覆盖，
+ *    无需对齐 .editor 中间层（见文件末尾「补丁样式」示例）
+ */
+
+/* ============ 编辑区 + 应用外壳共用的色彩变量 ============ */
+:root,
+.milkdown {
+  /* 基础色彩（暗色） */
+  --mt-color-fg: #d6dde6;
+  --mt-color-fg-soft: #aab4c0;
+  --mt-color-fg-muted: #76808c;
+  --mt-color-bg: #1e2127;
+  --mt-color-bg-soft: #262a31;
+  --mt-color-bg-elevated: #2a2f37;
+
+  --mt-color-primary: #5b9bff;
+  --mt-color-primary-soft: #28344a;
+
+  --mt-color-border: #353b44;
+  --mt-color-border-strong: #444b56;
+
+  --mt-color-selection: rgba(91, 155, 255, 0.22);
+  --mt-color-link: #6cb0ff;
+
+  /* 排版 */
+  --mt-font-sans: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  --mt-font-mono: "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  --mt-font-size-base: 16px;
+  --mt-line-height-base: 1.75;
+
+  /* 代码块 */
+  --mt-code-bg: #15181d;
+  --mt-code-fg: #c9d1d9;
+  --mt-code-border: #353b44;
+  --mt-code-gutter-fg: #5b636d;
+  --mt-code-gutter-bg: #1a1d22;
+
+  /* 语法高亮 */
+  --mt-token-keyword: #ff7b72;
+  --mt-token-string: #a5d6ff;
+  --mt-token-number: #79c0ff;
+  --mt-token-comment: #8b949e;
+  --mt-token-function: #d2a8ff;
+  --mt-token-operator: #ff7b72;
+  --mt-token-variable: #ffa657;
+  --mt-token-type: #7ee787;
+
+  /* Mermaid 图表
+     配色：--mt-mermaid-fg 供 .diagram svg 使用；
+     --mt-mermaid-bg / --mt-mermaid-border 已随「无外框、背景透明」移除。
+     mermaid 渲染配置（--mermaid-* 变量）必须写在 .milkdown .editor .diagram 上，
+     内置默认值也写在 .diagram，CSS 变量「自身声明优先于继承」，
+     写在 :root / .milkdown 等祖先上不会覆盖它。
+     示例（追加在文件末尾即可）：
+       .milkdown .editor .diagram { --mermaid-theme: neutral; } */
+  --mt-mermaid-fg: #d6dde6;
+}
+
+/* ============ 应用外壳（工具栏 / 菜单 / 对话框） ============
+ * App.vue 的工具栏不在 .milkdown 作用域内，需在 :root 单独提供
+ * 这些变量（内置 CSS 使用它们作 fallback，未定义时落到浅色兜底值）。
+ */
+:root {
+  --mt-bg: #1e2127;
+  --mt-text: #d6dde6;
+  --mt-toolbar-bg: #262a31;
+  --mt-fg: #d6dde6;
+  --mt-muted: #76808c;
+  --mt-border: #353b44;
+  --mt-hover: #2a2f37;
+  --mt-active: #323840;
+  --mt-accent: #5b9bff;
+  --mt-accent-hover: #4a8bff;
+  --mt-danger: #ff6b6b;
+  --mt-dirty: #ff6b6b;
+}
+
+/* ============ 补丁样式（可选） ============
+ * 内置所有元素规则都用 :where() 压到了最低特异性，因此这里写
+ * 最简选择器 .milkdown <element> 即可覆盖（后加载 + 更高特异性，双保险）。
+ * 示例（取消注释后生效）：
+ *   .milkdown h1 { font-size: 32px; color: var(--mt-color-primary); }
+ *   .milkdown .milkdown-code-block { border: 1px solid #3a4150; }
+ */

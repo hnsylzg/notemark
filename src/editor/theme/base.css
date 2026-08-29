@@ -1,0 +1,622 @@
+/*
+ * base.css — 排版骨架（内部实现层，不暴露给用户修改）
+ * 映射 Typora 的 #write：居中内容列、标题层级、段落、列表、引用、表格等。
+ * 颜色统一引用 CSS 变量（var(--mt-bg) / var(--mt-text) 等），暗色模式自动适配。
+ *
+ * ★ 覆盖约定（本文件所有元素规则统一遵循）：
+ *   选择器结构与 Milkdown 官方主题一致（.milkdown .editor <element>），
+ *   但用 :where() 包裹 .milkdown .editor，把特异性压到最低：
+ *     :where(.milkdown .editor) h1   ≡   .milkdown .editor h1（匹配相同）
+ *   特异性从 (0,1,1) 降到 (0,0,1)。
+ *   因此导入的自定义主题只要写 .milkdown h1 { … } 即可按层叠顺序覆盖，
+ *   无需对齐 .editor 中间层 —— blockquote 的效果对全部元素成立。
+ */
+
+.milkdown {
+  color: var(--mt-text);
+  background: var(--mt-bg);
+  font-family: var(--mt-font-sans);
+  font-size: var(--mt-font-size-base); /* 16px */
+  line-height: var(--mt-line-height-base); /* 1.75 */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 内容容器：模拟 Typora #write 的居中可读列。
+   外层画布（.milkdown）已占满窗口，这里只负责正文内部留白与纵向节奏。 */
+.milkdown .editor {
+  margin: 0 auto;
+  padding: 24px 0 80px; /* 顶部留白交给 .milkdown，这里补正文下方留白 */
+  box-sizing: border-box;
+}
+
+/* 选区颜色 */
+:where(.milkdown) ::selection {
+  background: var(--mt-color-selection);
+}
+
+/* ============ 标题 ============ */
+:where(.milkdown .editor) h1,
+:where(.milkdown .editor) h2,
+:where(.milkdown .editor) h3,
+:where(.milkdown .editor) h4,
+:where(.milkdown .editor) h5,
+:where(.milkdown .editor) h6 {
+  color: var(--mt-text);
+  line-height: 1.3;
+}
+
+:where(.milkdown .editor) h1 {
+  font-size: 28px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--mt-color-border);
+  padding-bottom: 0.3em;
+  margin: 0 0 16px;
+}
+
+:where(.milkdown .editor) h2 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+:where(.milkdown .editor) h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+
+:where(.milkdown .editor) h4 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+:where(.milkdown .editor) h5 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+:where(.milkdown .editor) h6 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mt-color-fg-soft);
+  margin: 0 0 8px;
+}
+
+/* ============ 段落与行内 ============ */
+:where(.milkdown .editor) p {
+  margin: 10px 0;
+}
+
+:where(.milkdown .editor) a {
+  color: var(--mt-color-link);
+  text-decoration: none;
+}
+:where(.milkdown .editor) a:hover {
+  text-decoration: underline;
+}
+
+:where(.milkdown .editor) strong {
+  font-weight: 600;
+}
+
+:where(.milkdown .editor) em {
+  font-style: italic;
+}
+
+:where(.milkdown .editor) del {
+  text-decoration: line-through;
+  color: var(--mt-color-fg-muted);
+}
+
+:where(.milkdown .editor) mark {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-text);
+  padding: 0.05em 0.2em;
+  border-radius: 3px;
+}
+
+:where(.milkdown .editor) hr {
+  border: none;
+  border-top: 1px solid var(--mt-color-border);
+  margin: 2em 0;
+}
+
+:where(.milkdown .editor) img {
+  max-width: 100%;
+  border-radius: 0; /* 图片保持直角，不切圆角 */
+}
+
+/* ============ 列表 ============
+   列表项由 list-item-block NodeView 渲染（src/editor/list-item.ts 注册）：
+     <div class="milkdown-list-item-block">
+       <li class="list-item">
+         <div class="label-wrapper">图标</div>
+         <div class="children">内容</div>
+       </li>
+     </div>
+   因此原本依赖原生 <li> marker 的 ::marker 选择器（含任务列表 ☐/☑）已失效，
+   marker 完全由 .label-wrapper 里的 SVG/文本控制。 */
+:where(.milkdown .editor) ul,
+:where(.milkdown .editor) ol {
+  padding-left: 1.5em;
+  margin: 8px 0;
+}
+
+:where(.milkdown .editor) li {
+  margin: 4px 0; /* 列表项之间间距 */
+}
+
+/* 列表项内容区段落（NodeView 后 <p> 位于 .children 内） */
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > p {
+  margin: 0 0 4px;
+}
+
+/* ============ 列表项 NodeView（list-item-block）布局 ============
+   对齐方案（字体无关，无需 translateY 魔法数字）：
+   不用「固定高度容器 + flex 居中」——几何中心 ≠ 字体视觉中心，必然偏移。
+   改为让 .label-wrapper 与首行文字共享同一行盒坐标系
+   （line-height: inherit + 顶部对齐），于是：
+   - 有序数字（inline 文本）：基线天然与首行文字基线一致，
+     即原生 <li> marker 的对齐行为，换字体/字号/行高都不偏；
+   - 圆点 / 复选框（SVG）：inline-block + vertical-align: middle，
+     中心自动对齐「基线 + 0.5ex」= 文字 x-height 中线
+     （CSS 规范定义，ex 随字体 x-height 变化，与字体无关）。
+   多行内容时 marker 仍与首行对齐（行盒顶部即首行顶部）。 */
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item {
+  position: relative;
+  padding-left: 1.9em; /* marker 列宽（含与文字的间距） */
+  list-style: none; /* 关闭原生 <li> marker，避免与 .label-wrapper 重复（块级布局下 li 默认会渲染原生 marker） */
+}
+/* 双保险：彻底移除原生 ::marker（部分渲染引擎对 display:list-item 的 li 仍会绘制） */
+.milkdown .milkdown-list-item-block > .list-item::marker {
+  content: none;
+}
+
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children {
+  min-width: 0; /* 防止长单词/代码块撑破布局 */
+}
+/* 消除首段顶部 margin，使文字首行顶部与 label-wrapper 顶部对齐 */
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > .content-dom > p:first-child {
+  margin-top: 0;
+}
+/* marker 列：绝对定位于行首，行盒坐标系与文字一致 */
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.9em;
+  padding-right: 0.4em; /* 与文字的间距 */
+  box-sizing: border-box;
+  line-height: inherit; /* 与文字同一行高 → 基线一致 */
+  text-align: right; /* 有序数字右对齐（原生 <ol> 行为） */
+  user-select: none;
+  -webkit-user-select: none;
+}
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper svg {
+  width: 1.05em;
+  height: 1.05em;
+  display: inline-block;
+  vertical-align: middle;
+}
+/* 有序列表数字 label */
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper .label.ordered {
+  font-size: 0.92em;
+  font-weight: 600;
+}
+
+/* ============ 任务列表（SVG 复选框） ============
+   未勾选：空心方块；已勾选：实心方块 + 白色对勾（颜色跟随正文文字色）。
+   点击切换由 list-item-block 组件内置（onPointerdown → setNodeAttribute('checked')）。
+   已勾选整行文字置灰 + 删除线（:has() 选择器，Chromium/WebView2 ≥ 105 支持）。 */
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper .label.checked,
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper .label.unchecked {
+  cursor: pointer;
+}
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper .label.checked {
+  color: inherit; /* 颜色跟随正文文字色 */
+}
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper .label.checked:hover svg,
+:where(.milkdown .editor) .milkdown-list-item-block .label-wrapper .label.unchecked:hover svg {
+  opacity: 0.8;
+}
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item:has(> .label-wrapper > .label.checked) > .children {
+  color: var(--mt-color-fg-muted);
+  text-decoration: line-through;
+}
+
+/* ============ 引用块 ============
+   :where() 将特异性压至最低，保证导入主题用 .milkdown blockquote { … }
+   即可按层叠顺序覆盖（主题 CSS 注入 <head> 末尾、后加载）。 */
+:where(.milkdown .editor) blockquote {
+  margin: 1em 0;
+  padding: 8px 16px;
+  color: var(--mt-color-fg-soft);
+  border-left: 4px solid var(--mt-color-border-strong);
+  background: var(--mt-color-bg-soft);
+  border-radius: 0;
+}
+:where(.milkdown .editor) blockquote > p {
+  margin: 4px 0;
+}
+
+/* ============ Alert 引用块（> [!NOTE] 等，GitHub 风格） ============
+   类名体系：.md-alert / .md-alert-<type>（与 milkdown 官方 alert 插件一致）。
+   - 结构：图标 + 标题同一行，内容段落独占一行；[!TYPE] 标记行不进入文档内容；
+   - 默认色为各类型原配色（border 左竖线 + 底色，fg 图标/标题色）；
+   - 主题导入后覆盖类即可改色，例如：
+       .milkdown .md-alert-note { border-color: #0af; background: #0af2; }
+   所有默认规则用 :where() 压至最低特异性，保证导入主题按层叠顺序生效。 */
+:where(.milkdown .editor) blockquote.md-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 0.45em;
+  row-gap: 0.15em;
+  padding: 0.5rem 0.8rem;
+  border-left: 4px solid var(--mt-alert-border);
+  background: var(--mt-alert-bg);
+  border-radius: 0;
+}
+:where(.milkdown .editor) blockquote.md-alert > * {
+  order: 3;
+  flex-basis: 100%;
+}
+/* 图标（octicon，mask 裁剪 + 背景色跟随 --mt-alert-fg） */
+:where(.milkdown .editor) blockquote.md-alert::before {
+  content: "";
+  order: 1;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  background-color: var(--mt-alert-fg);
+  -webkit-mask: var(--mt-alert-icon) no-repeat center / contain;
+  mask: var(--mt-alert-icon) no-repeat center / contain;
+}
+/* 标题 */
+:where(.milkdown .editor) blockquote.md-alert::after {
+  order: 2;
+  font-weight: 600;
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
+  color: var(--mt-alert-fg);
+}
+/* 各类型：仅定义局部变量与标题文本，颜色统一走全局变量（亮/暗各一套） */
+:where(.milkdown .editor) blockquote.md-alert-note {
+  --mt-alert-fg: var(--mt-alert-note-fg);
+  --mt-alert-bg: var(--mt-alert-note-bg);
+  --mt-alert-border: var(--mt-alert-note-border);
+  --mt-alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 3.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75Z'/%3E%3C/svg%3E");
+}
+:where(.milkdown .editor) blockquote.md-alert-note::after {
+  content: "Note";
+}
+:where(.milkdown .editor) blockquote.md-alert-tip {
+  --mt-alert-fg: var(--mt-alert-tip-fg);
+  --mt-alert-bg: var(--mt-alert-tip-bg);
+  --mt-alert-border: var(--mt-alert-tip-border);
+  --mt-alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5c-2.363 0-4 1.69-4 3.75 0 .984.424 1.625.984 2.304l.214.253c.223.264.47.556.673.848.284.411.537.896.621 1.49a.75.75 0 0 1-1.484.211c-.04-.282-.163-.547-.37-.847a8.456 8.456 0 0 0-.542-.68c-.084-.1-.173-.205-.268-.32C3.201 7.75 2.5 6.766 2.5 5.25 2.5 2.31 4.863 0 8 0s5.5 2.31 5.5 5.25c0 1.516-.701 2.5-1.328 3.259-.095.115-.184.22-.268.32-.106.122-.202.223-.313.331-.503.562-.739.995-.739 1.59a.75.75 0 0 1-1.5 0c0-.641.211-1.215.798-1.876a8.46 8.46 0 0 1 .226-.275c.16-.183.318-.354.482-.552.414-.5.727-1.06.727-1.797 0-2.06-1.637-3.75-4-3.75ZM6 15.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5h-2.5a.75.75 0 0 1-.75-.75Z'/%3E%3C/svg%3E");
+}
+:where(.milkdown .editor) blockquote.md-alert-tip::after {
+  content: "Tip";
+}
+:where(.milkdown .editor) blockquote.md-alert-important {
+  --mt-alert-fg: var(--mt-alert-important-fg);
+  --mt-alert-bg: var(--mt-alert-important-bg);
+  --mt-alert-border: var(--mt-alert-important-border);
+  --mt-alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Z'/%3E%3C/svg%3E");
+}
+:where(.milkdown .editor) blockquote.md-alert-important::after {
+  content: "Important";
+}
+:where(.milkdown .editor) blockquote.md-alert-warning {
+  --mt-alert-fg: var(--mt-alert-warning-fg);
+  --mt-alert-bg: var(--mt-alert-warning-bg);
+  --mt-alert-border: var(--mt-alert-warning-border);
+  --mt-alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z'/%3E%3C/svg%3E");
+}
+:where(.milkdown .editor) blockquote.md-alert-warning::after {
+  content: "Warning";
+}
+:where(.milkdown .editor) blockquote.md-alert-caution {
+  --mt-alert-fg: var(--mt-alert-caution-fg);
+  --mt-alert-bg: var(--mt-alert-caution-bg);
+  --mt-alert-border: var(--mt-alert-caution-border);
+  --mt-alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.47.22A.749.749 0 0 1 5 0h6c.199 0 .389.079.53.22l4.25 4.25c.141.14.22.331.22.53v6a.749.749 0 0 1-.22.53l-4.25 4.25A.749.749 0 0 1 11 16H5a.749.749 0 0 1-.53-.22L.22 11.53A.749.749 0 0 1 0 11V5c0-.199.079-.389.22-.53Zm.84 1.28L1.5 5.31v5.38l3.81 3.81h5.38l3.81-3.81V5.31L10.69 1.5ZM8 4a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 8a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z'/%3E%3C/svg%3E");
+}
+:where(.milkdown .editor) blockquote.md-alert-caution::after {
+  content: "Caution";
+}
+
+/* ============ 行内代码 ============ */
+:where(.milkdown .editor) :not(pre) > code {
+  font-family: var(--mt-font-mono);
+  font-size: 0.88em;
+  background: var(--mt-color-bg-soft);
+  color: var(--mt-text);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  border: 1px solid var(--mt-color-border);
+}
+
+/* ============ 表格 ============ */
+:where(.milkdown .editor) table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--mt-radius);
+}
+:where(.milkdown .editor) th,
+:where(.milkdown .editor) td {
+  border: 1px solid var(--mt-color-border);
+  padding: 1px 10px; /* 单元格内边距（垂直 1px） */
+  line-height: 1.2; /* 表格行高紧凑，避免继承正文 1.75 */
+  text-align: left;
+}
+:where(.milkdown .editor) th {
+  background: var(--mt-color-bg-soft);
+  font-weight: 600;
+}
+/* 斑马纹从第 3 行开始（表头占第 1 行），与表头颜色错开 */
+:where(.milkdown .editor) tr:nth-child(odd) td {
+  background: var(--mt-color-bg-soft);
+}
+
+/* ============ 占位符（空段落提示） ============ */
+:where(.milkdown .editor) .ProseMirror-trailing-break {
+  pointer-events: none;
+}
+
+/* 清除编辑器聚焦时的黑框（focus 轮廓）。
+   注意：只清 outline，绝不能清 border/box-shadow，否则会破坏
+   表格边框、引用左边框、代码块边框等主题样式。 */
+.milkdown,
+.milkdown:focus,
+.milkdown:focus-visible,
+.milkdown *,
+.milkdown *:focus,
+.milkdown *:focus-visible,
+.milkdown [contenteditable],
+.milkdown [contenteditable]:focus,
+.milkdown [contenteditable]:focus-visible,
+.milkdown .editor,
+.milkdown .editor .ProseMirror,
+.milkdown .editor .ProseMirror:focus,
+.milkdown .editor .ProseMirror-focused,
+.milkdown .editor .cm-editor,
+.milkdown .editor .cm-editor.cm-focused {
+  outline: none !important;
+}
+
+/* 仅对 ProseMirror / CM6 视图本身移除可能自带的 box-shadow 聚焦环，
+   不影响任何使用 border/box-shadow 的正常主题样式。 */
+.milkdown .editor .ProseMirror:focus,
+.milkdown .editor .ProseMirror-focused,
+.milkdown .editor .cm-editor.cm-focused {
+  box-shadow: none !important;
+}
+
+/* ============ Mermaid 图表（无外框，mermaid 默认配色） ============ */
+:where(.milkdown .editor) .diagram {
+  /* Mermaid 渲染配置（CSS 变量形式，diagram-view.ts 读取，用法同 Typora）：
+     --mermaid-theme: 主题名（default/dark/neutral/forest/base），留空自动跟随明暗
+     --mermaid-flowchart-curve: 连线曲线 linear/basis；basis 更平滑、连线不易穿过标签
+     --mermaid-flowchart-html-labels: 节点/连线标签是否用 HTML 渲染（true/false）
+     --mermaid-flowchart-node-spacing / --mermaid-flowchart-rank-spacing: 节点间距 */
+  --mermaid-flowchart-curve: basis;
+  margin: 1em auto;
+  text-align: center;
+  overflow-x: auto;
+}
+:where(.milkdown .editor) .diagram svg {
+  max-width: 100%;
+  height: auto;
+  background: transparent !important; /* SVG 背景强制透明 */
+  color: var(--mt-mermaid-fg);
+}
+
+/* ============ Math Block / Mermaid 原地编辑（textarea） ============ */
+:where(.milkdown .editor) .milkdown-math-block {
+  margin: 1em 0;
+  cursor: pointer; /* 提示可点击进入编辑 */
+}
+:where(.milkdown .editor) .milkdown-math-block .math-empty {
+  color: var(--mt-color-fg-muted);
+  font-style: italic;
+}
+:where(.milkdown .editor) textarea.math-block-editor,
+:where(.milkdown .editor) textarea.diagram-editor {
+  display: block;
+  width: 100%;
+  min-height: 6em;
+  box-sizing: border-box;
+  border: 1px solid var(--mt-color-border-strong);
+  border-radius: var(--mt-radius);
+  background: var(--mt-color-bg-soft);
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 8px 12px;
+  resize: vertical;
+  outline: none;
+  cursor: text;
+}
+:where(.milkdown .editor) textarea.math-block-editor:focus,
+:where(.milkdown .editor) textarea.diagram-editor:focus {
+  border-color: var(--mt-color-primary);
+  box-shadow: 0 0 0 2px var(--mt-color-primary-soft);
+}
+/* .diagram 默认居中，编辑态 textarea 需要左对齐 */
+:where(.milkdown .editor) .diagram textarea.diagram-editor {
+  text-align: left;
+  min-height: 12em; /* Mermaid 源码通常多行，默认给更高 */
+}
+
+/* 表格右键菜单 */
+.mt-table-menu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--mt-color-border-strong);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-elevated);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  font-size: 13px;
+  font-family: var(--mt-font-ui, inherit);
+  user-select: none;
+}
+.mt-table-menu__item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mt-color-fg);
+  font-size: inherit;
+  font-family: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mt-table-menu__item:hover {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-primary);
+  font-weight: 500;
+}
+.mt-table-menu__sep {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--mt-color-border);
+}
+
+/* ============ YAML Front Matter ============ */
+/* 文档开头的 --- 块，解析为只读的 yaml 原子节点 */
+:where(.milkdown .editor) .mt-frontmatter {
+  margin: 0 0 16px;
+  border: 1px solid var(--mt-color-border);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-soft);
+  font-family: var(--mt-font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.6;
+  user-select: none;
+  cursor: default;
+}
+:where(.milkdown .editor) .mt-frontmatter .mt-frontmatter-body {
+  margin: 0;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--mt-color-fg);
+}
+
+/* ============ 高亮 ==text==（mark） ============ */
+:where(.milkdown .editor) .md-highlight {
+  padding: 0 2px;
+  border-radius: 3px;
+  background-color: rgba(255, 213, 79, 0.35);
+  color: inherit;
+}
+
+/* ============ 行内 HTML（白名单渲染） ============ */
+:where(.milkdown .editor) span[data-type="html"] {
+  /* 让 <u>/<mark>/<kbd> 等安全标签按浏览器默认样式真实显示 */
+  font: inherit;
+}
+:where(.milkdown .editor) span[data-type="html"] u {
+  text-decoration: underline;
+}
+:where(.milkdown .editor) span[data-type="html"] mark {
+  background-color: rgba(255, 213, 79, 0.35);
+}
+:where(.milkdown .editor) span[data-type="html"] kbd {
+  padding: 1px 4px;
+  border: 1px solid var(--mt-color-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--mt-color-bg-soft);
+  font-family: var(--mt-font-mono, monospace);
+  font-size: 0.9em;
+}
+/* iframe 嵌入（如 YouTube / B 站 / 地图等）：默认 16:9 自适应，平时不抢编辑鼠标，
+   鼠标悬停到 iframe 区域后可交互（播放/滚动）。若 HTML 里写了 height 属性则优先使用 */
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap {
+  max-width: 720px;
+  margin: 0.5em auto;
+}
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap iframe {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  min-height: 240px;
+  border: 1px solid var(--mt-color-border-strong);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-soft);
+  pointer-events: none; /* 平时不拦截编辑鼠标 */
+}
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap:hover iframe {
+  pointer-events: auto; /* 悬停到 iframe 区域后即可交互 */
+}
+
+/* ============ [toc] 活的目录 ============ */
+:where(.milkdown .editor) .mt-toc {
+  border: 1px solid var(--mt-color-border);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-soft);
+  padding: 0.75em 1em;
+  margin: 0.5em 0;
+  user-select: none;
+}
+:where(.milkdown .editor) .mt-toc-title {
+  font-weight: 600;
+  font-size: 0.95em;
+  color: var(--mt-color-fg-strong);
+  margin-bottom: 0.4em;
+  letter-spacing: 0.02em;
+}
+:where(.milkdown .editor) .mt-toc-empty {
+  font-size: 0.9em;
+  color: var(--mt-color-fg-muted);
+}
+:where(.milkdown .editor) .mt-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+:where(.milkdown .editor) .mt-toc-item {
+  line-height: 1.7;
+}
+:where(.milkdown .editor) .mt-toc-item a {
+  color: var(--mt-color-fg);
+  text-decoration: none;
+  display: inline-block;
+  transition: color 0.15s ease;
+}
+:where(.milkdown .editor) .mt-toc-item a:hover {
+  color: var(--mt-color-primary);
+  text-decoration: underline;
+}
+/* 按标题层级缩进 */
+:where(.milkdown .editor) .mt-toc-level-1 { padding-left: 0; }
+:where(.milkdown .editor) .mt-toc-level-2 { padding-left: 1em; }
+:where(.milkdown .editor) .mt-toc-level-3 { padding-left: 2em; }
+:where(.milkdown .editor) .mt-toc-level-4 { padding-left: 3em; }
+:where(.milkdown .editor) .mt-toc-level-5 { padding-left: 4em; }
+:where(.milkdown .editor) .mt-toc-level-6 { padding-left: 5em; }
+
+/* 标题锚点：点击目录滚动时留出顶部间距 */
+:where(.milkdown .editor) h1,
+:where(.milkdown .editor) h2,
+:where(.milkdown .editor) h3,
+:where(.milkdown .editor) h4,
+:where(.milkdown .editor) h5,
+:where(.milkdown .editor) h6 {
+  scroll-margin-top: 1.5em;
+}
+
+

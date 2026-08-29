@@ -1,0 +1,93 @@
+/*
+ * dark.css — 应用级深色模式
+ *
+ * 由 <html data-theme="dark"> 启用（App「主题」菜单中的「深色模式」开关切换）。
+ *
+ * 设计要点：
+ * 1. 用 :where() 把选择器特异性压到与 .milkdown / :root 相同 (0,1,0)，
+ *    这样用户自定义主题（注入 <head> 末尾、后加载）能按层叠顺序覆盖内置暗色，
+ *    与「自定义主题 > 内置主题」的优先级约定保持一致。
+ * 2. color-scheme: dark 会让用户主题文件里的
+ *    @media (prefers-color-scheme: dark) { ... } 分支跟随应用开关生效，
+ *    而不是只能跟随操作系统主题。
+ * 3. 内置编辑器暗色变量与 tokens.css 的 .milkdown[data-theme="dark"] 取值一致，
+ *    保证「无自定义主题 + 深色模式」时视觉与内置暗色主题相同。
+ */
+
+/* ============ 界面层（工具栏 / 外壳） ============ */
+:root:where(html[data-theme="dark"]) {
+  color-scheme: dark;
+  /* 界面层背景：源码模式 textarea 与 App 外壳共用，与工具栏同色系 */
+  --mt-bg: #1e1e1e;
+  --mt-toolbar-bg: #1e1e1e;
+  --mt-fg: #d4d4d4;
+  --mt-muted: #858585;
+  --mt-border: #3c3c3c;
+  --mt-hover: #2d2d2d;
+  --mt-active: #37373d;
+  --mt-accent: #569cd6;
+  --mt-accent-hover: #4fc1ff;
+  --mt-dirty: #f48771;
+}
+
+/* ============ 编辑器层（与 tokens.css 暗色取值一致） ============ */
+.milkdown:where(html[data-theme="dark"] *) {
+  --mt-color-fg: #d6dde6;
+  --mt-color-fg-soft: #aab4c0;
+  --mt-color-fg-muted: #76808c;
+  --mt-color-bg: #1e2127;
+  --mt-color-bg-soft: #262a31;
+  --mt-color-bg-elevated: #2a2f37;
+
+  --mt-color-primary: #5b9bff;
+  --mt-color-primary-soft: #28344a;
+
+  --mt-color-border: #353b44;
+  --mt-color-border-strong: #444b56;
+
+  --mt-color-selection: rgba(91, 155, 255, 0.22);
+  --mt-color-link: #6cb0ff;
+
+  --mt-code-bg: #15181d;
+  --mt-code-fg: #c9d1d9;
+  --mt-code-border: #353b44;
+  --mt-code-gutter-fg: #5b636d;
+  --mt-code-gutter-bg: #1a1d22;
+
+  --mt-token-keyword: #ff7b72;
+  --mt-token-string: #a5d6ff;
+  --mt-token-number: #79c0ff;
+  --mt-token-comment: #8b949e;
+  --mt-token-function: #d2a8ff;
+  --mt-token-operator: #ff7b72;
+  --mt-token-variable: #ffa657;
+  --mt-token-type: #7ee787;
+  --mt-token-property: #79c0ff;
+  --mt-token-tag: #7ee787;
+
+  --mt-mermaid-bg: #1e2127;
+  --mt-mermaid-fg: #d6dde6;
+  --mt-mermaid-border: #444b56;
+
+  /* ============ Alert 引用块（应用级深色） ============ */
+  --mt-alert-tip-fg: #56d364;
+  --mt-alert-tip-bg: rgba(86, 211, 100, 0.14);
+  --mt-alert-tip-border: #56d364;
+  --mt-alert-caution-fg: #ff7b72;
+  --mt-alert-caution-bg: rgba(255, 123, 114, 0.14);
+  --mt-alert-caution-border: #ff8182;
+  --mt-alert-warning-fg: #e3b341;
+  --mt-alert-warning-bg: rgba(227, 179, 65, 0.14);
+  --mt-alert-warning-border: #d4a72c;
+  --mt-alert-important-fg: #d2a8ff;
+  --mt-alert-important-bg: rgba(210, 168, 255, 0.14);
+  --mt-alert-important-border: #a371f7;
+  --mt-alert-note-fg: #6cb0ff;
+  --mt-alert-note-bg: rgba(91, 155, 255, 0.14);
+  --mt-alert-note-border: #5b9bff;
+
+  --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}

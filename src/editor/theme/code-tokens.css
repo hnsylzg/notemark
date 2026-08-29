@@ -1,0 +1,56 @@
+/*
+ * code-tokens.css — CM6 语法高亮 token 颜色（未分层！）
+ *
+ * 为什么必须放在 @layer 之外：
+ * CodeMirror 的 HighlightStyle 规则（.tok-keyword { color: ... }）由
+ * style-mod 动态注入 <head>，属于「未分层」样式。按层叠规范，未分层
+ * 优先于 @layer 内的规则。若 token 规则留在 @layer mt-theme 内，
+ * CM 自带的经典配色会压过 --mt-token-* 变量。
+ *
+ * 本文件保持未分层，并用高特异性选择器（.milkdown .editor .cm-editor
+ * .cm-content .tok-*）确保胜出；颜色仍由 tokens.css / 用户主题的
+ * --mt-token-* 变量控制，主题换肤无需触碰本文件。
+ */
+.milkdown .editor .cm-editor .cm-content .tok-keyword {
+  color: var(--mt-token-keyword);
+}
+.milkdown .editor .cm-editor .cm-content .tok-string,
+.milkdown .editor .cm-editor .cm-content .tok-string2 {
+  color: var(--mt-token-string);
+}
+.milkdown .editor .cm-editor .cm-content .tok-number,
+.milkdown .editor .cm-editor .cm-content .tok-bool,
+.milkdown .editor .cm-editor .cm-content .tok-atom {
+  color: var(--mt-token-number);
+}
+.milkdown .editor .cm-editor .cm-content .tok-comment,
+.milkdown .editor .cm-editor .cm-content .tok-meta {
+  color: var(--mt-token-comment);
+}
+.milkdown .editor .cm-editor .cm-content .tok-function,
+.milkdown .editor .cm-editor .cm-content .tok-definition {
+  color: var(--mt-token-function);
+}
+.milkdown .editor .cm-editor .cm-content .tok-variable,
+.milkdown .editor .cm-editor .cm-content .tok-variableName {
+  color: var(--mt-token-variable);
+}
+.milkdown .editor .cm-editor .cm-content .tok-type,
+.milkdown .editor .cm-editor .cm-content .tok-typeName {
+  color: var(--mt-token-type);
+}
+/* GitHub 官方观感：属性名蓝色、HTML 标签绿色，两者分开 */
+.milkdown .editor .cm-editor .cm-content .tok-property,
+.milkdown .editor .cm-editor .cm-content .tok-propertyName {
+  color: var(--mt-token-property);
+}
+.milkdown .editor .cm-editor .cm-content .tok-tag,
+.milkdown .editor .cm-editor .cm-content .tok-tagName {
+  color: var(--mt-token-tag);
+}
+.milkdown .editor .cm-editor .cm-content .tok-attribute,
+.milkdown .editor .cm-editor .cm-content .tok-attributeName,
+.milkdown .editor .cm-editor .cm-content .tok-annotation {
+  /* GitHub 中 HTML/XML 属性名与属性同为蓝色系 */
+  color: var(--mt-token-property);
+}

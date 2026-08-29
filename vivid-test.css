@@ -1,0 +1,51 @@
+/*
+ * vivid-test.css — 高对比验证主题（荧光绿 + 深黑底）
+ *
+ * 作用：快速验证「导入自定义主题」链路是否真正生效。
+ * 导入后如果看到：
+ *   - 编辑区变为深黑底 + 荧光绿文字
+ *   - 工具栏变为深灰底 + 浅色文字
+ * 则说明链路正常，你的 typora-pro.css 只是配色与默认太接近、感觉不到变化。
+ *
+ * 恢复默认：主题 → 内置主题（默认）
+ */
+
+:root,
+.milkdown {
+  --mt-bg: #0d1117;
+  --mt-text: #7ee787;
+  --mt-color-bg: #0d1117;
+  --mt-color-fg: #7ee787;
+  --mt-color-fg-soft: #79c0ff;
+  --mt-color-fg-muted: #8b949e;
+  --mt-color-primary: #ff7b72;
+  --mt-color-primary-soft: #2a1a1a;
+  --mt-color-link: #79c0ff;
+  --mt-color-border: #30363d;
+  --mt-color-border-strong: #444c56;
+  --mt-color-selection: rgba(255, 123, 114, 0.25);
+  --mt-code-bg: #161b22;
+  --mt-code-fg: #c9d1d9;
+  --mt-code-border: #30363d;
+  --mt-code-gutter-fg: #8b949e;
+  --mt-token-keyword: #ff7b72;
+  --mt-token-string: #a5d6ff;
+  --mt-token-number: #79c0ff;
+  --mt-token-comment: #8b949e;
+  --mt-token-function: #d2a8ff;
+  --mt-token-operator: #ff7b72;
+  --mt-token-variable: #ffa657;
+  --mt-token-type: #7ee787;
+}
+
+:root {
+  --mt-toolbar-bg: #161b22;
+  --mt-fg: #c9d1d9;
+  --mt-muted: #8b949e;
+  --mt-border: #30363d;
+  --mt-hover: #21262d;
+  --mt-active: #262c35;
+  --mt-accent: #ff7b72;
+  --mt-accent-hover: #ff8b85;
+  --mt-dirty: #ff7b72;
+}

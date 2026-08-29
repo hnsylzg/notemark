@@ -1,0 +1,233 @@
+/*
+ * code.css — 代码块与 Mermaid 样式（内部实现层）
+ * 映射 Typora 的 .md-fences（围栏代码块）与 .cm-s-inner（CodeMirror 内部）。
+ * - 开启 CodeMirror 6 行号（gutter）
+ * - 移除默认聚焦轮廓（outline）
+ * - 注入 CM6 语法高亮配色（使用 tokens.css 的变量）
+ * 选择器与 base.css 同一约定：.milkdown .editor 用 :where() 包裹，
+ * 匹配结构不变、特异性压到最低，导入主题用 .milkdown .milkdown-code-block
+ * 这类最简选择器即可覆盖。
+ */
+
+/* ============ 围栏代码块容器（映射 .md-fences） ============
+   @milkdown/components/code-block 的 NodeView 将外层 div 的类名设为
+   .milkdown-code-block（见 node-view.ts: this.dom.className），内部由 Vue 组件渲染：
+     .milkdown-code-block
+       ├── .tools                工具条（语言选择按钮 + 复制按钮组）
+       ├── .codemirror-host      CodeMirror 6 宿主（内含 .cm-editor）
+       ├── .language-picker      语言选择浮层（绝对定位，坐标由 @floating-ui/dom 写入）
+       └── .preview-panel        Mermaid 等预览面板 */
+:where(.milkdown .editor) .milkdown-code-block {
+  position: relative; /* 作为语言选择浮层的定位基准 */
+  margin: 1em 0;
+  border: none;
+  border-radius: 6px;
+  background: var(--mt-code-bg);
+  /* 注意：不能使用 overflow: hidden，否则会裁剪语言选择浮层
+     （.language-picker 是绝对定位、从代码块内浮出的下拉框）。
+     圆角裁剪交给内部 .codemirror-host 处理。 */
+  padding: 12px 16px;
+}
+
+/* ============ 代码块工具条（语言选择 + 复制按钮） ============ */
+:where(.milkdown .editor) .milkdown-code-block .tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -12px -16px 8px; /* 抵消容器 padding，工具条顶到容器上沿 */
+  padding: 4px 8px 4px 12px;
+  background: rgba(127, 127, 127, 0.06); /* 工具条底色，与代码区略作区分 */
+  border-radius: 6px 6px 0 0;
+  user-select: none;
+}
+
+:where(.milkdown .editor) .milkdown-code-block .language-button,
+:where(.milkdown .editor) .milkdown-code-block .copy-button,
+:where(.milkdown .editor) .milkdown-code-block .preview-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--mt-code-gutter-fg);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+:where(.milkdown .editor) .milkdown-code-block .language-button:hover,
+:where(.milkdown .editor) .milkdown-code-block .copy-button:hover,
+:where(.milkdown .editor) .milkdown-code-block .preview-toggle-button:hover {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--mt-code-fg);
+}
+:where(.milkdown .editor) .milkdown-code-block .expand-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+}
+:where(.milkdown .editor) .milkdown-code-block .tools-button-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ============ 语言选择浮层（下拉列表） ============ */
+/* 浮层绝对定位，坐标由 @floating-ui/dom 的 computePosition 写入 left/top */
+:where(.milkdown .editor) .milkdown-code-block .language-picker {
+  position: absolute;
+  z-index: 100;
+  min-width: 220px;
+  max-width: 320px;
+}
+:where(.milkdown .editor) .milkdown-code-block .list-wrapper {
+  margin-top: 4px;
+  background: var(--mt-color-bg);
+  border: 1px solid var(--mt-code-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  color: var(--mt-code-fg);
+}
+:where(.milkdown .editor) .milkdown-code-block .search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mt-code-border);
+}
+:where(.milkdown .editor) .milkdown-code-block .search-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  opacity: 0.7;
+}
+:where(.milkdown .editor) .milkdown-code-block .search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  color: var(--mt-code-fg);
+}
+:where(.milkdown .editor) .milkdown-code-block .search-input::placeholder {
+  color: var(--mt-code-gutter-fg);
+}
+:where(.milkdown .editor) .milkdown-code-block .clear-icon {
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.7;
+}
+:where(.milkdown .editor) .milkdown-code-block .clear-icon.hidden {
+  display: none;
+}
+:where(.milkdown .editor) .milkdown-code-block .language-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+:where(.milkdown .editor) .milkdown-code-block .language-list-item {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--mt-code-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+:where(.milkdown .editor) .milkdown-code-block .language-list-item:hover,
+:where(.milkdown .editor) .milkdown-code-block .language-list-item[aria-selected="true"] {
+  background: var(--mt-color-selection);
+}
+:where(.milkdown .editor) .milkdown-code-block .language-list-item.no-result {
+  cursor: default;
+  color: var(--mt-code-gutter-fg);
+  text-align: center;
+  padding: 16px 10px;
+}
+
+/* ============ CodeMirror 6 容器 ============ */
+:where(.milkdown .editor) .milkdown-code-block .codemirror-host {
+  overflow: hidden; /* 圆角裁剪：内容（如行尾滚动条）不超出容器圆角 */
+  border-radius: 0 0 6px 6px;
+}
+:where(.milkdown .editor) .cm-editor {
+  background: transparent;
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 移除默认聚焦轮廓（映射 Typora 无干扰体验） */
+:where(.milkdown .editor) .cm-editor.cm-focused {
+  outline: none;
+}
+:where(.milkdown .editor) .cm-editor .cm-scroller {
+  outline: none;
+}
+:where(.milkdown .editor) .cm-editor:focus-within {
+  outline: none;
+}
+
+:where(.milkdown .editor) .cm-editor .cm-content {
+  padding: 0;
+  caret-color: var(--mt-color-primary);
+}
+
+:where(.milkdown .editor) .cm-editor .cm-line {
+  padding: 0 4px;
+}
+
+/* ============ 行号 gutter（开启 CM6 行号） ============ */
+:where(.milkdown .editor) .cm-editor .cm-gutters {
+  background: transparent; /* 行号区域背景透明 */
+  color: var(--mt-code-gutter-fg);
+  border: none; /* 去掉行号与代码之间的竖分隔线 */
+  font-family: var(--mt-font-mono);
+  font-size: 14px;
+}
+:where(.milkdown .editor) .cm-editor .cm-lineNumbers .cm-gutterElement {
+  padding: 0 8px 0 12px;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* 当前行高亮 */
+:where(.milkdown .editor) .cm-editor .cm-activeLine {
+  background: rgba(127, 127, 127, 0.08);
+}
+:where(.milkdown .editor) .cm-editor .cm-activeLineGutter {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--mt-color-fg-soft);
+}
+
+/* 选区：半透明蓝色 */
+:where(.milkdown .editor) .cm-editor .cm-selectionBackground,
+:where(.milkdown .editor) .cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--mt-color-selection);
+}
+
+/* 光标 */
+:where(.milkdown .editor) .cm-editor .cm-cursor {
+  border-left-color: var(--mt-color-primary);
+}
+
+/* ============ Mermaid 图表（无外框，mermaid 默认配色） ============ */
+:where(.milkdown .editor) .diagram .error {
+  color: var(--mt-token-keyword);
+  font-family: var(--mt-font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  text-align: left;
+}

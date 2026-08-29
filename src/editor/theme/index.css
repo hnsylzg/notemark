@@ -1,0 +1,159 @@
+/*
+ * index.css — MilkTypo 主题唯一入口
+ * 只做 @import 聚合，不写任何具体样式。
+ * 用户未来换肤只需：
+ *   1) 覆盖 tokens.css 中的 CSS 变量（推荐），或
+ *   2) 整体替换本文件 / 三个子文件
+ *
+ * 覆盖约定（为什么自定义主题只需要最简选择器）：
+ * - 换肤层（tokens / base / code / dark）统一放入 @layer mt-theme；
+ * - base.css / code.css 内部所有元素规则统一用 :where() 包裹
+ *   .milkdown .editor（匹配结构不变，仍与 Milkdown 官方主题一致），
+ *   把特异性压到最低——例如 h1 从 (0,1,1) 降到 (0,0,1)；
+ * - 因此导入的主题写 .milkdown h1 { … } 即可覆盖内置 h1：
+ *     ① 特异性 (0,1,1) > (0,0,1) 直接胜出；
+ *     ② 即便选择器特异性相同，未分层主题 > @layer 分层规则，仍胜出。
+ *   blockquote 的效果对全部元素成立，不需要对齐 .editor 中间层。
+ * - 下方布局/重置规则保持未分层，避免被主题覆盖破坏窗口布局。
+ */
+@layer mt-theme;
+@import "./tokens.css" layer(mt-theme);
+@import "./base.css" layer(mt-theme);
+@import "./code.css" layer(mt-theme);
+@import "./dark.css" layer(mt-theme);
+/* token 高亮规则必须未分层（否则被 CodeMirror 动态注入的未分层
+ * HighlightStyle 规则压过），详见 code-tokens.css 头部注释。 */
+@import "./code-tokens.css";
+
+/* ============================================================
+ * 全局重置与布局（换肤核心层之后生效，覆盖任何默认边框/外框）
+ * 目标：移除 html/body/#app 等外层可能的黑框，让编辑区占满窗口。
+ * ============================================================ */
+html,
+body,
+#root,
+#app,
+.app,
+main,
+.main,
+.editor-wrapper,
+.editor-container,
+.window,
+.container,
+.content {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background: var(--mt-bg, #ffffff);
+  box-sizing: border-box;
+}
+
+body,
+#root,
+#app,
+.app {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 编辑器可滚动区域：占满窗口，内容可纵向滚动。
+   滚动容器必须是 .milkdown 自身（而不是 App 外壳的 .mt-editor），
+   这样主题里写 .milkdown::-webkit-scrollbar 即可控制主滚动条，
+   与官方 milkdown「.milkdown 自身滚动」的结构保持一致。 */
+.milkdown {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 24px 32px 80px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+/* 正文视觉宽度内部居中限制（不限制外层画布为小框） */
+.milkdown > * {
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ============================================================
+ * 代码块工具条图标垂直居中（必须未分层）
+ *
+ * DOM：
+ *   <div class="search-icon"><span class="milkdown-icon"><svg …/></span></div>
+ *   <div class="clear-icon"><span class="milkdown-icon"><svg …/></span></div>
+ *   <div class="expand-icon"><span class="milkdown-icon"><svg …/></span></div>
+ *   <button class="copy-button"><span class="milkdown-icon"><svg …/></span></button>
+ *
+ * 两层问题都要处理：
+ *   1. 内层 span 默认行内 baseline 对齐 SVG → 图标被顶到行盒上方，
+ *      inline-flex 收缩并居中；
+ *   2. 外层容器若是普通 div，行盒会被 line-height 撑高（21px）导致
+ *      整体仍偏上，容器也 inline-flex，高度收缩到内容后由父级
+ *      （search-box / language-button）居中。
+ *
+ * 只调整图标摆放，不改任何 SVG 内容；图形本身在各图标 viewBox 内已居中。
+ * 放未分层区是为了：用户导入的外置主题（未分层、追加在 head 末尾）在
+ * 未命中这些选择器时不会覆盖，默认主题与任意外置主题下都稳定生效。
+ * ============================================================ */
+.milkdown .milkdown-code-block .search-icon,
+.milkdown .milkdown-code-block .clear-icon,
+.milkdown .milkdown-code-block .expand-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.milkdown .milkdown-code-block .search-icon .milkdown-icon,
+.milkdown .milkdown-code-block .clear-icon .milkdown-icon,
+.milkdown .milkdown-code-block .expand-icon .milkdown-icon,
+.milkdown .milkdown-code-block .copy-button .milkdown-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* ============================================================
+ * 脚注（GFM footnote）——必须未分层 + 高特异性
+ *
+ * DOM：<dl data-type="footnote_definition"><dt>编号</dt><dd>正文</dd></dl>
+ * 默认样式下 dt/dd 各占一行且 dd 带 40px 缩进 → 错位。
+ * 这里改为 flex 同行、基线对齐，模拟 GitHub 的 "1. 脚注正文" 效果。
+ *
+ * 为什么放在未分层区：
+ * base.css 在 @layer mt-theme 内，而未分层的用户自定义主题
+ * 会无条件压过分层规则（无论特异性），导致主题里任何通用
+ * dl/dd/p 规则都能撑开脚注行距。脚注对齐属于"结构正确性"，
+ * 必须与用户主题处于同一层（未分层）才能靠正常特异性竞争，
+ * 故这里用 .milkdown .editor（(0,3,1)）压住通用 dl/dd/p 规则。
+ * ============================================================ */
+.milkdown .editor dl[data-type="footnote_definition"] {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  margin: 0.25em 0;
+}
+.milkdown .editor dl[data-type="footnote_definition"] dt {
+  flex-shrink: 0;
+  margin: 0;
+  font-weight: 600;
+  color: var(--mt-text);
+}
+.milkdown .editor dl[data-type="footnote_definition"] dt::after {
+  content: ".";
+}
+.milkdown .editor dl[data-type="footnote_definition"] dd {
+  margin: 0;
+  padding: 0;
+}
+.milkdown .editor dl[data-type="footnote_definition"] dd p {
+  margin: 0;
+}
