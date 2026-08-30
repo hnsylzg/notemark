@@ -90,9 +90,18 @@ export const highlightInputRule = $inputRule((ctx) => {
     const tr = state.tr;
     const textStart = start + match[0].indexOf(content);
     const textEnd = textStart + content.length;
+    // 两端的 == 都要删掉。原先只删了结尾那对，开头那对被当成正文留下，
+    // 于是输入 ==abc== 会得到「字面 == + 高亮的 abc」。
+    // 顺序上先删尾部、再删头部：删除尾部不影响头部坐标，
+    // 删完头部后 content 正好落在 [start, start+content.length)。
     if (textEnd < end) tr.delete(textEnd, end);
-    tr.replaceWith(textStart, end, state.schema.text(content, [highlightMarkType.create()]));
-    tr.setSelection(TextSelection.near(tr.doc.resolve(textStart + content.length)));
+    if (start < textStart) tr.delete(start, textStart);
+    tr.replaceWith(
+      start,
+      start + content.length,
+      state.schema.text(content, [highlightMarkType.create()])
+    );
+    tr.setSelection(TextSelection.near(tr.doc.resolve(start + content.length)));
     tr.scrollIntoView();
     return tr;
   });
