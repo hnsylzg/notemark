@@ -42,6 +42,7 @@ import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
 import { slashMenuPlugin } from "./slash-menu";
+import { atomBlockDeletePlugin } from "./atom-block-delete";
 import { findReplacePlugin } from "./find-replace";
 import { inlineMarkEscapePlugin } from "./inline-mark-escape";
 import { imagePastePlugin } from "./image-paste";
@@ -58,6 +59,12 @@ const gapcursorPlugin = $prose(() => gapCursor());
  */
 export function getEditorPlugins(): MilkdownPlugin[] {
   return [
+    // 退格 / Delete 删除不可选原子块（yaml 元数据 / htmlBlock）。
+    // 刻意排在最前面：基础 keymap 的 Backspace 链（deleteSelection → joinBackward
+    // → selectNodeBackward）对 selectable:false 的 atom 落空，但链中某一步也可能
+    // 返回 true 却什么都没做，那样排在后面的插件就永远没机会执行。
+    // 本插件只在光标紧邻这两类块时才返回 true，其余一律交回默认行为。
+    atomBlockDeletePlugin,
     ...commonmark,
     // 删除线（~ / ~~）保持 @milkdown/preset-gfm 的默认规则，不做任何改动
     ...gfm,

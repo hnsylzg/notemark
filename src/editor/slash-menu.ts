@@ -119,6 +119,15 @@ let imeComposing = false;
 let pendingMark: Mark | null = null;
 
 /**
+ * 持续输入的锚点：下一个字符应当落在的位置。
+ *
+ * 用来判断光标是不是还在"接着往下写"。必须有它：刚斜杠插入行内代码时文档里
+ * 一个字符都还没有，光标既不在格式内、前面也没有带格式的文字，只有锚点能对上。
+ * 少了这条就会出现"输入第一个字母就退出行内代码"。
+ */
+let pendingAnchor = -1;
+
+/**
  * 刚退出的 mark 类型 + "吃掉一次继承"标志。
  *
  * 包含型 mark（加粗等，inclusive: true）在光标位于内容末尾时会被自动继承，
@@ -132,26 +141,14 @@ let skipMarkOnce = false;
 let compositionStartPos = -1;
 
 /**
- * 会退出持续输入模式的按键（导航 / 确认键）。
+ * 退出持续输入 / 行内格式：只认 Esc。
  *
- * 必须逐个列举，不能用「key.length > 1」来判断：切换输入法时发出的
- * Control / Shift / Alt / Meta 也是多字符键名，按长度判断会导致
- * 「切换到中文输入法就退出编辑」。Backspace/Delete 同样不在列表里——
- * 在链接或代码内部删字后，仍然应该继续输入同一格式。
+ * 方向键 / Home / End / Enter / Tab / 点别处一律不作为退出信号 —— 在粗体或行内代码
+ * 里挪光标改个错字是高频操作，被打断就会莫名其妙掉出格式。
+ * 因此也不能用「key.length > 1」这类宽泛判断：切换输入法时发出的
+ * Control / Shift / Alt / Meta 同样是多字符键名，会把格式误关掉。
  */
-const EXIT_KEYS = new Set([
-  "Escape",
-  "Enter",
-  "Tab",
-  "ArrowLeft",
-  "ArrowRight",
-  "ArrowUp",
-  "ArrowDown",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-]);
+
 
 /**
  * 成对标记（== 高亮 / ~~ 删除线）。
@@ -198,7 +195,21 @@ if (typeof window !== "undefined") {
             }
             exitedMarkTypes = [];
           } else if (mark) {
-            view.dispatch(view.state.tr.addMark(start, end, mark));
+            // 与 handleTextInput 同一条兜底：中文上屏前光标可能已经挪走，
+            // 不校验会把整段合成文字都染成代码。
+            const $s = view.state.doc.resolve(start);
+            const attached =
+              start === pendingAnchor ||
+              mark.type.isInSet($s.marks()) ||
+              Boolean($s.nodeBefore && mark.type.isInSet($s.nodeBefore.marks));
+            if (attached) {
+              view.dispatch(view.state.tr.addMark(start, end, mark));
+              pendingAnchor = end;
+            } else {
+              pendingMark = null;
+              pendingAnchor = -1;
+              hideContinuousHint();
+            }
           }
         } catch {
           /* 视图已销毁，忽略 */
@@ -207,10 +218,57 @@ if (typeof window !== "undefined") {
     }
     compositionStartPos = -1;
   });
-  // 点到别处（光标移走）即退出持续输入模式
-  window.addEventListener("mousedown", () => {
-    clearPendingMark();
-  }, true);
+
+  // Esc 收起提示气泡：捕获阶段兜底，不依赖插件的 handleKeyDown 有没有执行到。
+  //
+  // inline-mark-escape 插件注册在本插件之前（见 plugins.ts 的顺序约束：它要排在
+  // findReplacePlugin 之后，本插件要排最后才能拿到完整 schema），而它在 Esc 上
+  // return true，ProseMirror 随即停止向后续插件传播 —— 本插件的 handleKeyDown
+  // 根本执行不到。粗体 / 斜体这类包含型 mark 在光标处有 marks，必然被它截获，
+  // 气泡就一直挂着；行内代码（inclusive:false）在末尾没有 marks，逃过截获反而
+  // 正常，于是只有"粗体这些气泡按 Esc 不消失"。
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape") return;
+      const v = hintView;
+      // 被截获时没人清 storedMarks，退出就只挡得住一个字符，这里补上
+      if (v) {
+        const marks = activeMarks(v.state);
+        if (marks.length > 0) clearStoredMarks(v, marks.map((m) => m.type));
+      }
+      hideContinuousHint();
+    },
+    true
+  );
+
+  // 菜单激活时，↑ ↓ Enter Tab 必须抢在 gapcursor 之前处理（捕获阶段）。
+  //
+  // prosemirror-gapcursor 的 keydownHandler 同样吃 ArrowUp / ArrowDown，而它注册在
+  // 本插件之前（见 plugins.ts 顺序）。菜单开在块级原子节点（toc / yaml / htmlBlock）
+  // 下方时，向上正好是这类节点，gapcursor 会把选区换成 GapCursor 并消费掉按键；
+  // 本插件随后在 state.apply 里发现光标已离开触发区（readQuery 返回 null），
+  // 菜单就被关掉了。捕获阶段早于事件到达编辑器 DOM，能确保菜单先拿到按键。
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      const v = currentView;
+      if (!v) return;
+      if (
+        e.key !== "ArrowUp" &&
+        e.key !== "ArrowDown" &&
+        e.key !== "Enter" &&
+        e.key !== "Tab"
+      ) {
+        return;
+      }
+      if (handleMenuNavKey(v, e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true
+  );
 }
 
 // ==================== 命令执行辅助 ====================
@@ -294,34 +352,76 @@ function startContinuousMark(type: MarkType): Command {
   };
 }
 
-/** 退出持续输入模式，并收起提示气泡 */
-function clearPendingMark(): void {
+/**
+ * 新输入字符实际会带上的 marks。
+ *
+ * 与 prosemirror-transform 的 insertText 口径一致：storedMarks 非空时直接用它，
+ * 否则回落 $from.marks()。只取 $from.marks() 会漏掉「刚 toggle 上、还没敲字」
+ * 的那一刻——那时 mark 只存在于 storedMarks，文档里还没有带格式的文字。
+ */
+function activeMarks(state: EditorState): readonly Mark[] {
+  return state.storedMarks ?? state.selection.$from.marks();
+}
+
+/**
+ * 把已退出的 mark 从 storedMarks 里摘掉。
+ *
+ * 少了这一步，退出只挡得住【一个】字符：skipMarkOnce 插完那个字符后 storedMarks
+ * 仍原样保留（ProseMirror 只在 setSelection 时才清空它），第二个字符又被染回原
+ * 格式 —— 看起来就是"退出来了又自己回去"。
+ */
+function clearStoredMarks(view: EditorView | null, types: MarkType[]): void {
+  if (!view || types.length === 0) return;
+  const stored = view.state.storedMarks;
+  if (!stored || stored.length === 0) return;
+  const rest = stored.filter((m) => !types.includes(m.type));
+  if (rest.length === stored.length) return;
+  view.dispatch(view.state.tr.setStoredMarks(rest));
+}
+
+/**
+ * 停止持续输入（行内代码这类非包含型 mark），并收起提示气泡。
+ *
+ * 只管"停止逐字符补 mark"这一件事。粗体 / 斜体 / 高亮这类包含型 mark
+ * 不在这里处理 —— 它们靠 inclusive 自然继承，唯一出口是 Esc（见 handleKeyDown）。
+ * 方向键 / 点击只收起气泡、不改格式，否则在粗体里挪光标改个错字，
+ * 刚输入的字就会被打断成非粗体。
+ */
+function clearPendingMark(view?: EditorView | null): void {
   if (pendingMark) {
-    // 记住刚退出的 mark：下次输入要吃掉它的继承，否则加粗之类关不掉
+    // 记住刚退出的 mark：下次输入要吃掉它的继承，否则关不掉
     exitedMarkTypes = [pendingMark.type];
     skipMarkOnce = true;
+    clearStoredMarks(view ?? hintView, exitedMarkTypes);
   }
   pendingMark = null;
+  pendingAnchor = -1;
   hideContinuousHint();
 }
 
 /** 持续输入模式的提示气泡 DOM */
 let hintEl: HTMLDivElement | null = null;
+/** 提示气泡所属的编辑器视图（mousedown 这类拿不到 view 的退出路径要用） */
+let hintView: EditorView | null = null;
 
 /**
- * 在光标下方提示"XX 输入中 · Esc 退出"。
+ * 在光标下方提示"XX 输入中 · Esc 或方向键退出"。
  * 没有它用户完全看不出自己正处在持续输入状态，也不知道怎么退出来。
+ * 文案里的两种退出方式必须与下面的退出逻辑实际行为一致。
  */
 function showContinuousHint(view: EditorView, label: string): void {
   hideContinuousHint();
   const host = document.querySelector<HTMLElement>(".milkdown") ?? document.body;
   const el = document.createElement("div");
   el.className = "mt-slash-hint";
-  el.textContent = `${label}输入中 · Esc 或方向键退出`;
+  el.textContent = `${label}输入中 · Esc 退出`;
   el.style.left = "0px";
   el.style.top = "0px";
   host.appendChild(el);
   hintEl = el;
+  hintView = view;
+  // 进入持续输入：记下锚点，作为"光标还在接着写"的判据之一
+  pendingAnchor = view.state.selection.from;
   try {
     const coords = view.coordsAtPos(view.state.selection.from);
     const maxLeft = Math.max(8, window.innerWidth - el.offsetWidth - 8);
@@ -335,6 +435,7 @@ function showContinuousHint(view: EditorView, label: string): void {
 function hideContinuousHint(): void {
   hintEl?.remove();
   hintEl = null;
+  hintView = null;
 }
 
 /**
@@ -1233,6 +1334,36 @@ function execCommand(view: EditorView, index: number): void {
   cmd.run({ ctx: currentCtx, view, from, to });
 }
 
+/**
+ * 菜单激活时的导航 / 确认键处理（↑ ↓ 切换选中项，Enter / Tab 执行）。
+ *
+ * 抽成函数是因为有两个调用点：插件的 handleKeyDown，以及下方 window 捕获阶段的
+ * keydown 兜底 —— gapcursor 同样吃方向键且注册在本插件之前，会抢先消费掉按键
+ * （详见那里 window 监听的说明）。返回 true 表示按键已被菜单消费。
+ */
+function handleMenuNavKey(view: EditorView, key: string): boolean {
+  const st = slashKey.getState(view.state);
+  if (!st?.active) return false;
+
+  if (key === "ArrowDown" || key === "ArrowUp") {
+    const delta = key === "ArrowDown" ? 1 : -1;
+    const total = visibleCommands.length;
+    if (total === 0) return true;
+    const next = (st.index + delta + total) % total;
+    // 只派发 meta，重绘交给 view.update（与 query 变化走同一条路径）
+    view.dispatch(
+      view.state.tr.setMeta(slashKey, { type: "index", index: next })
+    );
+    return true;
+  }
+  if (key === "Enter" || key === "Tab") {
+    if (visibleCommands.length === 0) return false;
+    execCommand(view, st.index);
+    return true;
+  }
+  return false;
+}
+
 // ==================== 插件本体 ====================
 
 export const slashMenuPlugin = $prose((ctx) => {
@@ -1281,11 +1412,34 @@ export const slashMenuPlugin = $prose((ctx) => {
         // 非包含型 mark（行内代码）在光标位于末尾时不会被继承，
         // 只靠 toggleMark 的话输入第一个字符后就会掉出代码样式。
         if (pendingMark && text.length === 1) {
-          const tr = view.state.tr.insertText(text, from, to);
-          // 复用同一个 mark 实例，链接的 href 等属性才不会丢
-          tr.addMark(from, from + text.length, pendingMark);
-          view.dispatch(tr.scrollIntoView());
-          return true;
+          const $from = view.state.selection.$from;
+          // 退出只认 Esc，所以光标可能已被方向键 / 点击挪到别处，而 pendingMark 还在。
+          // 这里兜底：只在光标仍"贴着"这段格式时才补 mark，否则悄悄结束持续输入、
+          // 本次按普通文本处理，免得把无关位置的字也染成代码 / 链接。
+          // "贴着"有三种，缺一不可：
+          //   1. 光标在格式内部；
+          //   2. 紧接在格式末尾 —— 行内代码是 inclusive:false，末尾不继承，靠这条续上；
+          //   3. 光标还停在持续输入的锚点上 —— 刚斜杠插入行内代码、一个字符都还没写时，
+          //      前两条都不成立，只有它能对上；漏了就是"输入第一个字母就退出代码"。
+          const attached =
+            from === pendingAnchor ||
+            pendingMark.type.isInSet($from.marks()) ||
+            Boolean(
+              $from.nodeBefore && pendingMark.type.isInSet($from.nodeBefore.marks)
+            );
+          if (attached) {
+            const tr = view.state.tr.insertText(text, from, to);
+            // 复用同一个 mark 实例，链接的 href 等属性才不会丢
+            tr.addMark(from, from + text.length, pendingMark);
+            view.dispatch(tr.scrollIntoView());
+            pendingAnchor = from + text.length; // 锚点跟着往下走
+            return true;
+          }
+          // 已不在格式范围内：结束持续输入。不 arm skipMarkOnce —— 光标本来就不在
+          // 格式里，交给 ProseMirror 默认输入逻辑即可。
+          pendingMark = null;
+          pendingAnchor = -1;
+          hideContinuousHint();
         }
         // 光标已在该格式内部时，敲一个标记字符（= 或 ~）即表示结束：
         // 不写入这个字符，并让后续输入脱离该 mark，源码保持干净的 ==文字==。
@@ -1323,20 +1477,18 @@ export const slashMenuPlugin = $prose((ctx) => {
       handleKeyDown(_view, event) {
         const view = _view;
         const st = slashKey.getState(view.state);
-        // 只有导航/确认键才退出；修饰键（切输入法用）和 Backspace/Delete 都不退出。
-        // 不带 pendingMark 条件：包含型 mark 没进持续模式，但同样要能收起提示气泡。
-        if (EXIT_KEYS.has(event.key)) {
-          clearPendingMark();
-        }
-        // Esc（菜单关闭时）：跳出光标所在的格式。
-        // 关键在于不挑来源——不管是斜杠命令、Ctrl+B 还是 **text** 输入规则
-        // 产生的格式，都能靠它退出来。之前只有斜杠命令进入的能退，
-        // 手动加的格式就成了"进了就出不来"。
+        // 退出格式只认 Esc：方向键 / Home / End / Enter / Tab / 点别处一律不打断
+        // 正在输入的格式，否则在粗体或行内代码里挪光标改个错字，格式就被打断了。
+        // 菜单打开时 Esc 先让位给下面的"关闭菜单"（!st?.active 守卫）。
         if (event.key === "Escape" && !st?.active) {
-          const marks = view.state.selection.$from.marks();
+          // 不挑来源 —— 斜杠命令、Ctrl+B、**text** 输入规则产生的格式都靠它退出。
+          // 之前只有斜杠命令进入的能退，手动加的格式就成了"进了就出不来"。
+          clearPendingMark(view); // 行内代码：停止逐字符补 mark
+          const marks = activeMarks(view.state); // 包含型 mark：打断自动继承
           if (marks.length > 0) {
             exitedMarkTypes = marks.map((m) => m.type);
             skipMarkOnce = true;
+            clearStoredMarks(view, exitedMarkTypes);
           }
         }
         if (!st?.active) return false;
@@ -1346,21 +1498,7 @@ export const slashMenuPlugin = $prose((ctx) => {
           closeMenu();
           return true;
         }
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-          const delta = event.key === "ArrowDown" ? 1 : -1;
-          const total = visibleCommands.length;
-          if (total === 0) return true;
-          const next = (st.index + delta + total) % total;
-          // 只派发 meta，重绘交给 view.update（与 query 变化走同一条路径）
-          view.dispatch(view.state.tr.setMeta(slashKey, { type: "index", index: next }));
-          return true;
-        }
-        if (event.key === "Enter" || event.key === "Tab") {
-          if (visibleCommands.length === 0) return false;
-          execCommand(view, st.index);
-          return true;
-        }
-        return false;
+        return handleMenuNavKey(view, event.key);
       },
     },
     view() {

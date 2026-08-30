@@ -88,11 +88,27 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
     // 键盘事件：无修饰键（退格 / 回车 / Tab / 普通字符）不要冒泡到 PM，
     // 否则会被编辑器的 keymap 拦截、导致 textarea 内退格等按键失效；
     // 带修饰键（Ctrl / Cmd / Alt，如 Ctrl+S 保存、Ctrl+C/V）则放行给全局快捷键
-    const stopKey = (e: KeyboardEvent) => {
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // 内容已清空时再按退格 / Delete：删掉整个元数据块。
+      // 按键在这里就不再冒泡，编辑器层的 atomBlockDeletePlugin 收不到，
+      // 只能就地兜底，否则清空后怎么按都还留着一个空块。
+      if (
+        (e.key === "Backspace" || e.key === "Delete") &&
+        body.value === "" &&
+        body.selectionStart === body.selectionEnd
+      ) {
+        const pos = getPos();
+        if (typeof pos === "number") {
+          e.preventDefault();
+          view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
+          view.focus();
+        }
+        return;
+      }
       e.stopPropagation();
     };
-    body.addEventListener("keydown", stopKey);
+    body.addEventListener("keydown", onKeyDown);
 
     // 输入时把内容同步到节点 attrs（保留 value 数据结构，便于序列化）
     const sync = () => {
@@ -118,7 +134,7 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
       },
       destroy: () => {
         body.removeEventListener("input", sync);
-        body.removeEventListener("keydown", stopKey);
+        body.removeEventListener("keydown", onKeyDown);
       },
     };
   };

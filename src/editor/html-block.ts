@@ -143,6 +143,20 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         finish(true);
+      } else if (
+        (e.key === "Backspace" || e.key === "Delete") &&
+        ta.value === "" &&
+        ta.selectionStart === ta.selectionEnd
+      ) {
+        // 内容已清空时再按退格 / Delete：删掉整个 HTML 块。
+        // 同 frontmatter：按键不冒泡，编辑器层兜不到，只能就地处理。
+        const pos = getPos();
+        if (typeof pos === "number") {
+          e.preventDefault();
+          editing = false; // 先退出编辑态，删除后 blur 触发的 finish 才不会再提交一次
+          view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
+          view.focus();
+        }
       }
     });
     // 失焦即提交并退出编辑态（与公式块一致「输完就关闭」）
