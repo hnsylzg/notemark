@@ -47,7 +47,7 @@
 }
 
 :where(.milkdown .editor) h1 {
-  font-size: 28px;
+  font-size: 1.75em;
   font-weight: 700;
   border-bottom: 1px solid var(--mt-color-border);
   padding-bottom: 0.3em;
@@ -55,29 +55,29 @@
 }
 
 :where(.milkdown .editor) h2 {
-  font-size: 22px;
+  font-size: 1.375em;
   font-weight: 600;
   margin: 0 0 12px;
 }
 
 :where(.milkdown .editor) h3 {
-  font-size: 18px;
+  font-size: 1.125em;
   font-weight: 600;
   margin: 0 0 10px;
 }
 
 :where(.milkdown .editor) h4 {
-  font-size: 16px;
+  font-size: 1em;
   font-weight: 600;
   margin: 0 0 8px;
 }
 :where(.milkdown .editor) h5 {
-  font-size: 14px;
+  font-size: 0.875em;
   font-weight: 600;
   margin: 0 0 8px;
 }
 :where(.milkdown .editor) h6 {
-  font-size: 13px;
+  font-size: 0.8125em;
   font-weight: 600;
   color: var(--mt-color-fg-soft);
   margin: 0 0 8px;
@@ -119,7 +119,7 @@
 :where(.milkdown .editor) hr {
   border: none;
   border-top: 1px solid var(--mt-color-border);
-  margin: 2em 0;
+  margin: 1em 0;
 }
 
 :where(.milkdown .editor) img {
@@ -142,17 +142,33 @@
    marker 完全由 .label-wrapper 里的 SVG/文本控制。 */
 :where(.milkdown .editor) ul,
 :where(.milkdown .editor) ol {
-  padding-left: 1.5em;
-  margin: 8px 0;
+  padding-left: 0.5em;
+  margin: 0.8em 0;
+}
+
+/* 嵌套列表不再额外撑开（对齐 Typora：li>ul/li>ol { margin: 0 }） */
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > ul,
+:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > ol {
+  margin: 0;
+}
+
+/* 列表位于容器首尾时不留多余上下间距（对齐 Typora first/last-child 规则） */
+:where(.milkdown .editor) ul:first-child,
+:where(.milkdown .editor) ol:first-child {
+  margin-top: 0;
+}
+:where(.milkdown .editor) ul:last-child,
+:where(.milkdown .editor) ol:last-child {
+  margin-bottom: 0;
 }
 
 :where(.milkdown .editor) li {
-  margin: 4px 0; /* 列表项之间间距 */
+  margin: 0; /* 列表项间距由行高承载，对齐 Typora */
 }
 
 /* 列表项内容区段落（NodeView 后 <p> 位于 .children 内） */
 :where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > p {
-  margin: 0 0 4px;
+  margin: 0;
 }
 
 /* ============ 列表项 NodeView（list-item-block）布局 ============
@@ -168,7 +184,7 @@
    多行内容时 marker 仍与首行对齐（行盒顶部即首行顶部）。 */
 :where(.milkdown .editor) .milkdown-list-item-block > .list-item {
   position: relative;
-  padding-left: 1.9em; /* marker 列宽（含与文字的间距） */
+  padding-left: 1.4em; /* marker 列宽（含与文字的间距） */
   list-style: none; /* 关闭原生 <li> marker，避免与 .label-wrapper 重复（块级布局下 li 默认会渲染原生 marker） */
 }
 /* 双保险：彻底移除原生 ::marker（部分渲染引擎对 display:list-item 的 li 仍会绘制） */
@@ -188,8 +204,8 @@
   position: absolute;
   left: 0;
   top: 0;
-  width: 1.9em;
-  padding-right: 0.4em; /* 与文字的间距 */
+  width: 1.4em;
+  padding-right: 0.3em; /* 与文字的间距 */
   box-sizing: border-box;
   line-height: inherit; /* 与文字同一行高 → 基线一致 */
   text-align: right; /* 有序数字右对齐（原生 <ol> 行为） */
@@ -568,9 +584,6 @@
 
 /* ============ [toc] 活的目录 ============ */
 :where(.milkdown .editor) .mt-toc {
-  border: 1px solid var(--mt-color-border);
-  border-radius: var(--mt-radius, 8px);
-  background: var(--mt-color-bg-soft);
   padding: 0.75em 1em;
   margin: 0.5em 0;
   user-select: none;

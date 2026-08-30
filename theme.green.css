@@ -53,9 +53,9 @@
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
     Arial, sans-serif;
   --mt-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono",
-    Menlo, Courier, monospace;
-  --mt-font-size-base: 16px;
-  --mt-line-height-base: 1.75;
+    Menlo, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --mt-font-size-base: 15px;
+  --mt-line-height-base: 1.6;
   --mt-content-width: 800px;
   --mt-content-padding: 48px;
 
@@ -199,25 +199,25 @@
 }
 
 .milkdown h1 {
-  font-size: 28px;
+  font-size: 1.75em;
   padding-bottom: 0.25em;
 }
 .milkdown h2 {
-  font-size: 23px;
+  font-size: 1.4375em;
   color: var(--mt-color-primary);
 }
 .milkdown h3 {
-  font-size: 19px;
+  font-size: 1.1875em;
 }
 .milkdown h4 {
-  font-size: 16px;
+  font-size: 1em;
 }
 .milkdown h5 {
-  font-size: 14px;
+  font-size: 0.875em;
   color: var(--mt-color-fg-soft);
 }
 .milkdown h6 {
-  font-size: 13px;
+  font-size: 0.8125em;
   color: var(--mt-color-fg-muted);
 }
 
@@ -261,7 +261,7 @@
 .milkdown hr {
   border: none;
   border-top: 2px solid var(--mt-color-primary-soft);
-  margin: 2.5em auto;
+  margin: 1em 0;
   width: 100%;
 }
 .milkdown img {

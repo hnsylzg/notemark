@@ -42,9 +42,10 @@
   /* 排版 */
   --mt-font-sans: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
     sans-serif;
-  --mt-font-mono: "JetBrains Mono", Consolas, "Liberation Mono", monospace;
-  --mt-font-size-base: 16px;
-  --mt-line-height-base: 1.75;
+  --mt-font-mono: "JetBrains Mono", Consolas, "Liberation Mono",
+    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --mt-font-size-base: 15px;
+  --mt-line-height-base: 1.6;
 
   /* 代码块 */
   --mt-code-bg: #15181d;
