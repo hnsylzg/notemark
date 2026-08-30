@@ -1,130 +1,126 @@
 ---
-title: Notion Style Theme
-author: s1m4ne
-description: This block is YAML front matter
+title: NoteMark 示例文档
+author: NoteMark
+description: 这份示例展示 NoteMark 编辑器支持的各类 Markdown 语法与功能
 ---
 
-# Notion Style Theme
+# NoteMark 示例文档
 
-> This is a sample document demonstrating the **Notin Style Theme** for Typora.1
-
-***
-
-**Inline styles:**
-
-**strong**, _Emphasis_, `code`, <u>underline</u>, ~~strikethrough~~,$\LaTeX$, H$\_2$O, ==highlight==, [Link](#)
+> 这是一份用于演示 **NoteMark** 编辑器能力的示例文档。在编辑器中输入 `/` 即可唤起**命令菜单**，快速插入下方各类内容。
 
 ***
 
-**Image:**
-![alt text](img\logo.png)
+**行内样式：**
+
+**加粗**、*斜体*、`行内代码`、<u>下划线</u>、~~删除线~~、$\LaTeX$、H$_2$O、==高亮==、[链接](#)
 
 ***
 
-**Headings:**
+**图片：**
 
-# Heading1
-
-## Heading2
-
-### Heading3
-
-#### Heading4
-
-##### Heading5
-
-###### Heading6
+![alt text](img/logo.png)
 
 ***
 
-**Quote:**
+**标题：**
 
-> Blockquote: "This is a quote."
+# 一级标题
+
+## 二级标题
+
+### 三级标题
+
+#### 四级标题
+
+##### 五级标题
+
+###### 六级标题
+
+***
+
+**引用：**
+
+> 引用块：“这是一段引用。”
 >
-> > Nested Blockquote: "This is a quote inside a quote."
+> > 嵌套引用：“这是引用中的引用。”
 
 ***
 
-**Code Block:**
+**代码块：**
 
 ```python
-#  Notin Style Theme - Sample Code
+# NoteMark 示例代码
 def hello():
-    print("Hello, Notin Style Theme!")
+    print("Hello, NoteMark!")
 ```
 
 ***
 
-**Alerts:**
+**提示块（Alerts）：**
 
 > [!NOTE]
 >
-> This is a note block.
+> 这是一条普通提示。
 
 > [!TIP]
 >
-> This is a tip block.
+> 这是一个小技巧提示。
 
 > [!IMPORTANT]
 >
-> This is an important block.
+> 这是一条重要提示。
 
 > [!WARNING]
 >
-> This is a warning block.
+> 这是一条警告提示。
 
 > [!CAUTION]
 >
-> This is a caution block.
+> 这是一条注意（危险）提示。
 
 ***
 
-**Unordered List:**
+**无序列表：**
 
-* Item 1
-  * Subitem 1.1
-  * Subitem 1.2
-  * Subitem 1.3
-    * Sub-subitem 1.3.1
-    * Sub-subitem 1.3.2
-    * Sub-subitem 1.3.3
-* Item2
-* Item3
-
-***
-
-**Ordered List:**
-
-1. First item
-   1. Subitem 1.a
-   2. Subitem 1.b
-   3. Subitem 1.c
-      1. Sub-subitem 1.c.i
-      2. Sub-subitem 1.c.ii
-      3. Sub-subitem 1.c.iii
-2. Second item
-3. Third item
+* 项目 1
+  * 子项目 1.1
+  * 子项目 1.2
+  * 子项目 1.3
+    * 子子项目 1.3.1
+    * 子子项目 1.3.2
+* 项目 2
+* 项目 3
 
 ***
 
-**To-Do List:**
+**有序列表：**
 
-* [ ] Task 1
-* [x] Completed Task
-* [ ] Task 2
-
-***
-
-**Table:**
-
-| Column 1 | Column 2 | Column 3 |
-| -------- | :------- | :------: |
-| Row 1    | Data 1   |  Data 2  |
-| Row 2    | Data 3   |  Data 4  |
+1. 第一项
+   1. 子项 1.a
+   2. 子项 1.b
+2. 第二项
+3. 第三项
 
 ***
 
-**Math Block:**
+**任务列表：**
+
+* [ ] 待办任务 1
+* [x] 已完成任务
+* [ ] 待办任务 2
+
+***
+
+**表格：**
+
+| 列 1 | 列 2 | 列 3 |
+| ---- | :--- | :--: |
+| 行 1 | 数据 1 | 数据 2 |
+| 行 2 | 数据 3 | 数据 4 |
+
+***
+
+**公式块：**
 
 $$
 \mathcal{F}(f)(\xi) = \int_{-\infty}^{\infty} f(x) e^{-2\pi i x \xi} dx
@@ -132,32 +128,32 @@ $$
 
 ***
 
-**Mermeid:**
+**Mermaid 图表：**
 
 ```mermaid
 graph LR;
-    A[Start] --> B{Is user logged in?};
-    B -- Yes --> C[Go to Dashboard];
-    B -- No --> D[Show Login Page];
-    D --> E{Successful login?};
-    E -- Yes --> C;
-    E -- No --> D;
+    A[开始] --> B{用户已登录?};
+    B -- 是 --> C[进入仪表盘];
+    B -- 否 --> D[显示登录页];
+    D --> E{登录成功?};
+    E -- 是 --> C;
+    E -- 否 --> D;
 ```
 
 ***
 
-**Footnotes:**
+**脚注：**
 
-This is an examle of a footnote reference[^1].
+这是脚注引用的示例[^1]。
 
-[^1]: This is the footnote text.
+[^1]: 这是脚注的具体内容。
 
 ***
 
-**Toc:**
+**目录（TOC）：**
 
 [toc]
 
 ***
 
-Enjoy using the **Notin Style Theme** for Typora!
+Enjoy using **NoteMark**！
