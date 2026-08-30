@@ -1,8 +1,8 @@
 /*
  * slash-menu.ts — 斜杠命令菜单（Notion 风格）
  *
- * 触发：在段落开头输入 "/" 弹出命令菜单。限制"段落开头"是为了避免正文里
- *       写 C:/Users、1/2 之类的内容时频繁误弹菜单。
+ * 触发：在段落 / 标题行开头输入 "/" 弹出命令菜单。限制"块开头"是为了避免正文里
+ *       写 C:/Users、1/2 之类的内容时频繁误弹菜单；代码块里 "/" 是字面量，不弹。
  * 过滤：继续输入英文缩写或中文关键词实时过滤（/h2、/标题、/bq 都能命中）。
  * 操作：↑↓ 选择、Enter / Tab 确认、Esc 关闭、鼠标点击直接执行。
  *
@@ -1461,8 +1461,11 @@ export const slashMenuPlugin = $prose((ctx) => {
         // 中文输入法合成期间不上屏，不触发
         if (imeComposing) return false;
         const $from = view.state.selection.$from;
-        // 仅在普通段落内触发：代码块/标题里输入 "/" 不弹菜单（那里是纯文本输入语义）
-        if ($from.parent.type.name !== "paragraph") return false;
+        // 在段落 / 标题行开头触发。代码块里输入 "/" 是字面量，照旧不弹菜单；
+        // 标题行开头（"#" 之前）也允许弹 —— 文档顶部紧跟 frontmatter 时，
+        // 光标常落在标题行首，用户期望直接 "/" 插入块。
+        const parentName = $from.parent.type.name;
+        if (parentName !== "paragraph" && parentName !== "heading") return false;
         if ($from.parentOffset !== 0) return false;
         // 让 "/" 正常插入，插入后再打开菜单（此时文档里已有 "/"）。
         // 这里只派发 meta，菜单 DOM 交由下方 view.update 统一创建，避免重复创建。

@@ -72,11 +72,21 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
     const body = document.createElement("textarea");
     body.className = "mt-frontmatter-body";
     body.value = node.attrs.value as string;
-    body.rows = 4;
+    body.rows = 1;
     body.spellcheck = false;
-    body.placeholder = "# 在此填写 YAML 元数据\ntitle: 我的笔记\ndate: 2026-08-30";
+    body.placeholder = "title: 我的笔记（YAML 元数据，随内容自动伸缩）";
 
     dom.append(body);
+
+    // 高度自适应：随内容增减自动伸缩，不再固定 rows、也无需手动拖拽。
+    // 先归零再取 scrollHeight，避免历史高度残留导致量不准。
+    const autoSize = () => {
+      if (!body.isConnected) return;
+      body.style.height = "auto";
+      body.style.height = `${body.scrollHeight}px`;
+    };
+    // 首帧 DOM 尚未布局时 scrollHeight 会量到 0，延后一帧再量
+    requestAnimationFrame(autoSize);
 
     // 阻止 ProseMirror 接收编辑区内的鼠标交互：该节点是 atom，PM 不管理其内部，
     // 避免光标 / 选区被 PM 抢走
@@ -116,7 +126,10 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
       if (pos == null) return;
       view.dispatch(view.state.tr.setNodeAttribute(pos, "value", body.value));
     };
-    body.addEventListener("input", sync);
+    body.addEventListener("input", () => {
+      autoSize();
+      sync();
+    });
 
     return {
       dom,
@@ -129,6 +142,7 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
         // 否则会覆盖用户正在输入的内容、导致光标跳动
         if (body.value !== (node.attrs.value as string)) {
           body.value = node.attrs.value as string;
+          autoSize();
         }
         return true;
       },
