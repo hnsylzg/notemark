@@ -124,17 +124,33 @@ function collectHeadings(view: import("@milkdown/kit/prose/view").EditorView) {
     usedSlugs.set(slug, seen + 1);
     if (seen > 0) slug = `${slug}-${seen}`;
     counter += 1;
-    // 给 heading DOM 注入 id（供滚动定位，也供导出 HTML 锚点）
-    const dom = view.nodeDOM(pos) as HTMLElement | null;
-    if (dom && dom.getAttribute("id") !== slug) dom.setAttribute("id", slug);
     headings.push({ level: node.attrs.level, text, pos: pos + 1 });
     return false;
   });
   return headings;
 }
 
+/** 目录刷新重入保护（见 renderToc） */
+let tocRendering = false;
+
 /** 渲染目录到指定 div */
 function renderToc(
+  dom: HTMLElement,
+  view: import("@milkdown/kit/prose/view").EditorView,
+) {
+  // 防重入：目录刷新会重建 DOM 并改写标题 id，这些改动有可能反过来触发文档
+  // 更新再进入本函数。挡住自触发，避免任何形式的刷新递归。
+  if (tocRendering) return;
+  tocRendering = true;
+  try {
+    renderTocInner(dom, view);
+  } finally {
+    tocRendering = false;
+  }
+}
+
+/** renderToc 的实际实现（调用前须已加 tocRendering 保护） */
+function renderTocInner(
   dom: HTMLElement,
   view: import("@milkdown/kit/prose/view").EditorView,
 ) {

@@ -64,8 +64,13 @@ const mtHighlightStyle = HighlightStyle.define([
 // @ts-ignore mdast-util-to-markdown 导出的 Handle 类型
 const customTextHandler: Handle = (node, _, state, info) => {
   const value = (node as { value?: string }).value ?? "";
-  // 纯空白文本（不含 *、_、\）原样返回，与 milkdown 默认 text handler 一致
-  if (/^[^*_\\]*\s+$/.test(value)) return value;
+  if (!value) return value;
+  // 短路：文本里没有 [ ] 时，过滤 unsafe 表与否结果完全相同，
+  // 直接走默认 safe。避免对文档里每个文本节点都 filter 一遍整张 unsafe 表
+  // （长文档上这是纯浪费，且反复改 state.unsafe 这种共享状态风险很高）。
+  if (!value.includes("[") && !value.includes("]")) {
+    return state.safe(value, { ...info, encode: [] });
+  }
   const original = state.unsafe;
   state.unsafe = original.filter(
     (u) => !(u.character === "[" || u.character === "]")
