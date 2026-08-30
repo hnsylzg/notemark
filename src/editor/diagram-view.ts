@@ -109,6 +109,41 @@ function watchThemeSwitch(): void {
 }
 watchThemeSwitch();
 
+/**
+ * 监听自定义主题 <style id="custom-theme"> 的注入与内容变化：
+ * 主题管理器（themeManager）通过原地替换该 style 的 textContent 应用主题，
+ * 不会触发 data-theme 的 MutationObserver，因此 mermaid 图表（其配置在渲染时
+ * 从 CSS 变量读取）不会自动重渲染。这里补一个对 custom-theme 的监听，
+ * 让切换 / 重新导入主题后图表立即按新配置刷新；主题被移除时回退到内置默认配置。
+ */
+function watchCustomTheme(): void {
+  const rerenderAll = () => {
+    for (const render of renderers) render();
+  };
+  const styleObserver = new MutationObserver(rerenderAll);
+  const observed = new WeakSet<Element>();
+  let lastHadStyle: boolean | null = null;
+
+  const sync = () => {
+    const style = document.getElementById("custom-theme");
+    const has = !!style;
+    if (style && !observed.has(style)) {
+      styleObserver.observe(style, { childList: true, subtree: true });
+      observed.add(style);
+      rerenderAll();
+    }
+    if (has !== lastHadStyle) {
+      lastHadStyle = has;
+      if (!has) rerenderAll(); // 主题移除：回退默认 mermaid 配置
+    }
+  };
+
+  sync();
+  // 捕捉 custom-theme 的创建 / 移除（重新导入相同主题时只改内容，由 styleObserver 处理）
+  new MutationObserver(sync).observe(document.head, { childList: true });
+}
+watchCustomTheme();
+
 export const diagramView = $view(diagramSchema.node, () => {
   const nodeView: NodeViewConstructor = (node, view, getPos) => {
     const dom = document.createElement("div");
@@ -121,8 +156,10 @@ export const diagramView = $view(diagramSchema.node, () => {
       if (editing) return; // 编辑态下保持 textarea，不重渲染
       const current = ++token;
       const value = node.attrs.value as string;
+      dom.className = "diagram";
       if (!value) {
-        dom.replaceChildren();
+        dom.textContent = "空流程图（点击输入）";
+        dom.classList.add("diagram-empty");
         return;
       }
       void getMermaid()

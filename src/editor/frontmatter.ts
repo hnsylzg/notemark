@@ -1,5 +1,5 @@
 /*
- * frontmatter.ts — YAML Front Matter 支持（只读块）
+ * frontmatter.ts — YAML Front Matter 支持（可编辑块）
  *
  * 背景：Milkdown 默认完全不支持 front matter：
  *   - remark 层未注册 remark-frontmatter，文档开头的 `---\n...\n---` 被当作普通段落；
@@ -64,34 +64,62 @@ export const frontmatterSchema = $nodeSchema("yaml", () => ({
 }));
 
 export const frontmatterView = $view(frontmatterSchema.node, () => {
-  const nodeView: NodeViewConstructor = (node) => {
+  const nodeView: NodeViewConstructor = (node, view, getPos) => {
     const dom = document.createElement("div");
     dom.className = "mt-frontmatter";
     dom.dataset.type = "yaml";
 
-    const body = document.createElement("pre");
+    const body = document.createElement("textarea");
     body.className = "mt-frontmatter-body";
-    body.textContent = node.attrs.value as string;
+    body.value = node.attrs.value as string;
+    body.rows = 4;
+    body.spellcheck = false;
+    body.placeholder = "# 在此填写 YAML 元数据\ntitle: 我的笔记\ndate: 2026-08-30";
 
     dom.append(body);
 
-    // 只读块：拦截鼠标事件，防止点击在 PM 中产生选区/光标
-    dom.addEventListener("mousedown", (e) => e.stopPropagation());
-    dom.addEventListener("click", (e) => e.preventDefault());
+    // 阻止 ProseMirror 接收编辑区内的鼠标交互：该节点是 atom，PM 不管理其内部，
+    // 避免光标 / 选区被 PM 抢走
+    const stop = (e: Event) => e.stopPropagation();
+    body.addEventListener("mousedown", stop);
+    body.addEventListener("touchstart", stop, { passive: true });
+    body.addEventListener("dragstart", stop);
+
+    // 键盘事件：无修饰键（退格 / 回车 / Tab / 普通字符）不要冒泡到 PM，
+    // 否则会被编辑器的 keymap 拦截、导致 textarea 内退格等按键失效；
+    // 带修饰键（Ctrl / Cmd / Alt，如 Ctrl+S 保存、Ctrl+C/V）则放行给全局快捷键
+    const stopKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      e.stopPropagation();
+    };
+    body.addEventListener("keydown", stopKey);
+
+    // 输入时把内容同步到节点 attrs（保留 value 数据结构，便于序列化）
+    const sync = () => {
+      const pos = getPos();
+      if (pos == null) return;
+      view.dispatch(view.state.tr.setNodeAttribute(pos, "value", body.value));
+    };
+    body.addEventListener("input", sync);
 
     return {
       dom,
+      // 文本变化由 input 事件同步，PM 不应把它当 mutation 重绘
+      ignoreMutation: () => true,
       update: (updatedNode) => {
         if (updatedNode.type !== node.type) return false;
-        if (updatedNode.attrs.value !== node.attrs.value) {
-          node = updatedNode;
-          body.textContent = node.attrs.value as string;
+        node = updatedNode;
+        // 仅当外部（加载文件 / 撤销重做）改变了 value 才回写，
+        // 否则会覆盖用户正在输入的内容、导致光标跳动
+        if (body.value !== (node.attrs.value as string)) {
+          body.value = node.attrs.value as string;
         }
         return true;
       },
-      // 只读节点的 DOM 变化不应触发 ProseMirror 重绘
-      ignoreMutation: () => true,
-      destroy: () => {},
+      destroy: () => {
+        body.removeEventListener("input", sync);
+        body.removeEventListener("keydown", stopKey);
+      },
     };
   };
   return nodeView;

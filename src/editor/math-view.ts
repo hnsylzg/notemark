@@ -12,9 +12,11 @@
  */
 import { $node, $view, $inputRule } from "@milkdown/utils";
 import { InputRule } from "@milkdown/prose/inputrules";
+import { TextSelection } from "@milkdown/prose/state";
 import type { NodeViewConstructor } from "@milkdown/prose/view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import { mathInlineSchema } from "@milkdown/plugin-math";
 
 const BLOCK_NAME = "math_block";
 
@@ -168,6 +170,153 @@ export const mathBlockView = $view(mathBlockSchema, () => {
         return true;
       },
       ignoreMutation: () => true,
+      destroy: () => {},
+    };
+  };
+  return nodeView;
+});
+
+/*
+ * mathInlineView — 接管 plugin-math 的行内公式（math_inline）编辑。
+ *
+ * 该版本 @milkdown/plugin-math 的 math_inline 是 atom + content:"text*"，
+ * 仅由 schema.toDOM 渲染 KaTeX、无编辑 UI（无法点击进入编辑），故这里补一个
+ * 与 mathBlockView 一致的「点击进入编辑」NodeView：
+ *   - 默认显示 KaTeX 渲染结果（行内融入文本）；
+ *   - 点击进入输入框（input，源码即 LaTeX 文本），Esc 取消 / Enter 提交；
+ *   - 提交时把输入写回节点的文本内容（行内公式源码存于 text 而非 attrs）。
+ */
+export const mathInlineView = $view(mathInlineSchema.node, () => {
+  const nodeView: NodeViewConstructor = (node, view, getPos) => {
+    const dom = document.createElement("span");
+    dom.className = "milkdown-math-inline";
+    dom.dataset.type = "math_inline";
+    dom.title = "行内公式：点击编辑，Enter 提交 / Esc 取消";
+
+    const display = document.createElement("span");
+    display.className = "milkdown-math-inline-display";
+
+    const input = document.createElement("input");
+    input.className = "milkdown-math-inline-input";
+    input.type = "text";
+    input.spellcheck = false;
+    input.placeholder = "输入公式，如 a^2+b^2";
+    input.style.display = "none";
+
+    dom.append(display, input);
+
+    let editing = false;
+
+    // 输入窗口随内容自适应宽度（LaTeX 为等宽字体，按字符数估算），并保留
+    // 一个舒适的最小宽度，避免空公式时编辑框过窄、难以输入。
+    const fitWidth = () => {
+      input.style.width = `${Math.max(input.value.length + 1, 12)}ch`;
+    };
+
+    const render = (value: string) => {
+      display.replaceChildren();
+      if (value && value.trim()) {
+        try {
+          katex.render(value, display, { throwOnError: false, trust: true });
+        } catch {
+          display.textContent = value;
+        }
+      } else {
+        display.className = "milkdown-math-inline-display math-inline-empty";
+        display.textContent = "点击输入公式";
+      }
+    };
+    render(node.textContent);
+
+    const setEditing = (on: boolean) => {
+      editing = on;
+      if (on) {
+        input.value = node.textContent;
+        fitWidth();
+        display.style.display = "none";
+        input.style.display = "";
+        input.focus();
+        const len = input.value.length;
+        input.setSelectionRange(len, len);
+      } else {
+        input.style.display = "none";
+        display.style.display = "";
+      }
+    };
+
+    const finish = (commit: boolean) => {
+      if (!editing) return;
+      const next = commit ? input.value : node.textContent;
+      if (commit && next !== node.textContent) {
+        const pos = getPos();
+        if (typeof pos === "number") {
+          editing = false;
+          input.style.display = "none";
+          display.style.display = "";
+          const innerStart = pos + 1;
+          const innerEnd = pos + node.nodeSize - 1;
+          const tr = view.state.tr;
+          if (next) {
+            tr.replaceWith(innerStart, innerEnd, view.state.schema.text(next));
+          } else {
+            tr.delete(innerStart, innerEnd);
+          }
+          const mapped = tr.mapping.map(pos);
+          tr.setSelection(
+            TextSelection.create(tr.doc, mapped + 2 + (next ? next.length : 0)),
+          );
+          view.dispatch(tr);
+          return; // update() 会触发重渲染
+        }
+      }
+      setEditing(false);
+      render(node.textContent);
+    };
+
+    const stop = (e: Event) => e.stopPropagation();
+    input.addEventListener("mousedown", stop);
+    input.addEventListener("touchstart", stop, { passive: true });
+    input.addEventListener("dragstart", stop);
+    // 粘贴 / 复制 / 剪切 / 拖放 / 右键菜单都不要冒泡到 PM，交给 input 自身处理
+    input.addEventListener("paste", stop);
+    input.addEventListener("copy", stop);
+    input.addEventListener("cut", stop);
+    input.addEventListener("drop", stop);
+    input.addEventListener("contextmenu", stop);
+    input.addEventListener("input", fitWidth);
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+
+    dom.addEventListener("mousedown", stop);
+    dom.addEventListener("touchstart", stop, { passive: true });
+    dom.addEventListener("dragstart", stop);
+    dom.addEventListener("paste", stop);
+    dom.addEventListener("copy", stop);
+    dom.addEventListener("cut", stop);
+    dom.addEventListener("drop", stop);
+    dom.addEventListener("contextmenu", stop);
+    dom.addEventListener("click", () => {
+      if (!editing) setEditing(true);
+    });
+
+    return {
+      dom,
+      ignoreMutation: () => true,
+      update: (updatedNode) => {
+        if (updatedNode.type !== node.type) return false;
+        node = updatedNode;
+        if (!editing) render(node.textContent);
+        return true;
+      },
       destroy: () => {},
     };
   };

@@ -90,10 +90,16 @@
 
 :where(.milkdown .editor) a {
   color: var(--mt-color-link);
-  text-decoration: none;
+  /* 常态带一条淡下划线：链接不悬停时也要能一眼认出是链接，
+     否则在正文里跟普通文字毫无区别（悬停才出现下划线等于没有提示）。 */
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--mt-color-link) 40%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 :where(.milkdown .editor) a:hover {
-  text-decoration: underline;
+  text-decoration-color: var(--mt-color-link);
+  text-decoration-thickness: 2px;
 }
 
 :where(.milkdown .editor) strong {
@@ -429,7 +435,8 @@
   font-style: italic;
 }
 :where(.milkdown .editor) textarea.math-block-editor,
-:where(.milkdown .editor) textarea.diagram-editor {
+:where(.milkdown .editor) textarea.diagram-editor,
+:where(.milkdown .editor) textarea.mt-html-block-body {
   display: block;
   width: 100%;
   min-height: 6em;
@@ -447,7 +454,8 @@
   cursor: text;
 }
 :where(.milkdown .editor) textarea.math-block-editor:focus,
-:where(.milkdown .editor) textarea.diagram-editor:focus {
+:where(.milkdown .editor) textarea.diagram-editor:focus,
+:where(.milkdown .editor) textarea.mt-html-block-body:focus {
   border-color: var(--mt-color-primary);
   box-shadow: 0 0 0 2px var(--mt-color-primary-soft);
 }
@@ -455,6 +463,43 @@
 :where(.milkdown .editor) .diagram textarea.diagram-editor {
   text-align: left;
   min-height: 12em; /* Mermaid 源码通常多行，默认给更高 */
+}
+
+/* ============ 行内公式原地编辑 ============ */
+:where(.milkdown .editor) .milkdown-math-inline {
+  display: inline;
+  cursor: pointer; /* 提示可点击进入编辑 */
+}
+:where(.milkdown .editor) .milkdown-math-inline-display {
+  display: inline;
+}
+:where(.milkdown .editor) .milkdown-math-inline-display.math-inline-empty {
+  color: var(--mt-color-fg-muted);
+  font-style: italic;
+  padding: 0 2px;
+}
+:where(.milkdown .editor) input.milkdown-math-inline-input {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 12ch;
+  width: auto;
+  border: 1px solid var(--mt-color-primary);
+  border-radius: var(--mt-radius, 6px);
+  background: var(--mt-color-bg-soft);
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 2px 8px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--mt-color-primary-soft);
+}
+:where(.milkdown .editor) input.milkdown-math-inline-input::placeholder {
+  color: var(--mt-color-fg-muted);
+}
+:where(.milkdown .editor) .diagram.diagram-empty {
+  color: var(--mt-color-fg-muted, #9aa0a6);
+  font-style: italic;
 }
 
 /* 表格右键菜单 */
@@ -497,7 +542,7 @@
 }
 
 /* ============ YAML Front Matter ============ */
-/* 文档开头的 --- 块，解析为只读的 yaml 原子节点 */
+/* 文档开头的 --- 块，解析为 yaml 原子节点（内部用 textarea 可编辑） */
 :where(.milkdown .editor) .mt-frontmatter {
   margin: 0 0 16px;
   border: 1px solid var(--mt-color-border);
@@ -506,15 +551,48 @@
   font-family: var(--mt-font-mono, monospace);
   font-size: 13px;
   line-height: 1.6;
-  user-select: none;
-  cursor: default;
 }
 :where(.milkdown .editor) .mt-frontmatter .mt-frontmatter-body {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   margin: 0;
   padding: 8px 12px;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--mt-color-fg);
+  font: inherit;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--mt-color-fg);
+  resize: vertical;
+  outline: none;
+}
+:where(.milkdown .editor) .mt-frontmatter .mt-frontmatter-body::placeholder {
+  color: var(--mt-color-fg-muted, #9aa0a6);
+}
+
+/* ============ 块级 HTML ============ */
+/* 与公式块一致：默认直接显示渲染对象（无外框，融入文档）；点对象进入「HTML 代码
+   编辑框」（带框的 textarea），输完失焦编辑框消失、对象重新显示 */
+:where(.milkdown .editor) .mt-html-block {
+  margin: 0 0 16px;
+  cursor: text;
+}
+:where(.milkdown .editor) .mt-html-block .mt-html-block-body::placeholder {
+  color: var(--mt-color-fg-muted, #9aa0a6);
+}
+:where(.milkdown .editor) .mt-html-block .mt-html-block-preview {
+  padding: 2px 0;
+  min-height: 1.6em;
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+:where(.milkdown .editor) .mt-html-block .mt-html-block-empty {
+  color: var(--mt-color-fg-muted, #9aa0a6);
+  font-style: italic;
 }
 
 /* ============ 高亮 ==text==（mark） ============ */

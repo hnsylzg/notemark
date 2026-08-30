@@ -1,0 +1,1395 @@
+/*
+ * slash-menu.ts — 斜杠命令菜单（Notion 风格）
+ *
+ * 触发：在段落开头输入 "/" 弹出命令菜单。限制"段落开头"是为了避免正文里
+ *       写 C:/Users、1/2 之类的内容时频繁误弹菜单。
+ * 过滤：继续输入英文缩写或中文关键词实时过滤（/h2、/标题、/bq 都能命中）。
+ * 操作：↑↓ 选择、Enter / Tab 确认、Esc 关闭、鼠标点击直接执行。
+ *
+ * 实现要点：
+ * - Plugin state（PluginKey）保存激活态、"/" 的文档位置、当前 query、选中项索引；
+ * - handleTextInput 检测 "/"，仅在段落开头（parentOffset === 0）时激活；
+ * - state.apply 校验 query 仍是 "/xxx" 且无空格，一旦不满足立即关闭；
+ * - 菜单 DOM 挂在 .milkdown 容器内才能取到 --mt-* 主题变量（同 table-menu）；
+ * - 命令执行统一走 runCmd()：先删除 "/query" 文本，再在干净的状态上派发事务；
+ * - 中文输入法（IME）合成期间不触发，避免候选词阶段误弹菜单。
+ *
+ * 注意：所有需要宿主环境能力的命令（如插入图片要开系统文件对话框）通过
+ * setSlashActionHandler 回调交给 App.vue 处理，插件本身不直接调 Tauri API。
+ */
+import { $prose } from "@milkdown/utils";
+import type { Ctx } from "@milkdown/ctx";
+import {
+  Plugin,
+  PluginKey,
+  TextSelection,
+  type Command,
+  type EditorState,
+  type Transaction,
+} from "@milkdown/prose/state";
+import type { EditorView } from "@milkdown/prose/view";
+import type {
+  Mark,
+  MarkType,
+  Node as PMNode,
+  NodeType,
+} from "@milkdown/prose/model";
+import { toggleMark, wrapIn } from "@milkdown/prose/commands";
+import { wrapInList } from "@milkdown/prose/schema-list";
+
+// 项目自定义节点：通过 Milkdown ctx 取类型，避免硬编码节点名
+import { mathBlockSchema } from "./math-view";
+import { alertSchema } from "./alert";
+import { tocSchema } from "./toc";
+import { frontmatterSchema } from "./frontmatter";
+import { htmlBlockSchema } from "./html-block";
+import { highlightSchema } from "./highlight";
+import { diagramSchema } from "@milkdown/plugin-diagram";
+import { mathInlineSchema } from "@milkdown/plugin-math";
+
+/** 需要宿主环境（App.vue）处理的动作 */
+export type SlashAction = "image";
+
+type SlashActionHandler = (
+  action: SlashAction,
+  view: EditorView,
+  pos: number
+) => void;
+
+let actionHandler: SlashActionHandler | null = null;
+
+/** 供 App.vue 注册宿主能力回调（如打开图片选择对话框） */
+export function setSlashActionHandler(handler: SlashActionHandler | null): void {
+  actionHandler = handler;
+}
+
+/** 命令执行上下文：Milkdown ctx + 编辑器视图 */
+interface SlashCommandRunArgs {
+  ctx: Ctx;
+  view: EditorView;
+  /** "/" 的文档位置 */
+  from: number;
+  /** 光标位置（"/" + query 之后） */
+  to: number;
+}
+
+interface SlashCommand {
+  id: string;
+  /** 菜单显示的中文名 */
+  title: string;
+  /** 右侧浅色提示（markdown 语法） */
+  hint?: string;
+  /** 左侧图标（纯文本字符，不引图标库） */
+  icon: string;
+  /** 所属分组 */
+  group: string;
+  /** 匹配关键词：英文缩写 + 中文全拼 */
+  keywords: string[];
+  run: (args: SlashCommandRunArgs) => void;
+}
+
+/** 分组展示顺序 */
+const GROUP_ORDER = ["基础", "列表", "高级", "格式", "插入"];
+
+/** query 最大长度（超过则关闭菜单，防止用户一路输入下去菜单不消失） */
+const MAX_QUERY = 32;
+
+/** 当前 "/" 位置（供滚动时重定位菜单使用） */
+let slashFrom = 0;
+
+/** $prose 构建时保存的 ctx（命令需要它来取自定义节点类型） */
+let currentCtx: Ctx;
+
+/** 中文输入法合成状态：合成期间不触发菜单，避免候选词阶段误弹 */
+let imeComposing = false;
+
+/**
+ * 持续输入的行内 mark（典型是行内代码）。
+ *
+ * inlineCode 的 inclusive 为 false——光标停在代码内容末尾时，后续输入
+ * 不会继承该 mark，表现为"输入第一个字符后就退出行内代码"。
+ * 这里记住 mark 类型，由 handleTextInput 给后续每个字符显式补 mark，
+ * 从而能连续输入代码内容。按方向键 / Enter / Esc 或点到别处即退出。
+ */
+/**
+ * 保存完整的 mark【实例】而不是 MarkType：
+ * 补 mark 时要在新字符上还原同样的属性（链接的 href 就是存在 attrs 里的），
+ * 只记类型的话建出来的 mark 会丢掉 href，链接就废了。
+ */
+let pendingMark: Mark | null = null;
+
+/**
+ * 刚退出的 mark 类型 + "吃掉一次继承"标志。
+ *
+ * 包含型 mark（加粗等，inclusive: true）在光标位于内容末尾时会被自动继承，
+ * 即使退出了持续模式，紧接着输入的字符仍会带上该 mark——表现为"关不掉"。
+ * 因此退出后的第一次输入要显式插入【无 mark】的文本，打断这次继承。
+ */
+let exitedMarkTypes: MarkType[] = [];
+let skipMarkOnce = false;
+
+/** 输入法合成开始时的光标位置（合成结束后据此给整段文本补 mark） */
+let compositionStartPos = -1;
+
+/**
+ * 会退出持续输入模式的按键（导航 / 确认键）。
+ *
+ * 必须逐个列举，不能用「key.length > 1」来判断：切换输入法时发出的
+ * Control / Shift / Alt / Meta 也是多字符键名，按长度判断会导致
+ * 「切换到中文输入法就退出编辑」。Backspace/Delete 同样不在列表里——
+ * 在链接或代码内部删字后，仍然应该继续输入同一格式。
+ */
+const EXIT_KEYS = new Set([
+  "Escape",
+  "Enter",
+  "Tab",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
+/**
+ * 成对标记（== 高亮 / ~~ 删除线）。
+ *
+ * 光标已经在该 mark 内部时，敲一个标记字符就表示"结束这个格式"：
+ * 不把这个字符写进正文，并让后续输入脱离该 mark。
+ * 否则标记字符会被原样写入、序列化时再被转义，源码里就出现
+ * \====文字== 这种垃圾。
+ *
+ * 代价是在该格式内无法输入这个字符本身（高亮里打不出 =、删除线里打不出 ~），
+ * 这个取舍是值得的——进入该状态后敲它，意图几乎都是"结束"。
+ */
+const PAIR_MARKS: Array<{ name: string; char: string }> = [
+  { name: "highlight", char: "=" },
+  // 删除线（~ / ~~）刻意不在此列：干预它会干扰 ~~abc~~ 的正常输入
+  //（第三个 ~ 落下时默认规则就会触发，再吞字符反而多出字面 ~）。
+];
+
+if (typeof window !== "undefined") {
+  window.addEventListener("compositionstart", () => {
+    imeComposing = true;
+    if (currentView) compositionStartPos = currentView.state.selection.from;
+  });
+  window.addEventListener("compositionend", () => {
+    imeComposing = false;
+    // 中文上屏不走 handleTextInput（走 DOM 观察），需在此给整段合成文本补 mark
+    const view = currentView;
+    const mark = pendingMark;
+    if (view && compositionStartPos >= 0) {
+      const start = compositionStartPos;
+      setTimeout(() => {
+        try {
+          const end = view.state.selection.from;
+          if (end <= start) return;
+          if (skipMarkOnce) {
+            // 刚退出：去掉继承来的 mark，保证之后的输入不再带格式
+            skipMarkOnce = false;
+            if (exitedMarkTypes.length > 0) {
+              let tr = view.state.tr;
+              for (const t of exitedMarkTypes) {
+                tr = tr.removeMark(start, end, t);
+              }
+              view.dispatch(tr);
+            }
+            exitedMarkTypes = [];
+          } else if (mark) {
+            view.dispatch(view.state.tr.addMark(start, end, mark));
+          }
+        } catch {
+          /* 视图已销毁，忽略 */
+        }
+      }, 0);
+    }
+    compositionStartPos = -1;
+  });
+  // 点到别处（光标移走）即退出持续输入模式
+  window.addEventListener("mousedown", () => {
+    clearPendingMark();
+  }, true);
+}
+
+// ==================== 命令执行辅助 ====================
+
+/**
+ * 先删除 "/query"，再在删除后的状态上执行 ProseMirror 命令。
+ *
+ * 关键：命令必须"看到"删除后的干净文档（否则斜杠文本会被算进块内容），
+ * 但命令产生的事务是按【删除后】的文档位置计算的，直接 dispatch 到
+ * 【尚未删除】的真实文档上会造成位置整体错位——表现为斜杠文本残留、
+ * 命令作用在错误位置。因此这里把两个事务的 steps 合并进同一个
+ * 基于 view.state 的事务，顺序执行，位置才对得上。
+ */
+function runWithDelete(
+  view: EditorView,
+  from: number,
+  to: number,
+  cmd: Command
+): void {
+  // 第一步：真正派发删除事务，让编辑器状态先落到"干净"的文档上
+  view.dispatch(view.state.tr.delete(from, to));
+  // 第二步：在真实的最新状态上执行命令。
+  // 刻意不再用 state.apply() 造虚拟中间状态——那样命令的 steps 是按
+  // "删除后"的坐标算的，且 apply 会触发其他插件的 appendTransaction
+  // 污染中间态，是命令静默失效的根源。
+  const applied = cmd(view.state, view.dispatch);
+  if (!applied) {
+    // 命令判定为不适用（当前块不支持该转换）。留一句诊断，方便按 F12 定位
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[slash-menu] 命令未生效（from=${from}, to=${to}），当前块可能不支持该转换`
+    );
+    view.focus();
+  }
+}
+
+
+
+/**
+ * 把光标所在的文本块整体转成指定类型（标题 / 正文 / 代码块 / 公式块…）。
+ *
+ * 为什么不用 prosemirror-commands 的 setBlockType：它靠
+ * doc.nodesBetween(from, to) 遍历选区来判定适用性，而斜杠命令场景下的
+ * 选区是【空选区】（from === to，光标停在刚清空斜杠文本的位置），
+ * 边界情况下会漏判、静默返回 false。这里直接从光标往上找最近的
+ * textblock 并整体替换，语义明确、不受空选区影响。
+ */
+function setBlockAt(type: NodeType, attrs: Record<string, unknown> | null): Command {
+  return (state, dispatch) => {
+    const { $from } = state.selection;
+    let depth = $from.depth;
+    while (depth > 0 && !$from.node(depth).isTextblock) depth -= 1;
+    const node = $from.node(depth);
+    if (!node || !node.isTextblock) return false;
+    if (node.hasMarkup(type, attrs ?? {})) return true; // 已经是目标类型
+    const pos = depth === 0 ? 0 : $from.before(depth);
+    const $pos = state.doc.resolve(pos);
+    if (!$pos.parent.canReplaceWith($pos.index(), $pos.index() + 1, type)) {
+      return false;
+    }
+    if (dispatch) dispatch(state.tr.setNodeMarkup(pos, type, attrs).scrollIntoView());
+    return true;
+  };
+}
+
+/**
+ * 开启"持续输入"模式并应用 mark。
+ *
+ * 只用于 inclusive === false 的 mark（如 inlineCode）：这类 mark 在光标位于
+ * 内容末尾时不会被继承，必须靠后续逐字符补 mark 才能连续输入。
+ */
+function startContinuousMark(type: MarkType): Command {
+  return (state, dispatch) => {
+    // 光标已在 mark 内时按普通切换处理（用于关闭）
+    if (type.isInSet(state.selection.$from.marks())) {
+      clearPendingMark();
+      return toggleMark(type)(state, dispatch);
+    }
+    pendingMark = type.create();
+    return toggleMark(type)(state, dispatch);
+  };
+}
+
+/** 退出持续输入模式，并收起提示气泡 */
+function clearPendingMark(): void {
+  if (pendingMark) {
+    // 记住刚退出的 mark：下次输入要吃掉它的继承，否则加粗之类关不掉
+    exitedMarkTypes = [pendingMark.type];
+    skipMarkOnce = true;
+  }
+  pendingMark = null;
+  hideContinuousHint();
+}
+
+/** 持续输入模式的提示气泡 DOM */
+let hintEl: HTMLDivElement | null = null;
+
+/**
+ * 在光标下方提示"XX 输入中 · Esc 退出"。
+ * 没有它用户完全看不出自己正处在持续输入状态，也不知道怎么退出来。
+ */
+function showContinuousHint(view: EditorView, label: string): void {
+  hideContinuousHint();
+  const host = document.querySelector<HTMLElement>(".milkdown") ?? document.body;
+  const el = document.createElement("div");
+  el.className = "mt-slash-hint";
+  el.textContent = `${label}输入中 · Esc 或方向键退出`;
+  el.style.left = "0px";
+  el.style.top = "0px";
+  host.appendChild(el);
+  hintEl = el;
+  try {
+    const coords = view.coordsAtPos(view.state.selection.from);
+    const maxLeft = Math.max(8, window.innerWidth - el.offsetWidth - 8);
+    el.style.left = `${Math.max(8, Math.min(coords.left, maxLeft))}px`;
+    el.style.top = `${coords.bottom + 6}px`;
+  } catch {
+    /* 位置失效时保持在默认角落，不影响功能 */
+  }
+}
+
+function hideContinuousHint(): void {
+  hintEl?.remove();
+  hintEl = null;
+}
+
+/**
+ * 插入块级节点，并保证光标有地方落脚。
+ *
+ * atom 块（hr / toc / yaml / table 等）本身不可编辑，插入后若后面没有
+ * 段落，光标无处可去（虽然启用了 gapcursor，但普通光标仍进不去），
+ * 因此在节点后补一个空段落并把光标放进去。
+ */
+/**
+ * 光标所在块的范围，以及该块是否为"空文本块"。
+ *
+ * 斜杠命令的典型场景是光标停在刚清空斜杠文本的【空段落】里。此时插入
+ * 块级节点必须【整体替换】该块，而不是在光标处插入——后者会走 PM 的
+ * 切分逻辑，把节点放到当前块【之后】，表现为"分割线出现在光标下方"，
+ * 上面还残留一个空段落。
+ */
+function blockRangeAt(state: EditorState): {
+  start: number;
+  end: number;
+  empty: boolean;
+} {
+  const { $from } = state.selection;
+  let depth = $from.depth;
+  while (depth > 0 && !$from.node(depth).isBlock) depth -= 1;
+  if (depth === 0) {
+    return { start: 0, end: state.doc.content.size, empty: false };
+  }
+  const block = $from.node(depth);
+  return {
+    start: $from.before(depth),
+    end: $from.after(depth),
+    empty: block.isTextblock && block.content.size === 0,
+  };
+}
+
+function insertAtom(
+  type: NodeType,
+  attrs?: Record<string, unknown>
+): Command {
+  return (state, dispatch) => {
+    const paraType = state.schema.nodes.paragraph;
+    const node = type.create(attrs);
+    const { start, end, empty } = blockRangeAt(state);
+
+    let tr: Transaction;
+    if (empty) {
+      // 空块：整体替换成「节点 + 承接光标的空段落」，节点落在原块位置
+      tr = state.tr.replaceWith(start, end, [node, paraType.create()]);
+      tr.setSelection(TextSelection.near(tr.doc.resolve(start + node.nodeSize + 1)));
+    } else {
+      // 非空块：在光标处插入（由 PM 负责按需切分），同样补空段落
+      tr = state.tr.replaceSelectionWith(node);
+      const at = tr.selection.from;
+      tr.insert(at, paraType.create());
+      tr.setSelection(TextSelection.near(tr.doc.resolve(at + 1)));
+    }
+    if (dispatch) dispatch(tr.scrollIntoView());
+    return true;
+  };
+}
+
+/** 插入容器块（如 alert，内含一个空段落），光标落进容器内部 */
+function insertWrap(
+  type: NodeType,
+  attrs: Record<string, unknown>
+): Command {
+  return (state, dispatch) => {
+    const node = type.create(attrs, state.schema.nodes.paragraph.create());
+    const { start, end, empty } = blockRangeAt(state);
+
+    let tr: Transaction;
+    if (empty) {
+      // 空块：整体替换为容器本身（容器内已含空段落）
+      tr = state.tr.replaceWith(start, end, node);
+      tr.setSelection(TextSelection.near(tr.doc.resolve(start + 1)));
+    } else {
+      tr = state.tr.replaceSelectionWith(node);
+      const $at = tr.doc.resolve(tr.selection.from);
+      if (!$at.parent.isTextblock) {
+        tr.setSelection(TextSelection.near($at, 1));
+      }
+    }
+    if (dispatch) dispatch(tr.scrollIntoView());
+    return true;
+  };
+}
+
+/** 插入 3 列 × 3 行（含表头）的表格 */
+function insertTable(): Command {
+  return (state, dispatch) => {
+    const { schema } = state;
+    const { table, table_header_row, table_header, table_row, table_cell, paragraph } =
+      schema.nodes;
+    if (!table || !table_header_row || !table_header || !table_row || !table_cell) {
+      return false;
+    }
+    const emptyCell = (type: NodeType): PMNode => type.create(null, paragraph.create());
+
+    const headerCells: PMNode[] = [
+      emptyCell(table_header),
+      emptyCell(table_header),
+      emptyCell(table_header),
+    ];
+    const bodyRow = (): PMNode =>
+      table_row.create(null, [
+        emptyCell(table_cell),
+        emptyCell(table_cell),
+        emptyCell(table_cell),
+      ]);
+    // table 的 content 约束是 "table_header_row table_row+"：
+    // 一个表头行 + 至少一个数据行，顺序错会导致 schema 校验失败
+    const node = table.create(null, [
+      table_header_row.create(null, headerCells),
+      bodyRow(),
+      bodyRow(),
+    ]);
+
+    // 与 insertAtom 同理：光标在空块时整体替换，避免表格落到光标下方
+    const { start, end, empty } = blockRangeAt(state);
+    let tr: Transaction;
+    let nodeStart: number;
+    if (empty) {
+      nodeStart = start;
+      tr = state.tr.replaceWith(start, end, [node, paragraph.create()]);
+    } else {
+      tr = state.tr.replaceSelectionWith(node);
+      const at = tr.selection.from;
+      nodeStart = at - node.nodeSize;
+      tr.insert(at, paragraph.create());
+    }
+
+    // 光标落进第一个单元格（表头第一格），方便直接填写表头。
+    // 只在刚插入的这个表格范围内找，避免定位到文档里已有的旧表格。
+    let cellPos: number | null = null;
+    tr.doc.nodesBetween(nodeStart, nodeStart + node.nodeSize, (n, pos) => {
+      if (cellPos != null) return false;
+      if (n.type.name === "table_header" || n.type.name === "table_cell") {
+        cellPos = pos;
+        return false;
+      }
+      return true;
+    });
+    if (cellPos != null) {
+      // +1 进入单元格内的段落，near 会落到段落内容起始
+      tr.setSelection(TextSelection.near(tr.doc.resolve(cellPos + 1)));
+    }
+    if (dispatch) dispatch(tr.scrollIntoView());
+    return true;
+  };
+}
+
+/**
+ * 任务列表：gfm 没有独立的 taskList 节点，而是给 list_item 加 checked 属性
+ *（见 @milkdown/preset-gfm 的 extendListItemSchemaForTask）。
+ * 因此先包成无序列表，再把生成的 list_item 标记 checked = false。
+ */
+function wrapInTaskList(bulletListType: NodeType): Command {
+  return (state, dispatch) => {
+    let captured: Transaction | undefined;
+    const ok = wrapInList(bulletListType)(state, (t) => {
+      captured = t;
+    });
+    // TS 的控制流分析感知不到回调里的赋值，这里显式收窄类型
+    const tr = captured as Transaction | undefined;
+    if (!ok || !tr) return false;
+    const $head = tr.doc.resolve(tr.selection.from);
+    for (let d = $head.depth; d > 0; d -= 1) {
+      const node = $head.node(d);
+      if (node.type.name === "list_item") {
+        tr.setNodeMarkup($head.before(d), undefined, {
+          ...node.attrs,
+          checked: false,
+        });
+        break;
+      }
+    }
+    if (dispatch) dispatch(tr.scrollIntoView());
+    return true;
+  };
+}
+
+/** 插入一段纯文本并把光标放到末尾 */
+function insertText(text: string): Command {
+  return (state, dispatch) => {
+    const tr = state.tr.insertText(text);
+    if (dispatch) dispatch(tr.scrollIntoView());
+    return true;
+  };
+}
+
+/**
+ * 插入链接【节点】，而不是 "[文本](地址)" 这样的纯文本。
+ *
+ * 纯文本会走 text handler 序列化，而 mdast-util-to-markdown 的默认 unsafe
+ * 表会把 ( ) 转义成 \( \)（本项目为兼容 [toc] / [!NOTE] 只过滤了 [ ] 的转义），
+ * 导出的 markdown 就变成 [文本]\(地址\)，Typora/Obsidian 都识别不了。
+ * 插入真正的 link mark 后由 link handler 序列化，输出才是标准的 [文本](地址)。
+ */
+/**
+ * 在指定位置插入链接。
+ *
+ * 刻意不用 tr.replaceSelectionWith(node)：它默认 inheritMarks=true，
+ * 会用选区继承来的 marks 覆盖节点自带的 link mark，结果插入的是一段
+ * 没有链接格式的普通文字。这里先插入纯文本、再显式 addMark，结果确定。
+ * @param pos 插入位置（浮层打开时记录的，不依赖失焦后的 selection）
+ */
+function insertLinkNode(
+  view: EditorView,
+  label: string,
+  href: string,
+  pos: number
+): void {
+  const state = view.state;
+  const linkType = state.schema.marks["link"];
+  if (!linkType) {
+    // eslint-disable-next-line no-console
+    console.warn("[slash-menu] schema 中找不到 link mark，无法插入链接");
+    return;
+  }
+  // 位置收敛：浮层打开期间文档可能被改动，避免越界
+  const at = Math.min(Math.max(pos, 0), state.doc.content.size);
+  const mark = linkType.create({ href });
+  const tr = state.tr.insertText(label, at);
+  tr.addMark(at, at + label.length, mark);
+  // 选中链接文字，用户直接打字即可替换，不必先手动选中
+  tr.setSelection(TextSelection.create(tr.doc, at, at + label.length));
+  view.dispatch(tr.scrollIntoView());
+  // 进入持续输入模式：link mark 是包含型的，光标停在链接末尾会一直继承，
+  // 不接管的话后续输入会全变成链接文字，根本退不出来
+  pendingMark = mark;
+  showContinuousHint(view, "链接");
+  view.focus();
+}
+
+/**
+ * 弹出地址输入框，回车后插入真正的链接节点。
+ *
+ * 为什么要输入地址：只插入一个空 href 的链接，看起来就是一段普通文字，
+ * 既没有链接外观也点不开。让用户先给地址，插入后才是可用的链接。
+ */
+function promptLinkUrl(view: EditorView, label: string): void {
+  // 浮层打开期间编辑器会失焦，selection 不再可靠，先把插入位置记下来
+  const insertPos = view.state.selection.from;
+
+  const host = document.querySelector<HTMLElement>(".milkdown") ?? document.body;
+  const box = document.createElement("div");
+  box.className = "mt-slash-linkbox";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "mt-slash-linkbox__input";
+  input.placeholder = "输入链接地址";
+  input.value = "https://";
+
+  const tip = document.createElement("div");
+  tip.className = "mt-slash-linkbox__tip";
+  tip.textContent = "Enter 确认 · Esc 取消";
+
+  box.appendChild(input);
+  box.appendChild(tip);
+  host.appendChild(box);
+
+  try {
+    const coords = view.coordsAtPos(view.state.selection.from);
+    const maxLeft = Math.max(8, window.innerWidth - box.offsetWidth - 8);
+    box.style.left = `${Math.max(8, Math.min(coords.left, maxLeft))}px`;
+    box.style.top = `${coords.bottom + 6}px`;
+  } catch {
+    /* 位置失效时保持默认角落 */
+  }
+  input.focus();
+  input.select();
+
+  const cleanup = () => {
+    box.remove();
+    document.removeEventListener("mousedown", onDown, true);
+  };
+  const onDown = (e: MouseEvent) => {
+    if (!box.contains(e.target as Node)) cleanup();
+  };
+  const commit = () => {
+    const href = input.value.trim();
+    cleanup();
+    if (href) insertLinkNode(view, label, href, insertPos);
+  };
+
+  input.addEventListener("keydown", (e) => {
+    // 阻止冒泡，否则会被编辑器的快捷键/插件抢走
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cleanup();
+      view.focus();
+    }
+  });
+  document.addEventListener("mousedown", onDown, true);
+}
+
+// ==================== 命令表 ====================
+
+/** 构建命令表（需要 ctx 拿自定义节点类型） */
+function buildCommands(ctx: Ctx): SlashCommand[] {
+  const mathBlock = mathBlockSchema.type(ctx) as NodeType;
+  const alert = alertSchema.type(ctx) as NodeType;
+  const toc = tocSchema.type(ctx) as NodeType;
+  const yaml = frontmatterSchema.type(ctx) as NodeType;
+  const htmlBlock = htmlBlockSchema.type(ctx) as NodeType;
+  const diagram = diagramSchema.type(ctx) as NodeType;
+  const highlight = highlightSchema.type(ctx) as unknown as MarkType;
+  const mathInline = mathInlineSchema.type(ctx) as NodeType;
+
+  /** 内置节点通过 schema 名取（commonmark / gfm 已确认命名） */
+  const builtin = (view: EditorView) => view.state.schema;
+
+  const block = (name: string, attrs?: Record<string, unknown>) => (
+    args: SlashCommandRunArgs
+  ) => {
+    const type = builtin(args.view).nodes[name];
+    if (!type) return;
+    runWithDelete(args.view, args.from, args.to, setBlockAt(type, attrs ?? null));
+  };
+
+  const list = (name: "bullet_list" | "ordered_list") => (
+    args: SlashCommandRunArgs
+  ) => {
+    const type = builtin(args.view).nodes[name];
+    if (!type) return;
+    runWithDelete(args.view, args.from, args.to, wrapInList(type));
+  };
+
+  /**
+   * 只有【非包含型】mark 才用持续输入模式接管逐字符输入。
+   *
+   * 包含型 mark（加粗/斜体/删除线/高亮）绝不能接管：接管意味着
+   * handleTextInput 直接 return true，Milkdown 的输入规则就没机会执行了——
+   * 于是用户敲 == 想结束高亮时，这对 == 不会被 highlightInputRule 转换，
+   * 反而原样写进正文，看起来就像"莫名其妙多了 ==".
+   * 包含型 mark 靠 inclusive 自然继承即可持续，退出交给 Esc（通用退出）。
+   */
+  const markOf = (type: MarkType): Command =>
+    type.spec.inclusive === false ? startContinuousMark(type) : toggleMark(type);
+
+  /** 应用 mark；若因此进入持续输入模式，显示"怎么退出"的提示气泡 */
+  const applyMark = (
+    args: SlashCommandRunArgs,
+    type: MarkType,
+    label: string
+  ): void => {
+    runWithDelete(args.view, args.from, args.to, markOf(type));
+    // 一律提示退出方式：包含型 mark 虽没进持续模式，但同样会一直继承下去，
+    // 用户照样需要知道按 Esc 能退出。
+    showContinuousHint(args.view, label);
+  };
+
+  const mark = (name: string, label: string) => (args: SlashCommandRunArgs) => {
+    const type = builtin(args.view).marks[name];
+    if (!type) return;
+    applyMark(args, type, label);
+  };
+
+  const customMark = (type: MarkType, label: string) => (
+    args: SlashCommandRunArgs
+  ) => {
+    applyMark(args, type, label);
+  };
+
+  const customBlock = (type: NodeType, attrs?: Record<string, unknown>) => (
+    args: SlashCommandRunArgs
+  ) => {
+    runWithDelete(args.view, args.from, args.to, setBlockAt(type, attrs ?? null));
+  };
+
+  const atom = (type: NodeType, attrs?: Record<string, unknown>) => (
+    args: SlashCommandRunArgs
+  ) => {
+    runWithDelete(args.view, args.from, args.to, insertAtom(type, attrs));
+  };
+
+  /**
+   * 元数据（frontmatter）必须位于文档最开头。
+   * 若开头已有元数据则不重复插入；否则插到位置 0，光标放到其后。
+   * 走 runWithDelete 与其他命令保持一致，避免"手动两次 dispatch"在
+   * 某些文档结构下被 schema 静默丢弃（表现就是插入无效）。
+   */
+  const insertFrontmatter = (type: NodeType) => (
+    args: SlashCommandRunArgs
+  ) => {
+    runWithDelete(args.view, args.from, args.to, (state, dispatch) => {
+      if (state.doc.firstChild?.type === type) return true; // 已有元数据，跳过
+      const node = type.create({ value: "" });
+      const tr = state.tr.insert(0, node);
+      // 光标落到元数据紧邻之后的位置（下一个块的起点）
+      tr.setSelection(TextSelection.near(tr.doc.resolve(node.nodeSize)));
+      if (dispatch) {
+        dispatch(tr.scrollIntoView());
+        // 插入后自动把焦点跳进元数据的 textarea 编辑框
+        const view = args.view;
+        requestAnimationFrame(() => {
+          const dom = view.nodeDOM(0) as HTMLElement | null;
+          const ta = dom?.querySelector?.(
+            ".mt-frontmatter-body"
+          ) as HTMLTextAreaElement | null;
+          ta?.focus();
+        });
+      }
+      return true;
+    });
+  };
+
+  /**
+   * 块级 HTML：插入一个 htmlBlock 节点（源码存于 value），光标落到其后，
+   * 并把焦点跳进编辑框。参见 html-block.ts。
+   */
+  const insertHtmlBlock = (type: NodeType) => (
+    args: SlashCommandRunArgs
+  ) => {
+    runWithDelete(args.view, args.from, args.to, (state, dispatch) => {
+      const paraType = state.schema.nodes.paragraph;
+      const node = type.create({ value: "" });
+      const { start, end, empty } = blockRangeAt(state);
+
+      let tr: Transaction;
+      let nodePos: number;
+      if (empty) {
+        tr = state.tr.replaceWith(start, end, [node, paraType.create()]);
+        nodePos = start;
+      } else {
+        tr = state.tr.replaceSelectionWith(node);
+        nodePos = state.selection.from; // 替换前选区起点即节点起点
+        tr.insert(nodePos + node.nodeSize, paraType.create());
+      }
+      tr.setSelection(TextSelection.near(tr.doc.resolve(nodePos + node.nodeSize + 1)));
+      if (dispatch) {
+        dispatch(tr.scrollIntoView());
+        // 插入后自动把焦点跳进 HTML 编辑框
+        const view = args.view;
+        requestAnimationFrame(() => {
+          const dom = view.nodeDOM(nodePos) as HTMLElement | null;
+          const ta = dom?.querySelector?.(
+            ".mt-html-block-body"
+          ) as HTMLTextAreaElement | null;
+          ta?.focus();
+        });
+      }
+      return true;
+    });
+  };
+
+  /**
+   * 行内公式：math_inline 是「行内原子节点」（不是 mark），不能用 applyMark
+   * 插入。直接在光标处插入一个空 math_inline 节点；编辑框由 mathInlineView
+   * 接管，用户点一下该公式即可进入编辑（行为同公式块）。
+   */
+  const insertInlineMath = (type: NodeType) => (
+    args: SlashCommandRunArgs
+  ) => {
+    runWithDelete(args.view, args.from, args.to, (state, dispatch) => {
+      const node = type.create(null);
+      const pos = state.selection.from;
+      const tr = state.tr.insert(pos, node);
+      // 关闭自动进入编辑：先让编辑器稳定收下节点，用户点公式即可编辑
+      tr.setSelection(TextSelection.create(tr.doc, pos + node.nodeSize));
+      if (dispatch) dispatch(tr.scrollIntoView());
+      return true;
+    });
+  };
+
+  const commands: SlashCommand[] = [
+    // ---------- 基础 ----------
+    { id: "text", title: "正文", icon: "¶", group: "基础", keywords: ["text", "p", "zhengwen", "正文", "段落"], run: block("paragraph") },
+    { id: "h1", title: "一级标题", hint: "#", icon: "H1", group: "基础", keywords: ["h1", "标题1", "一级标题", "biaoti1"], run: block("heading", { level: 1 }) },
+    { id: "h2", title: "二级标题", hint: "##", icon: "H2", group: "基础", keywords: ["h2", "标题2", "二级标题", "biaoti2"], run: block("heading", { level: 2 }) },
+    { id: "h3", title: "三级标题", hint: "###", icon: "H3", group: "基础", keywords: ["h3", "标题3", "三级标题", "biaoti3"], run: block("heading", { level: 3 }) },
+    { id: "h4", title: "四级标题", hint: "####", icon: "H4", group: "基础", keywords: ["h4", "标题4", "四级标题"], run: block("heading", { level: 4 }) },
+    { id: "h5", title: "五级标题", hint: "#####", icon: "H5", group: "基础", keywords: ["h5", "标题5", "五级标题"], run: block("heading", { level: 5 }) },
+    { id: "h6", title: "六级标题", hint: "######", icon: "H6", group: "基础", keywords: ["h6", "标题6", "六级标题"], run: block("heading", { level: 6 }) },
+    {
+      id: "quote",
+      title: "引用",
+      hint: ">",
+      icon: "❝",
+      group: "基础",
+      keywords: ["quote", "bq", "yinyong", "引用"],
+      run: (args) => {
+        const type = builtin(args.view).nodes["blockquote"];
+        if (!type) return;
+        runWithDelete(args.view, args.from, args.to, wrapIn(type));
+      },
+    },
+    {
+      id: "hr",
+      title: "分割线",
+      hint: "---",
+      icon: "―",
+      group: "基础",
+      keywords: ["hr", "divider", "fengexian", "分割线", "横线"],
+      run: (args) => {
+        const type = builtin(args.view).nodes["hr"];
+        if (!type) return;
+        runWithDelete(args.view, args.from, args.to, insertAtom(type));
+      },
+    },
+
+    // ---------- 列表 ----------
+    { id: "bullet", title: "无序列表", hint: "-", icon: "•", group: "列表", keywords: ["ul", "list", "liebiao", "无序", "无序列表", "列表"], run: list("bullet_list") },
+    { id: "ordered", title: "有序列表", hint: "1.", icon: "1.", group: "列表", keywords: ["ol", "有序", "有序列表", "编号"], run: list("ordered_list") },
+    {
+      id: "task",
+      title: "任务列表",
+      hint: "- [ ]",
+      icon: "☑",
+      group: "列表",
+      keywords: ["todo", "task", "renwu", "任务", "待办", "任务列表", "复选框"],
+      run: (args) => {
+        const type = builtin(args.view).nodes["bullet_list"];
+        if (!type) return;
+        runWithDelete(args.view, args.from, args.to, wrapInTaskList(type));
+      },
+    },
+
+    // ---------- 高级块 ----------
+    { id: "code", title: "代码块", hint: "```", icon: "{ }", group: "高级", keywords: ["code", "daima", "代码块", "代码"], run: block("code_block") },
+    {
+      id: "table",
+      title: "表格",
+      hint: "3×3",
+      icon: "▦",
+      group: "高级",
+      keywords: ["table", "biaoge", "表格"],
+      run: (args) => runWithDelete(args.view, args.from, args.to, insertTable()),
+    },
+    { id: "math", title: "公式块", hint: "$$", icon: "∑", group: "高级", keywords: ["math", "gongshi", "公式", "公式块", "数学公式"], run: customBlock(mathBlock) },
+    { id: "imath", title: "行内公式", hint: "$", icon: "∑", group: "高级", keywords: ["imath", "inline", "行内公式", "行内数学"], run: insertInlineMath(mathInline) },
+    { id: "diagram", title: "流程图", hint: "mermaid", icon: "◫", group: "高级", keywords: ["mermaid", "diagram", "liuchengtu", "流程图", "图表"], run: customBlock(diagram, { value: "graph TD\n  A[开始] --> B[结束]" }) },
+    {
+      id: "alert-note",
+      title: "提示框",
+      hint: "[!NOTE]",
+      icon: "ⓘ",
+      group: "高级",
+      keywords: ["note", "tishi", "提示", "提示框", "说明"],
+      run: (args) => runWithDelete(args.view, args.from, args.to, insertWrap(alert, { alertType: "note" })),
+    },
+    {
+      id: "alert-tip",
+      title: "建议框",
+      hint: "[!TIP]",
+      icon: "!",
+      group: "高级",
+      keywords: ["tip", "jianyi", "建议", "技巧"],
+      run: (args) => runWithDelete(args.view, args.from, args.to, insertWrap(alert, { alertType: "tip" })),
+    },
+    {
+      id: "alert-important",
+      title: "重要框",
+      hint: "[!IMPORTANT]",
+      icon: "✦",
+      group: "高级",
+      keywords: ["important", "zhongyao", "重要"],
+      run: (args) => runWithDelete(args.view, args.from, args.to, insertWrap(alert, { alertType: "important" })),
+    },
+    {
+      id: "alert-warning",
+      title: "警告框",
+      hint: "[!WARNING]",
+      icon: "▲",
+      group: "高级",
+      keywords: ["warn", "warning", "jinggao", "警告"],
+      run: (args) => runWithDelete(args.view, args.from, args.to, insertWrap(alert, { alertType: "warning" })),
+    },
+    {
+      id: "alert-caution",
+      title: "注意框",
+      hint: "[!CAUTION]",
+      icon: "⊘",
+      group: "高级",
+      keywords: ["caution", "zhuyi", "注意", "小心"],
+      run: (args) => runWithDelete(args.view, args.from, args.to, insertWrap(alert, { alertType: "caution" })),
+    },
+    {
+      id: "html",
+      title: "HTML 块",
+      hint: "< >",
+      icon: "<>",
+      group: "高级",
+      keywords: ["html", "HTML"],
+      run: insertHtmlBlock(htmlBlock),
+    },
+    {
+      id: "toc",
+      title: "目录",
+      hint: "[toc]",
+      icon: "☰",
+      group: "高级",
+      keywords: ["toc", "mulu", "目录"],
+      run: atom(toc),
+    },
+    {
+      id: "frontmatter",
+      title: "元数据",
+      hint: "---",
+      icon: "⛶",
+      group: "高级",
+      keywords: ["frontmatter", "yaml", "元数据", "头部", "front"],
+      run: insertFrontmatter(yaml),
+    },
+
+    // ---------- 行内格式 ----------
+    { id: "bold", title: "加粗", hint: "**", icon: "B", group: "格式", keywords: ["bold", "b", "jiacu", "加粗", "粗体"], run: mark("strong", "加粗") },
+    { id: "italic", title: "斜体", hint: "*", icon: "I", group: "格式", keywords: ["italic", "i", "xieti", "斜体", "倾斜"], run: mark("emphasis", "斜体") },
+    { id: "strike", title: "删除线", hint: "~~", icon: "S", group: "格式", keywords: ["strike", "s", "del", "shanchuxian", "删除线"], run: mark("strike_through", "删除线") },
+    { id: "inlineCode", title: "行内代码", hint: "`", icon: "`", group: "格式", keywords: ["inline", "icode", "行内代码"], run: mark("inlineCode", "行内代码") },
+    { id: "highlight", title: "高亮", hint: "==", icon: "▬", group: "格式", keywords: ["hl", "highlight", "gaoliang", "高亮", "标记"], run: customMark(highlight, "高亮") },
+
+    // ---------- 插入 ----------
+    {
+      id: "image",
+      title: "图片",
+      icon: "❒",
+      group: "插入",
+      keywords: ["img", "image", "tupian", "图片", "插图"],
+      run: (args) => {
+        const view = args.view;
+        view.dispatch(view.state.tr.delete(args.from, args.to));
+        // 插入位置：删除斜杠文本后的光标处
+        actionHandler?.("image", view, view.state.selection.from);
+      },
+    },
+    {
+      id: "link",
+      title: "链接",
+      hint: "[]()",
+      icon: "⛓",
+      group: "插入",
+      keywords: ["link", "lianjie", "链接", "超链接"],
+      run: (args) => {
+        // 先清掉斜杠文本，再弹出地址输入框
+        const view = args.view;
+        view.dispatch(view.state.tr.delete(args.from, args.to));
+        promptLinkUrl(view, "链接文本");
+      },
+    },
+    {
+      id: "date",
+      title: "日期",
+      icon: "▤",
+      group: "插入",
+      keywords: ["date", "riqi", "today", "日期", "今天"],
+      run: (args) => {
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const text = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+        runWithDelete(args.view, args.from, args.to, insertText(text));
+      },
+    },
+  ];
+
+  return commands;
+}
+
+/** 匹配打分：完全命中 > 前缀命中 > 包含 > 标题包含 */
+function matchScore(cmd: SlashCommand, query: string): number {
+  if (!query) return 1;
+  const q = query.toLowerCase();
+  for (const k of cmd.keywords) {
+    if (k.toLowerCase() === q) return 100;
+  }
+  for (const k of cmd.keywords) {
+    if (k.toLowerCase().startsWith(q)) return 80;
+  }
+  for (const k of cmd.keywords) {
+    if (k.toLowerCase().includes(q)) return 60;
+  }
+  if (cmd.title.toLowerCase().includes(q)) return 40;
+  return 0;
+}
+
+// ==================== 菜单 UI ====================
+
+let menuEl: HTMLDivElement | null = null;
+let currentView: EditorView | null = null;
+let cleanupFns: Array<() => void> = [];
+/** 当前过滤后的命令列表（与菜单项一一对应，供键盘索引） */
+let visibleCommands: SlashCommand[] = [];
+/** 命令表缓存（由 $prose 构建后写入） */
+let commandTable: SlashCommand[] = [];
+
+function closeMenu(): void {
+  cleanupFns.forEach((fn) => fn());
+  cleanupFns = [];
+  menuEl?.remove();
+  menuEl = null;
+  currentView = null;
+  visibleCommands = [];
+}
+
+/** 重新渲染菜单内容（过滤 + 高亮选中项） */
+function renderMenu(view: EditorView, query: string, index: number): void {
+  const menu = menuEl;
+  if (!menu) return;
+
+  const scored = commandTable
+    .map((cmd, order) => ({ cmd, order, score: matchScore(cmd, query) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => (b.score === a.score ? a.order - b.order : b.score - a.score))
+    .map((x) => x.cmd);
+
+  visibleCommands = scored;
+  const active = Math.max(0, Math.min(index, Math.max(0, scored.length - 1)));
+
+  menu.textContent = "";
+
+  if (scored.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "mt-slash-menu__empty";
+    empty.textContent = "无匹配命令";
+    menu.appendChild(empty);
+    return;
+  }
+
+  // 按分组顺序渲染
+  for (const group of GROUP_ORDER) {
+    const items = scored.filter((c) => c.group === group);
+    if (items.length === 0) continue;
+
+    const title = document.createElement("div");
+    title.className = "mt-slash-menu__group-title";
+    title.textContent = group;
+    menu.appendChild(title);
+
+    for (const cmd of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mt-slash-menu__item";
+      const globalIndex = scored.indexOf(cmd);
+      if (globalIndex === active) btn.classList.add("is-active");
+
+      const icon = document.createElement("span");
+      icon.className = "mt-slash-menu__icon";
+      if (cmd.id.startsWith("alert-")) icon.classList.add("is-alert");
+      icon.textContent = cmd.icon;
+      btn.appendChild(icon);
+
+      const text = document.createElement("span");
+      text.className = "mt-slash-menu__text";
+      text.textContent = cmd.title;
+      btn.appendChild(text);
+
+      if (cmd.hint) {
+        const hint = document.createElement("span");
+        hint.className = "mt-slash-menu__hint";
+        hint.textContent = cmd.hint;
+        btn.appendChild(hint);
+      }
+
+      btn.addEventListener("mousedown", (e) => e.preventDefault());
+      btn.addEventListener("click", () => {
+        execCommand(view, globalIndex);
+      });
+      menu.appendChild(btn);
+    }
+  }
+
+  // 选中项滚入可视区：必须只滚菜单自身，不能用 scrollIntoView。
+  // scrollIntoView 会连带滚动所有祖先滚动容器——包括 .milkdown（编辑器滚动区），
+  // 表现为「每输入一个字符编辑区就自动跳动」，干扰正常输入。
+  const activeEl = menu.querySelector<HTMLElement>(".mt-slash-menu__item.is-active");
+  if (activeEl) {
+    const itemTop = activeEl.offsetTop;
+    const itemBottom = itemTop + activeEl.offsetHeight;
+    if (itemTop < menu.scrollTop) {
+      menu.scrollTop = itemTop;
+    } else if (itemBottom > menu.scrollTop + menu.clientHeight) {
+      menu.scrollTop = itemBottom - menu.clientHeight;
+    }
+  }
+}
+
+/** 把菜单定位到 "/" 下方（视口坐标，贴边时收敛） */
+function positionMenu(view: EditorView, from: number): void {
+  const menu = menuEl;
+  if (!menu) return;
+  let left = 0;
+  let top = 0;
+  let anchorTop = 0;
+  try {
+    const coords = view.coordsAtPos(from);
+    left = coords.left;
+    top = coords.bottom + 6;
+    anchorTop = coords.top;
+  } catch {
+    return; // 位置失效（文档已变更）时放弃本次定位
+  }
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  const maxLeft = window.innerWidth - width - 8;
+  const maxTop = window.innerHeight - height - 8;
+  // 下方空间不足时翻到 "/" 上方
+  if (top > maxTop) top = Math.max(8, anchorTop - height - 6);
+  menu.style.left = `${Math.max(8, Math.min(left, Math.max(8, maxLeft)))}px`;
+  menu.style.top = `${Math.max(8, Math.min(top, Math.max(8, maxTop)))}px`;
+}
+
+function openMenu(view: EditorView, from: number): void {
+  closeMenu();
+  currentView = view;
+
+  const host = document.querySelector<HTMLElement>(".milkdown") ?? document.body;
+  const menu = document.createElement("div");
+  menu.className = "mt-slash-menu";
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  host.appendChild(menu);
+  menuEl = menu;
+
+  renderMenu(view, "", 0);
+  positionMenu(view, from);
+
+  const onDown = (e: MouseEvent) => {
+    if (!menuEl || !menuEl.contains(e.target as Node)) closeMenu();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      closeMenu();
+    }
+  };
+  const onScroll = () => {
+    if (menuEl && currentView) positionMenu(currentView, slashFrom);
+  };
+
+  document.addEventListener("mousedown", onDown, true);
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", onScroll);
+
+  cleanupFns = [
+    () => document.removeEventListener("mousedown", onDown, true),
+    () => document.removeEventListener("keydown", onKey, true),
+    () => window.removeEventListener("scroll", onScroll, true),
+    () => window.removeEventListener("resize", onScroll),
+  ];
+}
+
+// ==================== 插件状态 ====================
+
+interface SlashState {
+  active: boolean;
+  /** "/" 的文档位置 */
+  from: number;
+  /** "/" 之后输入的过滤词 */
+  query: string;
+  /** 当前高亮项索引 */
+  index: number;
+}
+
+const INACTIVE: SlashState = { active: false, from: 0, query: "", index: 0 };
+
+type SlashMeta =
+  | { type: "open"; from: number }
+  | { type: "close" }
+  | { type: "index"; index: number };
+
+const slashKey = new PluginKey<SlashState>("mtSlash");
+
+/** 从文档里读取 "/" 之后到光标的 query */
+function readQuery(state: EditorState, from: number): string | null {
+  const sel = state.selection;
+  if (!sel.empty) return null;
+  const head = sel.from;
+  if (head <= from) return null;
+  try {
+    const text = state.doc.textBetween(from, head, undefined, "￼");
+    // 必须是 "/" 开头、且后续无空白（输入空格即关闭菜单）
+    if (!/^\/[^\s]*$/.test(text)) return null;
+    if (text.length - 1 > MAX_QUERY) return null;
+    return text.slice(1);
+  } catch {
+    return null;
+  }
+}
+
+function execCommand(view: EditorView, index: number): void {
+  const st = slashKey.getState(view.state);
+  const cmd = visibleCommands[index] ?? commandTable[index];
+  const from = st?.from ?? slashFrom;
+  const to = view.state.selection.from;
+  closeMenu();
+  if (!cmd) return;
+  // 关闭后先清掉插件状态，避免命令执行期间状态残留
+  view.dispatch(view.state.tr.setMeta(slashKey, { type: "close" }));
+  cmd.run({ ctx: currentCtx, view, from, to });
+}
+
+// ==================== 插件本体 ====================
+
+export const slashMenuPlugin = $prose((ctx) => {
+  currentCtx = ctx;
+  commandTable = buildCommands(ctx);
+
+  return new Plugin<SlashState>({
+    key: slashKey,
+    state: {
+      init: () => INACTIVE,
+      apply(tr, prev, _old, newState) {
+        const meta = tr.getMeta(slashKey) as SlashMeta | undefined;
+        if (meta?.type === "close") return INACTIVE;
+        if (meta?.type === "open") {
+          slashFrom = meta.from;
+          return { active: true, from: meta.from, query: "", index: 0 };
+        }
+        if (meta?.type === "index") {
+          if (!prev.active) return prev;
+          return { ...prev, index: Math.max(0, meta.index) };
+        }
+        if (!prev.active) return prev;
+
+        // 文档变化后重新校验：query 失效或光标离开触发区则关闭
+        const query = readQuery(newState, prev.from);
+        if (query == null) return INACTIVE;
+        return { ...prev, query };
+      },
+    },
+    props: {
+      handleTextInput(view, from, to, text) {
+        // 刚退出（持续模式或按 Esc）：插入一个【不带 mark】的字符，打断继承。
+        // 否则加粗/斜体这类包含型 mark 在退出后仍会继续生效，等于关不掉。
+        if (skipMarkOnce && text.length === 1) {
+          skipMarkOnce = false;
+          exitedMarkTypes = [];
+          const tr = view.state.tr.replaceWith(
+            from,
+            to,
+            view.state.schema.text(text)
+          );
+          view.dispatch(tr.scrollIntoView());
+          return true;
+        }
+        // 持续 mark 模式：给输入的每个字符显式补 mark。
+        // 非包含型 mark（行内代码）在光标位于末尾时不会被继承，
+        // 只靠 toggleMark 的话输入第一个字符后就会掉出代码样式。
+        if (pendingMark && text.length === 1) {
+          const tr = view.state.tr.insertText(text, from, to);
+          // 复用同一个 mark 实例，链接的 href 等属性才不会丢
+          tr.addMark(from, from + text.length, pendingMark);
+          view.dispatch(tr.scrollIntoView());
+          return true;
+        }
+        // 光标已在该格式内部时，敲一个标记字符（= 或 ~）即表示结束：
+        // 不写入这个字符，并让后续输入脱离该 mark，源码保持干净的 ==文字==。
+        if (!pendingMark) {
+          const $from = view.state.selection.$from;
+          for (const pair of PAIR_MARKS) {
+            if (text !== pair.char) continue;
+            const markType = view.state.schema.marks[pair.name];
+            if (!markType || !markType.isInSet($from.marks())) break;
+            exitedMarkTypes = [markType];
+            skipMarkOnce = true;
+            hideContinuousHint();
+            return true; // 吞掉这个字符，不写进正文
+          }
+        }
+
+        // 只在段落开头触发：避免正文里 C:/Users、1/2 之类的误弹
+        if (text !== "/") return false;
+        // 中文输入法合成期间不上屏，不触发
+        if (imeComposing) return false;
+        const $from = view.state.selection.$from;
+        // 仅在普通段落内触发：代码块/标题里输入 "/" 不弹菜单（那里是纯文本输入语义）
+        if ($from.parent.type.name !== "paragraph") return false;
+        if ($from.parentOffset !== 0) return false;
+        // 让 "/" 正常插入，插入后再打开菜单（此时文档里已有 "/"）。
+        // 这里只派发 meta，菜单 DOM 交由下方 view.update 统一创建，避免重复创建。
+        setTimeout(() => {
+          const st = slashKey.getState(view.state);
+          if (st?.active) return;
+          slashFrom = from;
+          view.dispatch(view.state.tr.setMeta(slashKey, { type: "open", from }));
+        }, 0);
+        return false;
+      },
+      handleKeyDown(_view, event) {
+        const view = _view;
+        const st = slashKey.getState(view.state);
+        // 只有导航/确认键才退出；修饰键（切输入法用）和 Backspace/Delete 都不退出。
+        // 不带 pendingMark 条件：包含型 mark 没进持续模式，但同样要能收起提示气泡。
+        if (EXIT_KEYS.has(event.key)) {
+          clearPendingMark();
+        }
+        // Esc（菜单关闭时）：跳出光标所在的格式。
+        // 关键在于不挑来源——不管是斜杠命令、Ctrl+B 还是 **text** 输入规则
+        // 产生的格式，都能靠它退出来。之前只有斜杠命令进入的能退，
+        // 手动加的格式就成了"进了就出不来"。
+        if (event.key === "Escape" && !st?.active) {
+          const marks = view.state.selection.$from.marks();
+          if (marks.length > 0) {
+            exitedMarkTypes = marks.map((m) => m.type);
+            skipMarkOnce = true;
+          }
+        }
+        if (!st?.active) return false;
+
+        if (event.key === "Escape") {
+          view.dispatch(view.state.tr.setMeta(slashKey, { type: "close" }));
+          closeMenu();
+          return true;
+        }
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const delta = event.key === "ArrowDown" ? 1 : -1;
+          const total = visibleCommands.length;
+          if (total === 0) return true;
+          const next = (st.index + delta + total) % total;
+          // 只派发 meta，重绘交给 view.update（与 query 变化走同一条路径）
+          view.dispatch(view.state.tr.setMeta(slashKey, { type: "index", index: next }));
+          return true;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          if (visibleCommands.length === 0) return false;
+          execCommand(view, st.index);
+          return true;
+        }
+        return false;
+      },
+    },
+    view() {
+      return {
+        update(view, prevState) {
+          const st = slashKey.getState(view.state);
+          const prevSt = slashKey.getState(prevState);
+          if (!st?.active) {
+            if (prevSt?.active) closeMenu();
+            return;
+          }
+          if (!menuEl) {
+            openMenu(view, st.from);
+            return;
+          }
+          // query 变化（过滤结果变了）或选中项变化时重渲染
+          if (
+            !prevSt?.active ||
+            prevSt.query !== st.query ||
+            prevSt.index !== st.index
+          ) {
+            renderMenu(view, st.query, st.index);
+            positionMenu(view, st.from);
+          }
+        },
+        destroy() {
+          closeMenu();
+        },
+      };
+    },
+  });
+});

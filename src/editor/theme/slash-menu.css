@@ -1,0 +1,166 @@
+/*
+ * slash-menu.css — 斜杠命令菜单样式
+ *
+ * 视觉与 .mt-table-menu 保持一致：同样的圆角、阴影、--mt-* 主题变量，
+ * 菜单 DOM 挂在 .milkdown 容器内（见 slash-menu.ts），因此变量一定可取到。
+ */
+
+.mt-slash-menu {
+  position: fixed;
+  z-index: 2147483647;
+  width: 264px;
+  max-height: 336px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--mt-color-border-strong);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-elevated);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  font-size: 13px;
+  font-family: var(--mt-font-ui, inherit);
+  user-select: none;
+  /* 滚动条低调一些，避免喧宾夺主 */
+  scrollbar-width: thin;
+}
+
+/* 分组标题 */
+.mt-slash-menu__group-title {
+  padding: 6px 10px 2px;
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+
+/* 命令项 */
+.mt-slash-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mt-color-fg);
+  font-size: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mt-slash-menu__item:hover,
+.mt-slash-menu__item.is-active {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-primary);
+}
+
+/* 左侧图标：等宽居中，避免不同字符宽度导致文字错位 */
+.mt-slash-menu__icon {
+  flex: 0 0 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 5px;
+  background: var(--mt-color-bg-soft);
+  font-family: var(--mt-font-mono, monospace);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.mt-slash-menu__item:hover .mt-slash-menu__icon,
+.mt-slash-menu__item.is-active .mt-slash-menu__icon {
+  border-color: color-mix(in srgb, var(--mt-color-primary) 35%, transparent);
+  background: var(--mt-color-bg-elevated);
+}
+
+/* Alert 图标（实心字形偏重）降一档灰，避免比其它图标更黑；hover/选中回到主题色 */
+.mt-slash-menu__icon.is-alert {
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+}
+.mt-slash-menu__item:hover .mt-slash-menu__icon.is-alert,
+.mt-slash-menu__item.is-active .mt-slash-menu__icon.is-alert {
+  color: var(--mt-color-primary);
+}
+
+/* 命令名 */
+.mt-slash-menu__text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 右侧语法提示（H1、``` 等） */
+.mt-slash-menu__hint {
+  flex: 0 0 auto;
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  font-family: var(--mt-font-mono, monospace);
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* 持续输入模式提示气泡：告知用户正处在「行内代码/行内公式输入中」及退出方式。
+   必须 pointer-events: none，否则会挡住光标区域的鼠标操作。 */
+.mt-slash-hint {
+  position: fixed;
+  z-index: 2147483646;
+  padding: 4px 10px;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 6px;
+  background: var(--mt-color-bg-elevated);
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
+  font-size: 12px;
+  font-family: var(--mt-font-ui, inherit);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 链接地址输入框（/链接 命令弹出） */
+.mt-slash-linkbox {
+  position: fixed;
+  z-index: 2147483646;
+  padding: 8px;
+  border: 1px solid var(--mt-color-border-strong);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-elevated);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  font-family: var(--mt-font-ui, inherit);
+}
+
+.mt-slash-linkbox__input {
+  width: 268px;
+  padding: 6px 8px;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 6px;
+  background: var(--mt-color-bg);
+  color: var(--mt-color-fg);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.mt-slash-linkbox__input:focus {
+  border-color: var(--mt-color-primary);
+}
+
+.mt-slash-linkbox__tip {
+  margin-top: 5px;
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* 无匹配结果 */
+.mt-slash-menu__empty {
+  padding: 12px 10px;
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  font-size: 12px;
+  text-align: center;
+  opacity: 0.7;
+}

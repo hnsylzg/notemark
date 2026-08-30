@@ -28,7 +28,7 @@ const IFRAME_DENIED_PERMISSIONS = new Set([
 ]);
 
 /** 白名单过滤 HTML：移除危险标签、事件属性、脚本相关属性 */
-function sanitizeHtml(html: string): string {
+export function sanitizeHtml(html: string): string {
   const template = document.createElement("template");
   template.innerHTML = html;
   const content = template.content;
@@ -95,6 +95,102 @@ function sanitizeHtml(html: string): string {
       wrap.className = "md-iframe-wrap";
       el.replaceWith(wrap);
       wrap.appendChild(el);
+    }
+  }
+  return template.innerHTML;
+}
+
+/** 块级 HTML 允许的常见标签（行内 + 块级 / 结构标签） */
+const SAFE_BLOCK_TAGS = new Set([
+  "a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "data", "del", "dfn",
+  "em", "i", "ins", "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp",
+  "small", "span", "strong", "sub", "sup", "time", "u", "var", "wbr",
+  "div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
+  "header", "footer", "nav", "aside", "main", "ul", "ol", "li", "table",
+  "thead", "tbody", "tfoot", "tr", "td", "th", "blockquote", "pre", "hr",
+  "figure", "figcaption", "picture", "img", "details", "summary", "dl",
+  "dt", "dd", "address", "iframe", "button",
+]);
+
+/** 块级 HTML 允许保留的属性（其余危险属性一律移除） */
+const SAFE_BLOCK_ATTRS = new Set([
+  "class", "id", "title", "width", "height", "alt", "colspan", "rowspan",
+  "target", "rel", "style", "loading",
+]);
+
+/**
+ * 块级 HTML 块的 sanitize：比行内白名单宽松，允许 div / p / h1 / table / img
+ * 等常见块级标签及 class/style 等属性；仍移除 script/style/表单/SVG 等危险容器、
+ * 所有 on* 事件属性，并对 a/img/iframe 的 src/href 做协议校验。
+ */
+export function sanitizeHtmlBlock(html: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const content = template.content;
+
+  // 移除危险容器（button 作为静态展示保留，交由下方白名单处理）
+  for (const el of content.querySelectorAll(
+    "script,style,object,embed,link,meta,form,input,select,textarea,svg,math,video,audio"
+  )) {
+    el.remove();
+  }
+
+  const elements = Array.from(content.querySelectorAll("*"));
+  for (let i = elements.length - 1; i >= 0; i -= 1) {
+    const el = elements[i] as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === "iframe") {
+      const src = el.getAttribute("src") ?? "";
+      if (!IFRAME_SRC_RE.test(src)) {
+        el.remove();
+        continue;
+      }
+      el.removeAttribute("name");
+      const allow = el.getAttribute("allow") ?? "";
+      if (allow) {
+        const parts = allow
+          .split(";")
+          .map((p) => p.trim())
+          .filter(Boolean);
+        el.setAttribute(
+          "allow",
+          parts
+            .filter((p) => !IFRAME_DENIED_PERMISSIONS.has(p.split(/\s+/)[0].toLowerCase()))
+            .join("; ")
+        );
+      }
+      el.setAttribute("loading", "lazy");
+      const wrap = document.createElement("div");
+      wrap.className = "md-iframe-wrap";
+      el.replaceWith(wrap);
+      wrap.appendChild(el);
+      continue;
+    }
+
+    if (!SAFE_BLOCK_TAGS.has(tag)) {
+      el.replaceWith(document.createTextNode(el.textContent ?? ""));
+      continue;
+    }
+
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (
+        name.startsWith("on") ||
+        !SAFE_BLOCK_ATTRS.has(name) ||
+        ["srcdoc", "srcset", "formaction"].includes(name)
+      ) {
+        el.removeAttribute(attr.name);
+      }
+    }
+
+    if (tag === "a") {
+      const href = el.getAttribute("href") ?? "";
+      if (!/^(https?:|mailto:|#|\.{0,2}\/)/i.test(href)) el.removeAttribute("href");
+    }
+    if (tag === "img") {
+      const src = el.getAttribute("src") ?? "";
+      if (!/^(https?:|data:image\/)/i.test(src)) el.removeAttribute("src");
     }
   }
   return template.innerHTML;

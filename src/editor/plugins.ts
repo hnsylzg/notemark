@@ -25,11 +25,12 @@ import {
 } from "@milkdown/plugin-math";
 import { diagram } from "@milkdown/plugin-diagram";
 import { diagramView } from "./diagram-view";
-import { mathBlockPlugins } from "./math-view";
+import { mathBlockPlugins, mathInlineView } from "./math-view";
 import { alertPlugins } from "./alert";
 import { highlightPlugins } from "./highlight";
 import { htmlView } from "./html-view";
 import { htmlMergePlugins } from "./html-merge";
+import { htmlBlockPlugins } from "./html-block";
 import { imageView } from "./image-view";
 import { listItemPlugins } from "./list-item";
 import { frontmatterPlugins } from "./frontmatter";
@@ -40,6 +41,7 @@ import { codeBlockComponent } from "@milkdown/components/code-block";
 import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
+import { slashMenuPlugin } from "./slash-menu";
 import { findReplacePlugin } from "./find-replace";
 import { inlineMarkEscapePlugin } from "./inline-mark-escape";
 import { imagePastePlugin } from "./image-paste";
@@ -57,6 +59,7 @@ const gapcursorPlugin = $prose(() => gapCursor());
 export function getEditorPlugins(): MilkdownPlugin[] {
   return [
     ...commonmark,
+    // 删除线（~ / ~~）保持 @milkdown/preset-gfm 的默认规则，不做任何改动
     ...gfm,
     ...history,
     // 只取 @milkdown/plugin-math 的 inline 部分（remark-math + katex 配置 + 行内公式 schema/输入规则），
@@ -65,6 +68,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     katexOptionsCtx,
     ...mathInlineSchema,
     mathInlineInputRule,
+    mathInlineView,
     ...mathBlockPlugins,
     ...diagram,
     diagramView,
@@ -86,9 +90,13 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     htmlView,
     imageView,
     ...htmlMergePlugins,
+    ...htmlBlockPlugins,
     ...listItemPlugins,
     ...frontmatterPlugins,
     ...tocPlugins,
     ...codeBlockComponent,
+    // 斜杠命令菜单放最后：它依赖上面所有自定义节点（math/alert/toc/yaml 等）
+    // 的 schema，注册顺序靠后可确保类型都能取到。
+    slashMenuPlugin,
   ];
 }

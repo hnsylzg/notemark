@@ -20,6 +20,7 @@ import {
 import type { HeadingItem } from "@/editor/index";
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { importImagePaths } from "@/editor/image-files";
+import { setSlashActionHandler } from "@/editor/slash-menu";
 import { openFile, saveFile, newFile } from "@/editor/fileOps";
 import {
   clearRecentFiles,
@@ -1820,6 +1821,26 @@ onMounted(() => {
     if (!editorHost.value) return;
 
     editorInstance = createEditor(editorHost.value, INITIAL_CONTENT, onEditorChange);
+
+    // 斜杠菜单的「图片」命令：插件不直接调 Tauri，由这里开系统文件对话框，
+    // 选完路径后交回 importImagePaths 落盘并插入文档。
+    setSlashActionHandler(async (action, _view, pos) => {
+      if (action !== "image" || !editorInstance) return;
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: true,
+        filters: [
+          { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] },
+        ],
+      });
+      if (!selected) return; // 用户取消
+      const paths = (Array.isArray(selected) ? selected : [selected]).filter((p) =>
+        DROP_IMAGE_EXT.test(p)
+      );
+      if (paths.length === 0) return;
+      importImagePaths(editorInstance, paths, pos);
+    });
+
     // 真正创建编辑器（视图在这里挂载）
     editorInstance.create().then(() => {
       // 初始内容不算"未保存修改"：create 完成后建立内容快照
