@@ -30,6 +30,117 @@
 @import "./slash-menu.css";
 
 /* ============================================================
+ * 代码块等宽字体（必须未分层）
+ *
+ * CodeMirror 6 会把它的默认主题以「未分层」方式动态注入 <head>。
+ * 而 code.css 里的 .cm-editor 字体规则写在 @layer mt-theme 内、且用
+ * :where() 零特异性，未分层规则永远压过分层规则 —— 导致 CM 自己的字体
+ * 把本主题的等宽字体覆盖，代码块回退成比例字体（看起来「不等宽」）。
+ * 这里把等宽字体规则提到未分层区、并覆盖 CM 实际承载字体的
+ * .cm-scroller / .cm-content，确保稳定生效。
+ * ============================================================ */
+.milkdown .editor .milkdown-code-block .cm-editor,
+.milkdown .editor .milkdown-code-block .cm-editor .cm-scroller,
+.milkdown .editor .milkdown-code-block .cm-editor .cm-content {
+  font-family: var(--mt-font-mono, Consolas, "Liberation Mono", monospace);
+}
+
+/* ============================================================
+ * 正文行距基线——必须未分层
+ *
+ * 默认主题在 base.css(@layer mt-theme) 内用 :where() 给 .milkdown 设了
+ * line-height: var(--mt-line-height-base)（1.6，对齐 Typora/GitHub）。
+ * 外置主题以未分层 <style> 注入 <head> 末尾，若其写了 body/html 级的
+ * line-height（Typora 主题很常见），未分层会压过 @layer，而 .milkdown
+ * 又靠继承 body，于是整体行距被顶大。这里把行距基线提到未分层、直接
+ * 作用于 .milkdown，挡住这类通用重置；主题若显式写
+ * .milkdown { line-height } 仍可按「未分层 + 后出现」胜出，不被锁死。
+ * ============================================================ */
+.milkdown {
+  line-height: var(--mt-line-height-base, 1.6);
+}
+
+/* ============================================================
+ * 列表缩进结构——必须未分层
+ *
+ * 默认主题在 base.css(@layer mt-theme) 内给 ul/ol 设了 padding-left:0.5em、
+ * 给 .list-item 设了 padding-left:1.4em（marker 列宽）。外置主题以未分层
+ * <style> 注入 <head> 末尾，其 ul/ol/li 重置会压过 @layer，把列表整体顶得更靠右。
+ * 这里把缩进结构提到未分层、并用高于通用 ul/ol/li 的选择器确保通用重置盖不过；
+ * 主题若显式写 .list-item / ul { padding-left } 仍可按「未分层 + 后出现」胜出。
+ * ============================================================ */
+.milkdown .editor ul,
+.milkdown .editor ol {
+  padding-left: 0.5em;
+  margin: 0.8em 0;
+}
+.milkdown .editor .milkdown-list-item-block > .list-item {
+  position: relative;
+  padding-left: 1.4em; /* marker 列宽（含与文字的间距） */
+  list-style: none; /* 关闭原生 <li> marker，避免与 .label-wrapper 重复 */
+}
+
+/* ============================================================
+ * 标题行距基线——必须未分层
+ *
+ * 默认主题在 base.css(@layer mt-theme) 内用 :where() 给 h1–h6 统一设了
+ * line-height: 1.3（紧凑，对齐 Typora/GitHub）。外置主题以未分层 <style>
+ * 注入 <head> 末尾，其 h1..h6 重置（如 line-height: 1.6+）会压过 @layer，
+ * 把标题行距顶宽。这里把标题行距提到未分层、直接作用于 .milkdown .editor h1–h6，
+ * 挡掉这类重置；主题若显式写 h1 { line-height } 仍可按「未分层 + 后出现」胜出。
+ * 仅锁行距，字号/颜色/字重仍留给主题覆盖。
+ * ============================================================ */
+.milkdown .editor h1,
+.milkdown .editor h2,
+.milkdown .editor h3,
+.milkdown .editor h4,
+.milkdown .editor h5,
+.milkdown .editor h6 {
+  line-height: 1.3;
+}
+
+/* ============================================================
+ * 布局/结构基线（引用块 / 警告框 / 表格 / 分割线 / 段落 /
+ * 标题 / 代码块外框）——已解锁，交由主题控制
+ *
+ * 这些元素的默认外观由 base.css @layer mt-theme 的 :where() 规则提供，
+ * 外部主题以未分层 <style> 注入 <head> 末尾即可整体覆盖（缩进、边框、
+ * 圆角、间距等），不再于 index.css 用未分层规则预锁。
+ * ============================================================ */
+
+/* Open Sans —— 对齐 Typora GitHub 主题字体。
+   woff2 取自 Typora 安装目录，已复制到 public/fonts/。
+   仅含拉丁字形，中文按 --mt-font-sans 回退到 PingFang SC / 微软雅黑。 */
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/open-sans-regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/open-sans-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/open-sans-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/open-sans-700italic.woff2") format("woff2");
+}
+
+/* ============================================================
  * 全局重置与布局（换肤核心层之后生效，覆盖任何默认边框/外框）
  * 目标：移除 html/body/#app 等外层可能的黑框，让编辑区占满窗口。
  * ============================================================ */
@@ -161,3 +272,28 @@ body,
 .milkdown .editor dl[data-type="footnote_definition"] dd p {
   margin: 0;
 }
+
+/* ============================================================
+ * 目录（TOC）结构规则——必须未分层
+ *
+ * DOM：<ul class="mt-toc-list"><li class="mt-toc-item mt-toc-level-N">
+ * 默认主题在 @layer mt-theme 内用 :where() 写了 .mt-toc-list 的
+ * padding:0 与各层级 padding-left。但外置主题以「未分层」方式注入到
+ * <head> 末尾，按 CSS 层叠规则未分层永远压过 @layer，哪怕只是通用
+ * ul/li 重置（如 ul { padding-left: 2em }）也会盖掉这两处，
+ * 导致整个目录左移、一级标题也跟着缩进。
+ * 这里把结构/缩进规则提到未分层区，且用 .mt-toc-* 选择器（特异性
+ * 高于通用 ul/li）确保通用列表重置盖不过它；颜色/字号等仍留在
+ * base.css 分层区，允许外置主题有意覆盖。
+ * ============================================================ */
+.milkdown .editor .mt-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.milkdown .editor .mt-toc-level-1 { padding-left: 0; }
+.milkdown .editor .mt-toc-level-2 { padding-left: 1em; }
+.milkdown .editor .mt-toc-level-3 { padding-left: 2em; }
+.milkdown .editor .mt-toc-level-4 { padding-left: 3em; }
+.milkdown .editor .mt-toc-level-5 { padding-left: 4em; }
+.milkdown .editor .mt-toc-level-6 { padding-left: 5em; }

@@ -161,6 +161,12 @@
   overflow: hidden; /* 圆角裁剪：内容（如行尾滚动条）不超出容器圆角 */
   border-radius: 0 0 6px 6px;
 }
+/* 代码块预览态（非编辑态渲染的 <pre>）也要等宽，否则回退比例字体 */
+:where(.milkdown .editor) .milkdown-code-block pre {
+  font-family: var(--mt-font-mono);
+  font-size: 14px;
+  line-height: 1.6;
+}
 :where(.milkdown .editor) .cm-editor {
   background: transparent;
   color: var(--mt-code-fg);
