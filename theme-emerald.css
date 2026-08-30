@@ -1,6 +1,6 @@
 /*
  * ═══════════════════════════════════════════════════════════════
- *  NoteMark 全元素主题 · Rose（玫瑰色系）
+ *  NoteMark 全元素主题 · Emerald（翡翠绿色系）
  * ═══════════════════════════════════════════════════════════════
  *
  *  通过「主题 → 导入」加载本文件即可整体换肤。
@@ -34,19 +34,19 @@
  * ═══════════════════════════════════════════════════════════════ */
 .milkdown {
   /* ---- 基础色彩（亮色） ---- */
-  --mt-color-fg: #292524;              /* 正文 */
-  --mt-color-fg-soft: #57534e;         /* 次级文字 */
-  --mt-color-fg-muted: #a8a29e;        /* 弱化文字 */
+  --mt-color-fg: #2b332d;              /* 正文（偏冷深绿灰） */
+  --mt-color-fg-soft: #56615a;         /* 次级文字 */
+  --mt-color-fg-muted: #9aa39d;        /* 弱化文字 */
   --mt-color-bg: #ffffff;              /* 画布 */
-  --mt-color-bg-soft: #faf7f8;         /* 浅底（引用/表格/高亮底） */
+  --mt-color-bg-soft: #f2f7f3;         /* 浅底（引用/表格/高亮底） */
   --mt-color-bg-elevated: #ffffff;     /* 浮层（弹窗/选择器） */
 
-  --mt-color-primary: #e11d48;         /* 主色（玫瑰红） */
-  --mt-color-primary-soft: #fce7ec;    /* 主色浅底 */
-  --mt-color-border: #e7e5e4;          /* 细边框 */
-  --mt-color-border-strong: #d6d3d1;   /* 粗边框 */
-  --mt-color-selection: rgba(225, 29, 72, 0.14); /* 选区 */
-  --mt-color-link: #be185d;            /* 链接（深玫瑰红） */
+  --mt-color-primary: #059669;         /* 主色（翡翠绿） */
+  --mt-color-primary-soft: #d1fae5;    /* 主色浅底 */
+  --mt-color-border: #e2e8e4;          /* 细边框 */
+  --mt-color-border-strong: #c3d0c7;   /* 粗边框 */
+  --mt-color-selection: rgba(5, 150, 105, 0.14); /* 选区 */
+  --mt-color-link: #047857;            /* 链接（深翡翠绿） */
 
   /* ---- 排版 ---- */
   --mt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -60,26 +60,26 @@
   --mt-content-padding: 48px;
 
   /* ---- 代码块 ---- */
-  --mt-code-bg: #fbf7f9;               /* 代码块底色 */
-  --mt-code-fg: #33312f;               /* 代码文字 */
-  --mt-code-border: #f0e6ea;           /* 代码块边框 */
+  --mt-code-bg: #f4f9f6;               /* 代码块底色 */
+  --mt-code-fg: #2f3a33;               /* 代码文字 */
+  --mt-code-border: #e4ece7;           /* 代码块边框 */
   --mt-code-font-size: 14px;
   --mt-code-line-height: 1.6;
-  --mt-code-gutter-fg: #c0a8b3;        /* 行号颜色 */
-  --mt-code-gutter-bg: #f7eff3;        /* 行号区底色 */
+  --mt-code-gutter-fg: #a3b5aa;        /* 行号颜色 */
+  --mt-code-gutter-bg: #eaf2ed;        /* 行号区底色 */
 
   /* ---- 代码语法高亮 token（亮色） ---- */
-  --mt-token-keyword: #db2777;         /* 关键字 */
-  --mt-token-string: #059669;          /* 字符串 */
-  --mt-token-number: #d97706;          /* 数字 */
-  --mt-token-comment: #a8a29e;         /* 注释 */
-  --mt-token-function: #7c3aed;        /* 函数名 */
-  --mt-token-operator: #db2777;        /* 运算符 */
-  --mt-token-variable: #b45309;        /* 变量 */
-  --mt-token-type: #0d9488;            /* 类型 */
+  --mt-token-keyword: #0f766e;         /* 关键字（深青绿） */
+  --mt-token-string: #15803d;          /* 字符串（深绿） */
+  --mt-token-number: #0369a1;          /* 数字（青蓝） */
+  --mt-token-comment: #94a39a;         /* 注释 */
+  --mt-token-function: #6d28d9;        /* 函数名（紫） */
+  --mt-token-operator: #0f766e;        /* 运算符 */
+  --mt-token-variable: #b45309;        /* 变量（琥珀） */
+  --mt-token-type: #047857;            /* 类型（深翡翠绿） */
 
   /* ---- Mermaid 图表 ---- */
-  --mt-mermaid-fg: #292524;
+  --mt-mermaid-fg: #2b332d;
 
   /* ---- Alert 引用块（> [!NOTE] 等，GitHub 风格：fg 图标/标题，bg 背景，border 左竖线） ---- */
   --mt-alert-note-fg: #0969da;
@@ -99,7 +99,7 @@
   --mt-alert-caution-border: #ff8182;
 
   /* ---- 阴影 / 圆角 ---- */
-  --mt-radius: 8px;
+  --mt-radius: 6px;
   --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 
   /* ---- 语义别名 ---- */
@@ -109,36 +109,36 @@
 
 /* 暗色：深色开关只设置 <html data-theme="dark">，选择器须与内置 dark.css 一致 */
 .milkdown:where(html[data-theme="dark"] *) {
-  --mt-color-fg: #e7e5e4;
-  --mt-color-fg-soft: #b0aaa4;
-  --mt-color-fg-muted: #77716c;
-  --mt-color-bg: #19181c;
-  --mt-color-bg-soft: #232127;
-  --mt-color-bg-elevated: #2a282f;
+  --mt-color-fg: #e5eae6;
+  --mt-color-fg-soft: #a9b5ad;
+  --mt-color-fg-muted: #6f7d74;
+  --mt-color-bg: #131a16;
+  --mt-color-bg-soft: #1b241e;
+  --mt-color-bg-elevated: #202b24;
 
-  --mt-color-primary: #f472b6;         /* 主色（亮玫红） */
-  --mt-color-primary-soft: #3b2433;
-  --mt-color-border: #34313a;
-  --mt-color-border-strong: #46424d;
-  --mt-color-selection: rgba(244, 114, 182, 0.22);
-  --mt-color-link: #f59cc2;
+  --mt-color-primary: #34d399;         /* 主色（亮翡翠绿） */
+  --mt-color-primary-soft: #1e3328;
+  --mt-color-border: #2a352e;
+  --mt-color-border-strong: #3a483f;
+  --mt-color-selection: rgba(52, 211, 153, 0.22);
+  --mt-color-link: #6ee7b7;
 
-  --mt-code-bg: #121116;               /* 代码块底色 */
-  --mt-code-fg: #d6d3d1;
-  --mt-code-border: #2c2933;
-  --mt-code-gutter-fg: #6a5f68;        /* 行号颜色 */
-  --mt-code-gutter-bg: #17161b;        /* 行号区底色 */
+  --mt-code-bg: #101612;               /* 代码块底色 */
+  --mt-code-fg: #cdd6d0;
+  --mt-code-border: #26312a;
+  --mt-code-gutter-fg: #5d6b62;        /* 行号颜色 */
+  --mt-code-gutter-bg: #141b17;        /* 行号区底色 */
 
-  --mt-token-keyword: #f472b6;
-  --mt-token-string: #6ee7b7;
+  --mt-token-keyword: #34d399;
+  --mt-token-string: #86efac;
   --mt-token-number: #fbbf24;
-  --mt-token-comment: #77716c;
+  --mt-token-comment: #66736b;
   --mt-token-function: #c4b5fd;
-  --mt-token-operator: #f472b6;
+  --mt-token-operator: #34d399;
   --mt-token-variable: #fdba74;
   --mt-token-type: #5eead4;
 
-  --mt-mermaid-fg: #e7e5e4;
+  --mt-mermaid-fg: #e5eae6;
 
   /* ---- Alert 引用块（暗色） ---- */
   --mt-alert-note-fg: #6cb0ff;
@@ -194,20 +194,21 @@
 .milkdown h6 {
   color: var(--mt-text);
   line-height: 1.3;
-  margin: 1.2em 0 0.5em;
-  font-weight: 700;
+  /* 字号 / 字重 / 边距全部沿用内置 base.css，此处只改颜色：
+     字重 h1 700、h2–h6 600；margin h1 0 0 16px / h2 0 0 12px /
+     h3 0 0 10px / h4–h6 0 0 8px。本主题不再覆盖，避免与内置错位 */
 }
 
 .milkdown h1 {
   font-size: 1.75em;
-  padding-bottom: 0.25em;
+  padding-bottom: 0.3em;
 }
 .milkdown h2 {
-  font-size: 1.4375em;
+  font-size: 1.375em;
   color: var(--mt-color-primary);
 }
 .milkdown h3 {
-  font-size: 1.1875em;
+  font-size: 1.125em;
 }
 .milkdown h4 {
   font-size: 1em;
@@ -237,9 +238,8 @@
 .milkdown a:hover {
   border-bottom-color: currentColor;
 }
-
 .milkdown strong {
-  font-weight: 700;
+  font-weight: 600;
   color: var(--mt-text);
 }
 .milkdown em {
@@ -252,7 +252,7 @@
 .milkdown mark {
   background: var(--mt-color-primary-soft);
   color: var(--mt-text);
-  padding: 0.05em 0.25em;
+  padding: 0.05em 0.2em;
   border-radius: 3px;
 }
 
@@ -261,9 +261,8 @@
  * ═══════════════════════════════════════════════════════════════ */
 .milkdown hr {
   border: none;
-  border-top: 2px solid var(--mt-color-primary-soft);
+  border-top: 1px solid var(--mt-color-primary-soft);
   margin: 1em 0;
-  width: 100%;
 }
 .milkdown img {
   max-width: 100%;
@@ -275,17 +274,20 @@
  * 6. 列表（无序 / 有序）
  *    列表项由 list-item-block NodeView 渲染，原生 ::marker 已禁用，
  *    marker 由 .label-wrapper 输出，这里覆盖其颜色。
+ *    缩进 / 间距沿用内置 base.css：ul,ol padding-left 0.5em + margin
+ *    0.8em 0，li margin 0（marker 列宽由内置 .list-item 的
+ *    padding-left: 1.4em 提供，此处不再叠加缩进）
  * ═══════════════════════════════════════════════════════════════ */
 .milkdown ul,
 .milkdown ol {
-  padding-left: 1.5em;
-  margin: 8px 0;
+  padding-left: 0.5em;
+  margin: 0.8em 0;
 }
 .milkdown li {
-  margin: 4px 0;
+  margin: 0;
 }
 .milkdown li > p {
-  margin: 4px 0;
+  margin: 0;
 }
 /* 列表标记统一主题色（无序圆点 / 有序数字 / 勾选框） */
 .milkdown .milkdown-list-item-block .label-wrapper .label {
@@ -312,11 +314,8 @@
 .milkdown blockquote {
   padding: 0.5rem 1rem;
   border-left: 4px solid var(--mt-color-primary);
-  background-color: #fdf3f6;            /* 比 primary-soft 浅一档的粉 */
+  background-color: var(--mt-alert-tip-bg); /* 参照 alert 的浓淡（明暗自适应） */
   border-radius: 6px;
-}
-.milkdown:where(html[data-theme="dark"] *) blockquote {
-  background-color: #38262f;            /* 暗色下比 primary-soft 浅一档 */
 }
 
 .milkdown .md-alert {
@@ -332,7 +331,7 @@
 .milkdown .md-alert-note       { border-color: var(--mt-alert-note-border);      background: var(--mt-alert-note-bg); }
 
 .milkdown .md-alert p {
-  margin: 0.1rem 0;
+  margin: 4px 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -374,7 +373,7 @@
 .milkdown :not(pre) > code {
   font-family: var(--mt-font-mono);
   font-size: 0.88em;
-  background: var(--mt-color-primary-soft);
+  background: var(--mt-code-bg);          /* 与代码块底色一致（明暗自适应） */
   color: var(--mt-color-primary);
   padding: 0.15em 0.4em;
   border-radius: 4px;
@@ -495,6 +494,7 @@
   cursor: default;
   color: var(--mt-code-gutter-fg);
   text-align: center;
+  padding: 16px 10px;
 }
 
 /* CM6 容器 */

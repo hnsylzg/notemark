@@ -90,10 +90,16 @@
 
 :where(.milkdown .editor) a {
   color: var(--mt-color-link);
-  text-decoration: none;
+  /* 常态带一条淡下划线：链接不悬停时也要能一眼认出是链接，
+     否则在正文里跟普通文字毫无区别（悬停才出现下划线等于没有提示）。 */
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--mt-color-link) 40%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 :where(.milkdown .editor) a:hover {
-  text-decoration: underline;
+  text-decoration-color: var(--mt-color-link);
+  text-decoration-thickness: 2px;
 }
 
 :where(.milkdown .editor) strong {

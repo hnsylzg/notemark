@@ -28,8 +28,9 @@
   /* ============ 排版 ============ */
   --mt-font-sans: "Open Sans", "Clear Sans", "Helvetica Neue", Helvetica, Arial,
     "PingFang SC", "Microsoft YaHei", "Segoe UI Emoji", sans-serif;
-  --mt-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono",
-    Menlo, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --mt-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Cascadia Code",
+    "Liberation Mono", Menlo, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC",
+    monospace;
 
   --mt-font-size-base: 15px;
   --mt-line-height-base: 1.6;
