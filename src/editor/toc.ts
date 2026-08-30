@@ -10,7 +10,8 @@
  *   每次 ProseMirror 状态更新时重渲染，标题增删/改名会自动同步。
  * - $inputRule：输入 [toc] 后即时插入 toc 节点；
  * - 序列化：toc 节点输出回 "[toc]"，外部编辑器（Typora/Obsidian）兼容；
- * - 标题锚点：给 heading 注入稳定 id（slug），点击目录项平滑滚动定位。
+ * - 目录点击跳转走 view.nodeDOM(pos) + scrollIntoView，不依赖 heading 的 id 锚点
+ *   （编辑期绝不改写 heading DOM，避免惊动 ProseMirror 的 DOM 观察器造成死循环卡死）。
  */
 import type { MilkdownPlugin } from "@milkdown/ctx";
 import type { MarkdownNode, RemarkPluginRaw } from "@milkdown/transformer";
@@ -124,20 +125,29 @@ function collectHeadings(view: import("@milkdown/kit/prose/view").EditorView) {
     usedSlugs.set(slug, seen + 1);
     if (seen > 0) slug = `${slug}-${seen}`;
     counter += 1;
-    // 给 heading DOM 注入 id（供滚动定位，也供导出 HTML 锚点）
-    const dom = view.nodeDOM(pos) as HTMLElement | null;
-    if (dom && dom.getAttribute("id") !== slug) dom.setAttribute("id", slug);
+    // 注意：编辑期不要改写 heading 的 DOM（不再注入 id）。
+    // 一旦 [toc] 存在，任何内容变化都会刷新目录；若在此处 setAttribute 改写
+    // heading DOM，会惊动 ProseMirror 的 DOM 观察器 → 派发事务 → 又刷新目录 →
+    // 无限循环、主线程阻塞、界面卡死（输入 / 等任意文档改动都会触发）。
+    // 点击跳转改用 view.nodeDOM(pos) + scrollIntoView，无需 id。
     headings.push({ level: node.attrs.level, text, pos: pos + 1 });
     return false;
   });
   return headings;
 }
 
+// 重入保护：渲染期间若再次被触发（如目录刷新又惊动 DOM 观察器），直接跳过，
+// 杜绝任何形式的目录刷新递归，作为 id 改写移除后的第二道防线。
+let tocRendering = false;
+
 /** 渲染目录到指定 div */
 function renderToc(
   dom: HTMLElement,
   view: import("@milkdown/kit/prose/view").EditorView,
 ) {
+  if (tocRendering) return;
+  tocRendering = true;
+  try {
   const headings = collectHeadings(view);
   dom.innerHTML = "";
 
@@ -176,6 +186,9 @@ function renderToc(
     list.appendChild(li);
   }
   dom.appendChild(list);
+  } finally {
+    tocRendering = false;
+  }
 }
 
 export const tocView = $view(tocSchema.node, () => {
