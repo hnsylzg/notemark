@@ -1,0 +1,26 @@
+/*
+ * find.css — 查找匹配高亮（必须未分层）
+ *
+ * 由 find-replace.ts 的 ProseMirror 插件通过 Decoration.inline 生成：
+ *   非当前匹配 → .mt-find-match
+ *   当前匹配   → .mt-find-match.mt-find-match--current
+ *
+ * 为什么未分层：高亮属于「功能反馈」而非排版风格，
+ * 用户导入的外置主题是未分层样式，会无条件压过 @layer mt-theme 内的规则；
+ * 放在未分层区才能靠正常特异性竞争，保证任何主题下查找结果都看得见。
+ */
+
+.milkdown .mt-find-match {
+  background: var(--mt-find-bg, rgba(255, 176, 0, 0.38));
+  border-radius: 2px;
+  /* 不继承主题的文字色：高亮块自带底色，文字色需与底色配对 */
+  color: inherit;
+}
+
+.milkdown .mt-find-match--current {
+  background: var(--mt-find-bg-current, #ffb300);
+  color: var(--mt-find-fg-current, #1a1a1a);
+  border-radius: 2px;
+  /* 用 outline 而非 border：不占布局空间，不会让高亮时文字发生位移 */
+  outline: 1px solid var(--mt-find-border-current, #e65100);
+}

@@ -88,12 +88,16 @@ import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 // 因此用 @ts-ignore 抑制类型检查，运行时完全可用。
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore editorViewCtx 在运行时由 @milkdown/kit/core 导出（d.ts 遗漏声明）
-import { serializerCtx, parserCtx, editorViewCtx } from "@milkdown/kit/core";
+import { serializerCtx, parserCtx, editorViewCtx, remarkCtx } from "@milkdown/kit/core";
 // remarkStringifyOptionsCtx：Milkdown 序列化 Markdown 时传给 remark-stringify 的
 // 选项 slice，可在 config 阶段改写（init 在 ConfigReady 后才读取它创建 remark 实例）。
 import { remarkStringifyOptionsCtx } from "@milkdown/kit/core";
 // 仅用于类型标注（type-only，不参与打包）
 import type { Handle } from "mdast-util-to-markdown";
+import type { Node as PMNode } from "@milkdown/kit/prose/model";
+import type { EditorView } from "@milkdown/kit/prose/view";
+/** editor.action 回调注入的上下文类型（由 Editor API 推导，不依赖具体导出名） */
+type EditorCtx = Parameters<Parameters<Editor["action"]>[0]>[0];
 import { TextSelection } from "@milkdown/kit/prose/state";
 import "@milkdown/kit/prose/view/style/prosemirror.css";
 
@@ -113,7 +117,11 @@ export function setMarkdown(editor: Editor, markdown: string): void {
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     const parser = ctx.get(parserCtx);
-    const doc = parser(markdown);
+    // 统一行尾为 LF：CRLF 源码解析后代码块等内容会保留 \r，而 CodeMirror
+    // 内部把 \r\n 规范化为 \n，两侧长度不一致会导致选区转发给 CM 时
+    // 越界抛 RangeError（CRLF 文件专有，LF 下不暴露）。
+    // 源码模式展示的仍是原始 CRLF 文本（rawContent），映射层负责两侧换算。
+    const doc = parser(markdown.replace(/\r\n?/g, "\n"));
     // 用新 doc 替换整棵文档树，保持 schema 合法
     view.dispatch(
       view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
@@ -121,36 +129,910 @@ export function setMarkdown(editor: Editor, markdown: string): void {
   });
 }
 
+// ==================== WYSIWYG ⇄ 源码 光标块级锚点映射 ====================
+// 原理：Markdown 与解析后的文档存在语法损耗（**加粗**、![](图)、列表符号等），
+// 逐字符精确映射不可行。但「叶子块」（段落/标题/代码块/表格单元格等不含子块的
+// 块级节点）在两侧按文档顺序一一对应，且块内文本（纯文本）两侧一致。
+// 因此以「光标所在叶子块的序号 + 块内文本偏移比例」为锚点双向映射，
+// 切到源码后光标落在同一块对应行的文本处（块级精准、块内近似）。
+
+/** mdast 节点（本项目用到的最小结构） */
+interface MdNode {
+  type: string;
+  value?: string;
+  position?: { start?: { offset?: number }; end?: { offset?: number } };
+  children?: MdNode[];
+}
+
+/** mdast 叶子块（与 ProseMirror 叶子块对称的结构信息） */
+interface MdLeafBlock {
+  /** 块内聚合纯文本（去除全部 markdown 语法后的文本） */
+  text: string;
+  /** 块起始字符 offset（含语法标记，如 **bold** 的 *） */
+  start: number;
+  /** 块结束字符 offset（不含） */
+  end: number;
+  /** 块内首个纯文本的字符 offset（用于块内光标定位） */
+  textStart: number;
+  /** 原始 mdast 节点（行内级映射需要读其子节点 position） */
+  node: MdNode;
+}
+
+/** ProseMirror 叶子块（含文档位置信息） */
+interface DocLeafBlock {
+  text: string;
+  /** 节点起始 pos */
+  pos: number;
+  /** 节点整体大小（nodeSize），用于判断光标是否落在块内 */
+  size: number;
+  node: PMNode;
+}
+
+/** mdast 中会渲染成 ProseMirror 叶子块的节点类型（两侧结构对称） */
+const MD_LEAF_BLOCK_TYPES = new Set([
+  "paragraph",
+  "heading",
+  "code",
+  "math",
+  "tableCell",
+]);
+
+/** 判断 mdast 节点是否为叶子块：是块级类型且不含块级子节点 */
+function isMdLeafBlock(node: MdNode): boolean {
+  if (!MD_LEAF_BLOCK_TYPES.has(node.type)) return false;
+  return !(node.children ?? []).some((c) => MD_LEAF_BLOCK_TYPES.has(c.type));
+}
+
 /**
- * 获取当前光标在文档中的相对位置（0~1 比例）。
- * 用于 WYSIWYG ⇄ 源码模式切换时近似还原光标位置：
- * Markdown 与解析后的文档存在语法损耗，逐字符精确映射不可行，
- * 按光标在文档总长度中的比例映射到另一侧，位置基本不漂移。
- * 文档为空或无法获取时返回 null。
+ * 聚合 mdast 子树内的全部文本。
+ * mdast 中带 value 的节点（text/inlineCode/code/html/break 等）内容直接存于
+ * value，无 children；若只遍历 children 会导致 code、inlineCode 等文本全部丢失，
+ * 使两侧「同文本序」配对失败并错误降级。故先取 value，再聚合 children。
  */
-export function getCaretRatio(editor: Editor): number | null {
+function mdSubtreeText(node: MdNode): string {
+  if (node.type === "text") return node.value ?? "";
+  if (node.value != null) return node.value;
+  return (node.children ?? []).map(mdSubtreeText).join("");
+}
+
+/** 找到子树内首个文本节点的字符 offset（块内光标定位用） */
+function mdFirstTextOffset(node: MdNode): number | null {
+  if (node.type === "text") return node.position?.start?.offset ?? null;
+  for (const c of node.children ?? []) {
+    const o = mdFirstTextOffset(c);
+    if (o != null) return o;
+  }
+  return null;
+}
+
+/**
+ * 围栏块（code / math）在 ProseMirror 侧没有围栏语法，
+ * 光标内容起点是「内容第一行」，而 position.start 指向围栏行。
+ * 这里跳过围栏行，返回内容开头的字符 offset。
+ * 兼容 3+ 反引号 / 波浪线围栏，以及独立成行的 $$ 数学块围栏。
+ *
+ * remark 解析围栏块时，会把「围栏行前导空格」作为公共缩进从内容行移除，
+ * 因此内容首字符可能不在围栏行换行后的第一个位置（缩进围栏场景）。
+ * 这里按 CommonMark 规则取 contentStart + min(围栏缩进, 内容行缩进)。
+ */
+function mdContentStart(node: MdNode, source: string): number | null {
+  if (node.type !== "code" && node.type !== "math") return null;
+  const start = node.position?.start?.offset;
+  if (start == null) return null;
+  const lineEnd = source.indexOf("\n", start);
+  const line = lineEnd < 0 ? source.slice(start) : source.slice(start, lineEnd);
+  if (/^\s*(`{3,}|~{3,}|\$\$\s*$)/.test(line)) {
+    if (lineEnd < 0) return start;
+    const contentStart = lineEnd + 1;
+    // 围栏行前导空格数（position.start 指向 "```" 本身，需回溯到行首）
+    const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+    const fenceIndent = start - lineStart;
+    // 内容第一行的前导空白（remark 与内容行公共缩进比较后取较小者）
+    const nl2 = source.indexOf("\n", contentStart);
+    const first =
+      nl2 < 0 ? source.slice(contentStart) : source.slice(contentStart, nl2);
+    const contentIndent = (first.match(/^\s*/) || [""])[0].length;
+    return contentStart + Math.min(fenceIndent, contentIndent);
+  }
+  return null;
+}
+
+/** 按文档顺序收集 mdast 中的全部叶子块 */
+function collectMdLeafBlocks(
+  node: MdNode,
+  out: MdLeafBlock[],
+  source: string
+): void {
+  if (isMdLeafBlock(node)) {
+    const pos = node.position;
+    if (pos?.start?.offset != null && pos?.end?.offset != null) {
+      out.push({
+        text: mdSubtreeText(node),
+        start: pos.start.offset,
+        end: pos.end.offset,
+        node,
+        textStart:
+          mdContentStart(node, source) ??
+          mdFirstTextOffset(node) ??
+          pos.start.offset,
+      });
+    }
+    return; // 叶子块不再下钻（inline 子节点无需处理）
+  }
+  for (const c of node.children ?? []) collectMdLeafBlocks(c, out, source);
+}
+
+/**
+ * 去掉 \r（CRLF 行尾符）后的文本。
+ * 源码侧（remark 解析 CRLF 原文件）会保留 \r，而 Milkdown 解析时剥掉 \r，
+ * 两侧代码块文本因此不一致导致配对失败。配对与比例计算统一按「可视文本」比较。
+ */
+const normText = (s: string) => s.replace(/\r/g, "");
+
+/** 统计 raw 文本 [from, to) 区间内的 \r 数量 */
+function crCountIn(raw: string, from: number, to: number): number {
+  const hi = Math.min(to, raw.length);
+  let n = 0;
+  for (let i = from; i < hi; i++) {
+    if (raw.charCodeAt(i) === 13) n++;
+  }
+  return n;
+}
+
+/** 从 raw 文本 from 位置前进 visible 个「可视字符」（\r 不计），返回目标 offset */
+function advanceVisible(raw: string, from: number, visible: number): number {
+  let i = from;
+  let left = visible;
+  while (left > 0 && i < raw.length) {
+    if (raw.charCodeAt(i) !== 13) left--;
+    i++;
+  }
+  return i;
+}
+
+/**
+ * 返回 text 中前 visible 个「可视字符」（\r 不计）占用的原始字符数（含 \r）。
+ * 用于把「可视偏移」换算回含 \r 的原始文本坐标（PM 文档侧）。
+ */
+function visibleSpanRaw(text: string, visible: number): number {
+  let left = visible;
+  let i = 0;
+  while (left > 0 && i < text.length) {
+    if (text.charCodeAt(i) !== 13) left--;
+    i++;
+  }
+  return i;
+}
+
+/**
+ * md 源码区间 ↔ PM 块内偏移 的对应关系（行内级）。
+ *
+ * mdast 的行内叶子节点（text / inlineCode）自带精确 position，且与 PM 侧的文本
+ * 节点逐字符 1:1。据此建表后语法标记（**、`、[]()）自然被跳过，块内偏移无需
+ * 再按比例估算——比例估算在「源码含标记、PM 是渲染后文本」时误差会随块长放大。
+ */
+interface InlineSpan {
+  /** md 源码区间起点（原始 offset，含 \r） */
+  mdStart: number;
+  /** md 源码区间终点（不含） */
+  mdEnd: number;
+  /** 该片段在 PM 块内的起始偏移（PM 坐标，块内容开头为 0） */
+  docOffset: number;
+  /** 该片段的可视文本长度 */
+  docLen: number;
+  /** 该片段在 PM 侧的原始长度（含 \r），用于判断位置是否落在片段末尾 */
+  docRawLen: number;
+  /** 语法外框起点（含 ** 等标记）；无外框时为 null */
+  frameStart: number | null;
+  /** 语法外框终点（不含）；无外框时为 null */
+  frameEnd: number | null;
+}
+
+/** mdast 叶子块中「会渲染成 PM 文本」的节点类型 */
+const MD_TEXT_LEAF_TYPES = new Set(["text", "inlineCode"]);
+
+/** 包裹文本的行内标记类型：其 position 含语法标记本身（如 **bold** 的 `**`） */
+const MD_MARK_TYPES = new Set(["strong", "emphasis", "link", "delete"]);
+
+/** mdast 文本叶子 + 其语法外框（含语法标记的范围，供选区边界吸附使用） */
+interface MdTextLeaf {
+  node: MdNode;
+  frameStart: number | null;
+  frameEnd: number | null;
+}
+
+/**
+ * 收集 mdast 子树中会渲染成 PM 文本的叶子节点，同时记录「语法外框」。
+ *
+ * 外框是包含语法标记的范围：inlineCode 自身的 position 含反引号，
+ * strong / emphasis / link 的 position 含 `**`、`*`、`[]()`，而它们子节点
+ * （text）的 position 不含标记。反向映射时靠外框把标记还原回去，否则
+ * 「选中 **bold** 整段」映射回源码会丢掉 `**`，只剩 `bold`。
+ */
+function collectMdTextLeaves(
+  node: MdNode,
+  out: MdTextLeaf[],
+  frame: { start: number | null; end: number | null } = { start: null, end: null }
+): void {
+  if (MD_TEXT_LEAF_TYPES.has(node.type)) {
+    const start = node.position?.start?.offset;
+    if (start != null) {
+      // inlineCode 自身即外框（position 含反引号、value 不含）
+      const own =
+        node.type === "inlineCode"
+          ? { start, end: node.position?.end?.offset ?? null }
+          : frame;
+      out.push({ node, frameStart: own.start, frameEnd: own.end });
+    }
+    return;
+  }
+  // 进入标记节点：嵌套时以最外层标记为准
+  const isMark = MD_MARK_TYPES.has(node.type);
+  const next =
+    isMark && frame.start == null
+      ? {
+          start: node.position?.start?.offset ?? null,
+          end: node.position?.end?.offset ?? null,
+        }
+      : frame;
+  for (const c of node.children ?? []) collectMdTextLeaves(c, out, next);
+}
+
+/**
+ * 建立「md 叶子块 ↔ PM 叶子块」的行内级映射表。
+ *
+ * 两侧文本片段严格 1:1 且逐段一致时返回映射表；结构不对等（图片、内联公式、
+ * 内联 HTML 等在 PM 侧没有文本对应物）时返回 null，由调用方降级到块级近似，
+ * 保证任何情况下都不会映射失败或越界。
+ */
+function buildInlineMap(md: MdLeafBlock, doc: DocLeafBlock): InlineSpan[] | null {
+  // 围栏块（代码 / 数学）整块是纯文本、没有行内节点，按整块直接对应
+  if (md.node.type === "code" || md.node.type === "math") {
+    const value = md.node.value ?? "";
+    if (normText(value) !== normText(doc.text)) return null;
+    return [
+      {
+        mdStart: md.textStart,
+        mdEnd: md.end,
+        docOffset: 0,
+        docLen: normText(value).length,
+        // 必须用 PM 侧实际长度：源码侧（remark 解析 CRLF）保留 \r，
+        // PM 侧已被规范化掉 \r，用 value.length 会算出越界位置，
+        // 代码块派发选区时抛 RangeError（CRLF 文件专有，LF 下两者相等故不暴露）
+        docRawLen: doc.text.length,
+        frameStart: null,
+        frameEnd: null,
+      },
+    ];
+  }
+  // PM 侧：按块内偏移顺序收集文本片段（atom 节点无文本，仅推进偏移）
+  const docSpans: { offset: number; size: number; text: string }[] = [];
+  let offset = 0;
+  doc.node.forEach((child) => {
+    if (child.isText)
+      docSpans.push({ offset, size: child.nodeSize, text: child.text ?? "" });
+    offset += child.nodeSize;
+  });
+  const mdLeaves: MdTextLeaf[] = [];
+  collectMdTextLeaves(md.node, mdLeaves);
+  if (mdLeaves.length === 0 || mdLeaves.length !== docSpans.length) return null;
+  const spans: InlineSpan[] = [];
+  for (let i = 0; i < mdLeaves.length; i++) {
+    const leaf = mdLeaves[i];
+    const start = leaf.node.position?.start?.offset;
+    const end = leaf.node.position?.end?.offset;
+    if (start == null || end == null) return null;
+    // 文本不一致（转义字符解码等）会让块内偏移失真，降级到块级
+    if (normText(leaf.node.value ?? "") !== normText(docSpans[i].text)) return null;
+    spans.push({
+      mdStart: start,
+      mdEnd: end,
+      docOffset: docSpans[i].offset,
+      docLen: normText(docSpans[i].text).length,
+      docRawLen: docSpans[i].size,
+      frameStart: leaf.frameStart,
+      frameEnd: leaf.frameEnd,
+    });
+  }
+  return spans;
+}
+
+/** 用行内映射表把 md 字符 offset 换算为 PM 文档位置（字符级） */
+function mdOffsetToDocBySpans(
+  spans: InlineSpan[],
+  doc: DocLeafBlock,
+  source: string,
+  offset: number
+): number {
+  // 落在片段间隙时取最近的左侧片段，其后由片段长度收敛
+  let span = spans[0];
+  for (const s of spans) {
+    if (offset >= s.mdStart) span = s;
+  }
+  const visDelta = Math.max(
+    0,
+    offset - span.mdStart - crCountIn(source, span.mdStart, offset)
+  );
+  const rest = doc.text.slice(span.docOffset);
+  const adv = visibleSpanRaw(rest, Math.min(visDelta, normText(rest).length));
+  return Math.max(
+    doc.pos,
+    Math.min(doc.pos + doc.size, doc.pos + 1 + span.docOffset + adv)
+  );
+}
+
+/** 用行内映射表把 PM 文档位置换算为 md 字符 offset（字符级） */
+function docPosToMdOffsetBySpans(
+  spans: InlineSpan[],
+  md: MdLeafBlock,
+  doc: DocLeafBlock,
+  source: string,
+  pos: number,
+  /** 是否把落在标记内容边界的位置吸附到含语法的外框 */
+  snap: boolean
+): number {
+  const within = Math.max(0, pos - (doc.pos + 1));
+  let span = spans[0];
+  for (const s of spans) {
+    if (within >= s.docOffset) span = s;
+  }
+  // 边界吸附：位置正好落在片段内容的首/尾时，把结果扩到语法外框。
+  // 否则「选中 **bold** word」反向还原后会丢掉 **，只剩 bold** word。
+  // 仅选区启用：光标停靠时吸附会改变输入语义（见 mapCaretToMdOffset 的 snap）
+  if (snap && span.frameStart != null && within === span.docOffset) {
+    return Math.min(md.end, Math.max(md.start, span.frameStart));
+  }
+  if (snap && span.frameEnd != null && within === span.docOffset + span.docRawLen) {
+    return Math.min(md.end, Math.max(md.start, span.frameEnd));
+  }
+  const rest = doc.text.slice(span.docOffset);
+  const rawDelta = Math.max(0, Math.min(within - span.docOffset, rest.length));
+  const visDelta = Math.max(0, rawDelta - crCountIn(rest, 0, rawDelta));
+  return Math.min(
+    md.end,
+    Math.max(md.start, advanceVisible(source, span.mdStart, visDelta))
+  );
+}
+
+/** 在 blocks 中找出第 ordinal 个 text 相同的块（按去 \r 后的可视文本比较） */
+function findBlockByOrdinal<T extends { text: string }>(
+  blocks: T[],
+  text: string,
+  ordinal: number
+): T | null {
+  const key = normText(text);
+  let n = 0;
+  for (const b of blocks) {
+    if (normText(b.text) === key && ++n === ordinal) return b;
+  }
+  return null;
+}
+
+/** 按文档顺序收集 ProseMirror 中的全部叶子块 */
+function collectDocLeafBlocks(doc: PMNode): DocLeafBlock[] {
+  const out: DocLeafBlock[] = [];
+  doc.descendants((node, pos) => {
+    let hasBlockChild = false;
+    node.content.forEach((c) => {
+      if (c.isBlock) hasBlockChild = true;
+    });
+    if (node.isBlock && !hasBlockChild) {
+      out.push({ text: node.textContent, pos, size: node.nodeSize, node });
+    }
+    return true;
+  });
+  return out;
+}
+
+/**
+ * 把 WYSIWYG 光标位置映射为 markdown 源码中的字符 offset（块级锚点）。
+ * 配对优先按「同文本序」消歧重复内容，失败时降级按整体块序号对齐，
+ * 保证绝大多数场景都能锚定到同一块所在行（而非返回 null 导致光标不动）。
+ * 仅在空文档 / 空源码时返回 null。
+ * @param markdown 将展示在源码 textarea 中的文本（与光标定位目标一致）
+ */
+/**
+ * 把 WYSIWYG 中的单个文档位置 pos 映射为 markdown 源码字符 offset（块级锚点）。
+ * 逻辑与 wysiwygCaretToMarkdownOffset 完全一致，抽成内部函数以便选区两端共用。
+ */
+function mapCaretToMdOffset(
+  view: EditorView,
+  ctx: EditorCtx,
+  markdown: string,
+  pos: number,
+  /**
+   * 是否把落在标记内容边界的位置吸附到含语法的外框。
+   * 选区需要（保证还原后语法完整，选中 **bold** 而非 bold）；
+   * 光标不能要——光标停在 bold 开头时，吸附前后输入 X 分别是
+   * X**bold** 与 **Xbold**，语义完全不同。
+   */
+  snap = false
+): number | null {
+  const doc = view.state.doc;
+  if (doc.content.size <= 0) return null;
+  const docBlocks = collectDocLeafBlocks(doc);
+  if (docBlocks.length === 0) return null;
+  // 光标所在叶子块：优先取包含 pos 的块；
+  // pos 落在块间/文档开头（不在任何块区间内）时，取「块中心」与 pos 最近的块
+  const cursor = docBlocks.find((b) => pos >= b.pos && pos <= b.pos + b.size);
+  let target: DocLeafBlock;
+  if (cursor) {
+    target = cursor;
+  } else {
+    target = docBlocks[0];
+    let best = Infinity;
+    for (const b of docBlocks) {
+      const d = Math.abs(pos - (b.pos + b.size / 2));
+      if (d < best) {
+        best = d;
+        target = b;
+      }
+    }
+  }
+  // 块整体序号（配对失败时的降级锚点）
+  const index = docBlocks.indexOf(target);
+  // 该块是文档中第几个「文本相同」的块（同文本序配对，消歧重复内容）
+  let ordinal = 0;
+  for (const b of docBlocks) {
+    if (normText(b.text) === normText(target.text)) {
+      ordinal++;
+      if (b === target) break;
+    }
+  }
+  // 块内文本偏移比例：以内容开头（pos + 1）为 0 点、可视内容长度为分母，
+  // 与 mdast 侧 textStart（内容开头）+ 可视内容长度 对齐。
+  // PM 位置按原始字符计数：CRLF 文件加载的代码块文本含 \r，
+  // 直接相减会把 \r 也算进可视偏移导致比例偏大，需先换算为可视偏移。
+  const textLen = normText(target.text).length;
+  const rawWithin = Math.max(0, pos - (target.pos + 1));
+  const within = Math.max(
+    0,
+    Math.min(
+      textLen,
+      rawWithin - crCountIn(target.text, 0, Math.min(rawWithin, target.text.length))
+    )
+  );
+  const ratio = textLen > 0 ? within / textLen : 0;
+  // mdast 侧定位：同文本序优先，整体序号降级
+  const remark = ctx.get(remarkCtx);
+  const mdBlocks: MdLeafBlock[] = [];
+  collectMdLeafBlocks(remark.parse(markdown) as MdNode, mdBlocks, markdown);
+  if (mdBlocks.length === 0) return null;
+  const md =
+    findBlockByOrdinal(mdBlocks, target.text, ordinal) ??
+    mdBlocks[Math.min(index, mdBlocks.length - 1)];
+  // 优先走行内级精确映射：mdast 行内节点 position 建表，语法标记天然跳过
+  const spans = buildInlineMap(md, target);
+  if (spans) return docPosToMdOffsetBySpans(spans, md, target, markdown, pos, snap);
+  // 结构不对等（图片/公式/内联 HTML）时降级：块内按可视长度比例估算
+  // 把可视偏移比例落到 mdast 块：从内容开头前进 ratio*normLen 个可视字符，
+  // advanceVisible 跳过 \r，返回与 textarea 同一 offset 体系（含 \r）的位置
+  const normLen = normText(md.text).length;
+  return Math.min(
+    md.end,
+    Math.max(md.start, advanceVisible(markdown, md.textStart, Math.round(ratio * normLen)))
+  );
+}
+
+/**
+ * 把 WYSIWYG 光标位置映射为 markdown 源码中的字符 offset（块级锚点）。
+ * 配对优先按「同文本序」消歧重复内容，失败时降级按整体块序号对齐，
+ * 保证绝大多数场景都能锚定到同一块所在行（而非返回 null 导致光标不动）。
+ * 仅在空文档 / 空源码时返回 null。
+ * @param markdown 将展示在源码 textarea 中的文本（与光标定位目标一致）
+ */
+export function wysiwygCaretToMarkdownOffset(
+  editor: Editor,
+  markdown: string
+): number | null {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
-    const docSize = view.state.doc.content.size;
-    if (docSize <= 0) return null;
-    const head = view.state.selection.head;
-    return Math.min(1, Math.max(0, head / docSize));
+    return mapCaretToMdOffset(view, ctx, markdown, view.state.selection.head);
   });
 }
 
-/** 把光标设置到文档总长度对应比例的位置，并聚焦编辑器 */
-export function setCaretByRatio(editor: Editor, ratio: number): void {
+/** WYSIWYG 选区在 markdown 源码中对应的字符区间（块级锚点近似） */
+export interface MdSelectionRange {
+  from: number;
+  to: number;
+}
+
+/**
+ * 把 WYSIWYG 选区（含单点光标）映射为 markdown 源码中的字符区间。
+ * 选区两个端点各自独立做块级锚点映射，端点同块时字符级精准；
+ * 跨块时两端各自落在本块对应行，整体是块级近似。无选区时返回单点区间。
+ */
+export function wysiwygSelectionToMarkdownOffsets(
+  editor: Editor,
+  markdown: string
+): MdSelectionRange | null {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const sel = view.state.selection;
+    // 仅真实选区吸附语法边界；退化成光标时保持位置保真
+    const snap = sel.from !== sel.to;
+    const from = mapCaretToMdOffset(view, ctx, markdown, sel.from, snap);
+    if (from == null) return null;
+    if (sel.from === sel.to) return { from, to: from };
+    const to = mapCaretToMdOffset(view, ctx, markdown, sel.to, snap);
+    if (to == null) return { from, to: from };
+    return { from: Math.min(from, to), to: Math.max(from, to) };
+  });
+}
+
+/**
+ * 把 markdown 源码中的字符 offset 映射为 WYSIWYG 文档位置（块级锚点）。
+ * 配对策略与 mapCaretToMdOffset 对称：同文本序优先、整体序号降级。
+ */
+function mapMdOffsetToDocPos(
+  view: EditorView,
+  ctx: EditorCtx,
+  markdown: string,
+  offset: number
+): number | null {
+  const doc = view.state.doc;
+  if (doc.content.size <= 0) return null;
+  const docBlocks = collectDocLeafBlocks(doc);
+  if (docBlocks.length === 0) return null;
+  // mdast 侧找包含 offset 的块；落在块间/末尾空行取最近的左侧块；落在最前取第一块
+  const remark = ctx.get(remarkCtx);
+  const mdBlocks: MdLeafBlock[] = [];
+  collectMdLeafBlocks(remark.parse(markdown) as MdNode, mdBlocks, markdown);
+  if (mdBlocks.length === 0) return null;
+  let target: MdLeafBlock = mdBlocks[mdBlocks.length - 1];
+  for (const b of mdBlocks) {
+    if (offset >= b.start && offset <= b.end) {
+      target = b;
+      break;
+    }
+    if (offset >= b.start) target = b;
+  }
+  if (offset < mdBlocks[0].start) target = mdBlocks[0];
+  // 块整体序号（配对失败时的降级锚点）
+  const index = mdBlocks.indexOf(target);
+  // 该块是 mdast 中第几个「文本相同」的块（同文本序配对，消歧重复内容）
+  let ordinal = 0;
+  for (const b of mdBlocks) {
+    if (normText(b.text) === normText(target.text)) {
+      ordinal++;
+      if (b === target) break;
+    }
+  }
+  // 块内文本偏移比例：offset 到内容开头之间的可视偏移（跳过 \r）÷ 可视内容长度
+  const normLen = normText(target.text).length;
+  const rawWithin = Math.max(0, offset - target.textStart);
+  const visWithin = Math.max(
+    0,
+    rawWithin - crCountIn(markdown, target.textStart, offset)
+  );
+  const ratio = normLen > 0 ? Math.min(1, visWithin / normLen) : 0;
+  // doc 侧定位：同文本序优先，整体序号降级
+  const docBlock =
+    findBlockByOrdinal(docBlocks, target.text, ordinal) ??
+    docBlocks[Math.min(index, docBlocks.length - 1)];
+  // 优先走行内级精确映射：mdast 行内节点 position 建表，语法标记天然跳过
+  const spans = buildInlineMap(target, docBlock);
+  if (spans) return mdOffsetToDocBySpans(spans, docBlock, markdown, offset);
+  // 结构不对等（图片/公式/内联 HTML）时降级：块内按可视长度比例估算
+  // 内容开头（docBlock.pos + 1）为 0 点、可视内容长度为分母，与 mdast 侧对齐。
+  // PM 位置按原始字符计数：可视偏移换算回 PM 坐标时要把块内 \r 加回
+  // （CRLF 文件加载的代码块文本含 \r，直接加可视偏移会少算）。
+  const docTextLen = normText(docBlock.text).length;
+  const docRawWithin = visibleSpanRaw(docBlock.text, Math.round(docTextLen * ratio));
+  return Math.max(
+    docBlock.pos,
+    Math.min(docBlock.pos + docBlock.size, docBlock.pos + 1 + docRawWithin)
+  );
+}
+
+/** 安全地派发选区：位置按当前文档长度收敛并兜底异常，避免越界抛错 */
+function dispatchSelectionSafely(
+  view: EditorView,
+  start: number,
+  end: number,
+  /** 是否把选区滚动到可见。仅首次设置时需要；stabilize 的重放不带滚动，否则连续多次滚动会抖 */
+  scroll = false
+): boolean {
+  try {
+    const doc = view.state.doc;
+    const size = doc.content.size;
+    const f = Math.min(Math.max(start, 0), size);
+    const t = Math.min(Math.max(end, 0), size);
+    const tr = view.state.tr.setSelection(TextSelection.create(doc, f, t));
+    view.dispatch(scroll ? tr.scrollIntoView() : tr);
+    return true;
+  } catch {
+    /* 文档已变动导致位置失效，忽略 */
+    return false;
+  }
+}
+
+/** 请求把当前选区滚动到可见（不改变选区本身） */
+function scrollSelectionIntoView(view: EditorView): void {
+  try {
+    if ((view as unknown as { isDestroyed?: boolean }).isDestroyed) return;
+    view.dispatch(view.state.tr.scrollIntoView());
+  } catch {
+    /* 文档已销毁或状态已变，忽略 */
+  }
+}
+
+/**
+ * 把光标所在块滚动到指定的视口位置。
+ *
+ * ProseMirror 的 scrollIntoView 只保证「刚好可见」，光标会贴着视口顶部或底部。
+ * 切换模式时传入切换前光标在屏幕上的位置，即可让光标停在原处（视线不动）；
+ * targetY 为 null 时退化为居中。已在目标附近时不调整，避免无谓滚动。
+ */
+function alignCaretInScroller(view: EditorView, targetY: number | null): void {
+  try {
+    if ((view as unknown as { isDestroyed?: boolean }).isDestroyed) return;
+    const at = view.domAtPos(view.state.selection.head);
+    const node = at.node;
+    const el: HTMLElement | null =
+      node.nodeType === 3 ? node.parentElement : (node as HTMLElement);
+    if (!el) return;
+    // 光标所在的可视块：代码块的 CM 行 / 段落 / 标题 / 列表项
+    const block =
+      el.closest?.(".cm-line") ??
+      el.closest?.("p, h1, h2, h3, h4, h5, h6, li") ??
+      el;
+    // 向上找滚动容器
+    let p = block.parentElement;
+    let scroller: HTMLElement | null = null;
+    while (p) {
+      const ov = getComputedStyle(p).overflowY;
+      if (ov === "auto" || ov === "scroll") {
+        scroller = p;
+        break;
+      }
+      p = p.parentElement;
+    }
+    if (!scroller) return;
+    const blockRect = block.getBoundingClientRect();
+    const scRect = scroller.getBoundingClientRect();
+    // 未指定目标位置时退化为居中
+    const desired = targetY != null ? targetY : (scRect.height - blockRect.height) / 2;
+    const delta = blockRect.top - (scRect.top + desired);
+    if (Math.abs(delta) < scRect.height * 0.12) return; // 已在目标附近
+    scroller.scrollTop += delta;
+  } catch {
+    /* 布局异常（节点已移除等）时忽略 */
+  }
+}
+
+/** pos 是否落在某个 code_block 的开头（forwardUpdate 钳住选区的特征） */
+function isCodeBlockStart(view: EditorView, pos: number): boolean {
+  let found = false;
+  view.state.doc.nodesBetween(0, view.state.doc.content.size, (node, p) => {
+    // forwardUpdate 推送的位置是 node.pos + 1 + main.from，main.from=0 时为内容开头
+    if (node.type.name === "code_block" && (p === pos || p + 1 === pos)) {
+      found = true;
+      return false;
+    }
+    return !found;
+  });
+  return found;
+}
+
+/**
+ * 延迟重放选区直到稳定。
+ *
+ * 背景：setMarkdown 重建文档后，交互式代码块的 node-view 是新建的。PM 派发
+ * 选区时 node-view 的 setSelection 内部 initializeCodeMirror 创建 CM，但 CM 的
+ * DOM 要等 Vue 组件 onMounted 后才挂载（isConnected）；未挂载时 setSelection
+ * 会提前 return、丢弃 anchor/head，CM 保持初始选区 [0,0]。随后 CM 挂载并获得
+ * 焦点后，code-block 插件的 forwardUpdate 会把 [0,0] 推回 PM，把刚恢复的选区
+ * 钳到代码块起点。
+ *
+ * 对策：等 CM 挂载完成后重放同一选区。此时 node-view 的 setSelection 能真正把
+ * 选区同步进 CM，CM 与 PM 一致后 forwardUpdate 不再破坏，选区自然稳定。
+ * 重放只在选区仍停留在某个代码块起点（被钳住的标志）时进行，避免覆盖用户
+ * 已做的任何调整。
+ */
+function stabilizeSelection(view: EditorView, start: number, end: number): void {
+  let attempts = 8;
+  const tick = () => {
+    if (attempts-- <= 0) return;
+    if ((view as unknown as { isDestroyed?: boolean }).isDestroyed) return;
+    const sel = view.state.selection;
+    if (sel.from === start && sel.to === end) return; // 已就位
+    if (sel.from !== sel.to) return; // 用户已另选区间，尊重
+    if (!isCodeBlockStart(view, sel.from)) return; // 非被钳住，尊重用户
+    dispatchSelectionSafely(view, start, end);
+    setTimeout(tick, 40);
+  };
+  setTimeout(tick, 40);
+}
+
+/**
+ * 把 markdown 源码中的字符 offset 映射为 WYSIWYG 光标位置（块级锚点），
+ * 并设置光标、聚焦编辑器。配对策略与 wysiwygCaretToMarkdownOffset 对称：
+ * 同文本序优先、整体序号降级，失败时保持原光标位置不变。
+ * @param markdown 源码 textarea 中的文本（与编辑器当前内容一致）
+ */
+export function setCaretByMarkdownOffset(
+  editor: Editor,
+  markdown: string,
+  offset: number,
+  /**
+   * 期望光标停留的视口位置（相对滚动容器顶部的像素）。
+   * 切换模式时传入切换前光标在屏幕上的位置，做到「视线不动」；
+   * 不传时退化为居中。
+   */
+  targetViewY: number | null = null
+): void {
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const doc = view.state.doc;
+    const docSize = doc.content.size;
+    if (docSize <= 0) return;
+    const pos = mapMdOffsetToDocPos(view, ctx, markdown, offset);
+    if (pos == null) return;
+    dispatchSelectionSafely(view, pos, pos, true);
+    view.focus();
+    // 可视化容器可能刚从 display:none 恢复（退出源码模式），首帧布局尚未稳定，
+    // scrollIntoView 算不出位置，下一帧补一次滚动
+    requestAnimationFrame(() => {
+      scrollSelectionIntoView(view);
+      alignCaretInScroller(view, targetViewY);
+    });
+    stabilizeSelection(view, pos, pos);
+  });
+}
+
+/**
+ * 把 markdown 源码中的字符区间映射为 WYSIWYG 选区（块级锚点），
+ * 并设置选区、聚焦编辑器。from === to 时等价于设置单点光标。
+ * 两个端点各自独立映射，端点同块时字符级精准，跨块时块级近似。
+ */
+export function setSelectionByMarkdownOffsets(
+  editor: Editor,
+  markdown: string,
+  from: number,
+  to: number,
+  /** 期望光标停留的视口位置，语义同 setCaretByMarkdownOffset */
+  targetViewY: number | null = null
+): void {
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const doc = view.state.doc;
+    const docSize = doc.content.size;
+    if (docSize <= 0) return;
+    const a = mapMdOffsetToDocPos(view, ctx, markdown, from);
+    if (a == null) return;
+    let b = a;
+    if (to !== from) {
+      const m = mapMdOffsetToDocPos(view, ctx, markdown, to);
+      if (m != null) b = m;
+    }
+    const start = Math.min(a, b);
+    const end = Math.max(a, b);
+    dispatchSelectionSafely(view, start, end, true);
+    view.focus();
+    // 同上：容器刚恢复显示时首帧滚不动，下一帧补一次
+    requestAnimationFrame(() => {
+      scrollSelectionIntoView(view);
+      alignCaretInScroller(view, targetViewY);
+    });
+    stabilizeSelection(view, start, end);
+  });
+}
+
+/**
+ * 测量当前光标在屏幕上的位置（相对滚动容器顶部的像素）。
+ * 切换模式前调用，把结果传给另一侧，即可让光标停在原处（视线不动）。
+ */
+export function getCaretViewY(editor: Editor): number | null {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    try {
+      const at = view.domAtPos(view.state.selection.head);
+      const node = at.node;
+      const el: HTMLElement | null =
+        node.nodeType === 3 ? node.parentElement : (node as HTMLElement);
+      if (!el) return null;
+      const block =
+        el.closest?.(".cm-line") ??
+        el.closest?.("p, h1, h2, h3, h4, h5, h6, li") ??
+        el;
+      let p = block.parentElement;
+      let scroller: HTMLElement | null = null;
+      while (p) {
+        const ov = getComputedStyle(p).overflowY;
+        if (ov === "auto" || ov === "scroll") {
+          scroller = p;
+          break;
+        }
+        p = p.parentElement;
+      }
+      const scRect = scroller
+        ? scroller.getBoundingClientRect()
+        : { top: 0, height: window.innerHeight };
+      return block.getBoundingClientRect().top - scRect.top;
+    } catch {
+      return null;
+    }
+  });
+}
+
+/** 大纲条目（侧边栏「大纲」面板的数据源） */
+export interface HeadingItem {
+  /** 标题层级（1~6） */
+  level: number;
+  /** 标题文本；空标题显示为占位文案 */
+  text: string;
+  /** 标题节点在文档中的位置，用于点击跳转 */
+  pos: number;
+}
+
+/**
+ * 收集当前文档中全部标题，供侧边栏大纲展示。
+ * 按文档顺序返回（descendants 为深度优先前序，天然有序）。
+ */
+export function getHeadings(editor: Editor): HeadingItem[] {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const out: HeadingItem[] = [];
+    view.state.doc.descendants((node, pos) => {
+      if (node.type.name !== "heading") return true;
+      out.push({
+        level: Number(node.attrs.level) || 1,
+        text: node.textContent || "（无标题）",
+        pos,
+      });
+      return false; // heading 内部不再下钻
+    });
+    return out;
+  });
+}
+
+/** 跳转到文档中指定位置（大纲点击：选中 + 平滑滚动 + 聚焦编辑器） */
+export function scrollToPos(editor: Editor, pos: number): void {
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     const docSize = view.state.doc.content.size;
-    if (docSize <= 0) return;
-    const pos = Math.round(Math.min(1, Math.max(0, ratio)) * docSize);
-    view.dispatch(
-      view.state.tr.setSelection(
-        TextSelection.create(view.state.doc, Math.min(pos, docSize))
-      )
-    );
+    const safePos = Math.min(Math.max(pos, 0), docSize);
+    // 落点取节点内部（pos + 1），避免光标停在节点边界上
+    const target = view.state.doc.resolve(Math.min(safePos + 1, docSize));
+    view.dispatch(view.state.tr.setSelection(TextSelection.near(target)));
+    // 滚动到该标题：优先用节点 DOM，回退到坐标位置
+    const dom = view.nodeDOM(safePos) as HTMLElement | null;
+    if (dom?.scrollIntoView) {
+      dom.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      const coords = view.coordsAtPos(Math.min(safePos + 1, docSize));
+      view.dom.parentElement?.scrollTo?.({ top: coords.top, behavior: "smooth" });
+    }
     view.focus();
+  });
+}
+
+/**
+ * 屏幕坐标 → 文档位置（原生拖放的落点定位）。
+ * 坐标落在编辑区之外时回退到当前光标位置，保证一定返回合法位置。
+ */
+export function posAtCoords(editor: Editor, x: number, y: number): number {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    return view.posAtCoords({ left: x, top: y })?.pos ?? view.state.selection.from;
+  });
+}
+
+/**
+ * 文档位置 → 屏幕坐标（拖拽落点指示线的定位）。
+ * 返回视口坐标系下的 left / top / bottom，用于在拖图片的过程中
+ * 画一条跟随鼠标的插入位置竖线。
+ */
+export function coordsAtPos(
+  editor: Editor,
+  pos: number
+): { left: number; top: number; bottom: number } {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const safe = Math.max(0, Math.min(pos, view.state.doc.content.size));
+    const c = view.coordsAtPos(safe);
+    return { left: c.left, top: c.top, bottom: c.bottom };
   });
 }
 

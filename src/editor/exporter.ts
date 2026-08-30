@@ -1,0 +1,400 @@
+/*
+ * exporter.ts — 导出功能的公共基础（HTML / PDF / TXT / DOCX 共用）
+ *
+ * 职责：
+ * - getEditorHtml()：取编辑器正文 HTML（渲染后的真实 DOM，含公式/图表/代码高亮）
+ * - buildStandaloneHtml()：组装自包含 HTML（内联主题 CSS + 运行时样式 + 内嵌图片）
+ * - htmlToPlainText()：HTML → 纯文本（TXT 导出）
+ * - saveExportFile()：另存为对话框 + 写入文件
+ *
+ * 设计要点：
+ * - 主题 CSS 用 Vite 的 `?inline` 在构建期拿到字符串，避免依赖运行时 <style>/
+ *   <link>（生产构建下 Vite 会把 CSS 提取成 <link>，页面里取不到内容）。
+ * - 运行时注入的样式（CodeMirror 动态高亮、用户自定义主题）仍从 <head> 收集，
+ *   否则导出的代码会丢失配色。
+ */
+
+import type { Editor } from "@milkdown/kit/core";
+// editorViewCtx 在运行时由 @milkdown/kit/core 导出（d.ts 遗漏声明），见 index.ts 说明。
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore editorViewCtx 运行时可用（d.ts 未声明）
+import { editorViewCtx } from "@milkdown/kit/core";
+// ?inline：以字符串形式导入处理后的主题 CSS（含 @import 展开），不注入页面
+import themeCss from "@/editor/theme/index.css?inline";
+
+/** 是否处于 Tauri 环境 */
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/**
+ * 收集运行时注入到 <head> 的样式。
+ * 生产构建下页面的 <style> 只包含动态注入内容：
+ * - CodeMirror 语法高亮的 style-mod 规则（混淆类名，代码配色全靠它）
+ * - 用户自定义主题（<style id="custom-theme">）
+ */
+function collectRuntimeStyles(): string {
+  const parts: string[] = [];
+  const styles = document.querySelectorAll<HTMLStyleElement>("head style");
+  styles.forEach((el) => {
+    const css = el.textContent;
+    if (css && css.trim()) parts.push(css);
+  });
+  return parts.join("\n");
+}
+
+/**
+ * 导出文档的基础排版。
+ *
+ * 关键：必须解除应用布局对高度的约束。index.css 里：
+ * - html/body 是 height:100% / 100vh + overflow:hidden（窗口占满）
+ * - .milkdown 是 height:100% + overflow-y:auto（编辑区滚动容器）
+ * 导出时若沿用，浏览器打印只会输出第一屏（实测 40 个章节的文档仅 1 页，
+ * 且滚动条被一起打印出来）。这里用 !important 全部重置为自然高度。
+ */
+const EXPORT_BASE_CSS = `
+html, body {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  width: auto !important;
+}
+html { background: var(--mt-color-bg, #ffffff); }
+body {
+  margin: 0;
+  background: var(--mt-color-bg, #ffffff);
+  color: var(--mt-color-fg, #333333);
+  font-family: var(--mt-font-body, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif);
+}
+.milkdown {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  padding: 0 !important;
+  width: auto !important;
+}
+.mt-export-body {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 24px;
+}
+.mt-export-body img,
+.mt-export-body svg { max-width: 100%; height: auto; }
+`;
+
+/** 打印（PDF）专用样式：去页边距容器、解除溢出裁剪、避免元素跨页断裂 */
+const PRINT_CSS = `
+@page { margin: 20mm 18mm; }
+.mt-export-body { max-width: none; margin: 0; padding: 0; }
+/* 代码块 / 表格 / 图表等容器在应用内有 overflow 限制，打印时需解除，
+   否则跨页部分会被裁剪 */
+.mt-export-body pre,
+.mt-export-body blockquote,
+.mt-export-body table,
+.mt-export-body img,
+.mt-export-body svg,
+.mt-export-body .milkdown-code-block,
+.mt-export-body .codemirror-host,
+.mt-export-body .cm-editor,
+.mt-export-body .cm-scroller,
+.mt-export-body .diagram {
+  max-height: none !important;
+  overflow: visible !important;
+}
+.mt-export-body pre,
+.mt-export-body blockquote,
+.mt-export-body table,
+.mt-export-body img { break-inside: avoid; }
+.mt-export-body h1,
+.mt-export-body h2,
+.mt-export-body h3 { break-after: avoid; }
+`;
+
+export interface StandaloneHtmlOptions {
+  /** 文档标题（同时作为 <title> 与文件名来源） */
+  title: string;
+  /** 编辑器正文 HTML */
+  bodyHtml: string;
+  /** 是否沿用深色外观（导出独立文件时沿用当前主题） */
+  dark?: boolean;
+  /** 是否用于打印（附加 @page 与防断裂规则） */
+  forPrint?: boolean;
+  /** 附加样式 */
+  extraCss?: string;
+}
+
+/** HTML 文本转义（用于 <title>） */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** 组装自包含 HTML 文档（内联全部样式，可直接双击打开） */
+export function buildStandaloneHtml(opts: StandaloneHtmlOptions): string {
+  const { title, bodyHtml, dark = false, forPrint = false, extraCss = "" } = opts;
+  const themeAttr = dark ? ' data-theme="dark"' : "";
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(title)}</title>
+<style>${themeCss}</style>
+<style>${collectRuntimeStyles()}</style>
+<style>${EXPORT_BASE_CSS}</style>
+<style>${forPrint ? PRINT_CSS : ""}${extraCss}</style>
+</head>
+<body>
+<div class="milkdown"${themeAttr}>
+  <div class="editor mt-export-body">
+${bodyHtml}
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * 取编辑器正文 HTML。
+ * view.dom 即 ProseMirror 的可编辑根元素，其 innerHTML 是渲染后的真实结构：
+ * 公式（KaTeX）、图表（Mermaid SVG）、代码块（CM6 含高亮 span）都已在 DOM 中。
+ */
+export function getEditorHtml(editor: Editor): string {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    return view.dom.innerHTML;
+  });
+}
+
+/** Blob → data URL */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * 把 HTML 中的图片内联为 data URL，使导出文件真正“自包含”。
+ * 内联失败（跨域、协议限制）时保留原 src，不阻断导出流程。
+ */
+export async function inlineImages(html: string): Promise<string> {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const images = Array.from(doc.querySelectorAll("img[src]"));
+  if (images.length === 0) return html;
+  await Promise.all(
+    images.map(async (img) => {
+      const src = img.getAttribute("src") ?? "";
+      if (!src || src.startsWith("data:")) return;
+      try {
+        const res = await fetch(src);
+        if (!res.ok) return;
+        img.setAttribute("src", await blobToDataUrl(await res.blob()));
+      } catch (err) {
+        console.warn("[NoteMark] inline image failed:", src, err);
+      }
+    })
+  );
+  return doc.body.innerHTML;
+}
+
+/** 段落级元素：前后各加换行（段与段之间留一个空行） */
+const PARAGRAPH_TAGS = new Set([
+  "P",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "BLOCKQUOTE",
+  "FIGCAPTION",
+]);
+
+/** 块级元素：仅在前面加换行（避免连续的块之间产生多余空行） */
+const BLOCK_TAGS = new Set(["DIV", "TR", "PRE", "SECTION"]);
+
+/**
+ * 可容纳块级子元素的容器。
+ * 这些元素内部由 HTML 缩进产生的纯空白文本节点应忽略（浏览器渲染同样忽略），
+ * 否则列表项之间会莫名多出空行。
+ */
+const BLOCK_CONTAINERS = new Set([
+  ...PARAGRAPH_TAGS,
+  ...BLOCK_TAGS,
+  "LI",
+  "OL",
+  "UL",
+  "TABLE",
+  "TBODY",
+  "THEAD",
+  "BODY",
+]);
+
+/**
+ * HTML → 纯文本（TXT 导出）。
+ *
+ * 注意：不能用「每个块级元素前插换行」的朴素做法——列表项是 NodeView 渲染的
+ * <li><div class="label-wrapper">1.</div><div class="children">正文</div></li>，
+ * 那样会把编号和正文拆成两行。这里按语义递归：列表项整体作为一行输出。
+ */
+export function htmlToPlainText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const text = serializeNode(doc.body);
+  return (
+    text
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n") // 行尾空白
+      .replace(/\n{3,}/g, "\n\n") // 连续空行压成两个
+      .trim() + "\n"
+  );
+}
+
+/**
+ * 递归序列化 DOM 为纯文本，按元素语义决定是否换行。
+ * @param inBlock 当前是否处于块级上下文（决定纯空白文本节点是否忽略）
+ */
+function serializeNode(node: Node, inBlock = true): string {
+  let out = "";
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = child.textContent ?? "";
+      // 块级上下文：跳过纯空白文本（HTML 源码缩进，渲染时也不显示）。
+      // 行内上下文必须保留，否则 "hello <b>world</b>" 会粘成 "helloworld"。
+      if (inBlock && text.trim() === "") return;
+      out += text;
+      return;
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) return;
+    const el = child as Element;
+    const tag = el.tagName.toUpperCase();
+
+    if (tag === "BR") {
+      out += "\n";
+      return;
+    }
+    if (tag === "HR") {
+      out += "\n\n";
+      return;
+    }
+    // 图标/图片无法用文字表达（圆点、复选框都是 SVG），跳过
+    if (tag === "SVG" || tag === "IMG") return;
+
+    // 列表容器：整体按段落级处理（前后各留换行，让不同列表之间分明），
+    // 列表项之间则由 li 自身产生单换行，保持紧凑
+    if (tag === "OL" || tag === "UL") {
+      const inner = serializeNode(el, true).trim();
+      if (inner) out += `\n${inner}\n`;
+      return;
+    }
+
+    // 列表项：编号（或项目符号）与正文同属一行
+    if (tag === "LI") {
+      const label = collapseInline(
+        el.querySelector(".label-wrapper")?.textContent ?? ""
+      );
+      const body = collapseInline(el.querySelector(".children")?.textContent ?? "");
+      const line = [listItemPrefix(el, label), body].filter(Boolean).join(" ");
+      if (line.trim()) out += `\n${line}`;
+      return;
+    }
+
+    // 脚注定义：<dl data-type="footnote_definition"><dt>1</dt><dd>正文</dd></dl>
+    // 编辑器里靠 CSS 排成 "1. 正文" 同行；纯文本需手动拼成一行，
+    // 且 dt 后的点号是 CSS ::after 生成的，文本里没有，要补上
+    if (tag === "DL" && el.getAttribute("data-type") === "footnote_definition") {
+      const label = collapseInline(el.querySelector("dt")?.textContent ?? "");
+      const body = collapseInline(el.querySelector("dd")?.textContent ?? "");
+      const dot = label && !/[.。]$/.test(label) ? "." : "";
+      const line = [label ? `${label}${dot}` : "", body].filter(Boolean).join(" ");
+      // 按段落级处理：前后各留一个换行，与正文之间自然分隔
+      if (line.trim()) out += `\n${line}\n`;
+      return;
+    }
+
+    // 表格单元格：用制表符分隔（便于粘贴到表格软件），避免文字粘连
+    if (tag === "TD" || tag === "TH") {
+      const cell = collapseInline(el.textContent ?? "");
+      if (cell) out += `${cell}\t`;
+      return;
+    }
+
+    if (PARAGRAPH_TAGS.has(tag)) {
+      const inner = serializeNode(el, true).trim();
+      if (inner) out += `\n${inner}\n`;
+      return;
+    }
+
+    if (BLOCK_TAGS.has(tag)) {
+      const inner = serializeNode(el, true);
+      if (!inner.trim()) return;
+      // 列表项 NodeView 的包裹层（div.milkdown-list-item-block）本身不换行，
+      // 换行交给内部的 li，否则相邻列表项之间会多出一个空行
+      const isListItemWrapper =
+        tag === "DIV" && /milkdown-list-item-block/.test(el.className || "");
+      out += isListItemWrapper ? inner : `\n${inner}`;
+      return;
+    }
+
+    // 其余行内元素（span / strong / em / code / a 等）：直接拼接内容
+    out += serializeNode(el, BLOCK_CONTAINERS.has(tag));
+  });
+  return out;
+}
+
+/**
+ * 列表项前缀：
+ * - 任务列表：复选框是 SVG，按 data-checked 补 "[x] / [ ]"
+ * - 有序列表：NodeView 已把编号渲染成文本（如 "1."），优先直接用；
+ *   否则（未走 NodeView）按序号补 "n."
+ * - 无序列表：圆点是 SVG、文本里没有，补 "•"
+ *
+ * 注意：不能用 parentElement 判断列表类型——NodeView 会给 li 套一层
+ * div.milkdown-list-item-block，li 的父元素是 div 而非 ol/ul，
+ * 必须用 closest() 向上找真实列表容器。
+ */
+function listItemPrefix(el: Element, labelText: string): string {
+  if (el.getAttribute("data-item-type") === "task") {
+    return el.getAttribute("data-checked") === "true" ? "[x]" : "[ ]";
+  }
+  // NodeView 渲染的编号（如 "1."）优先使用
+  if (labelText) return labelText;
+  const list = el.closest("ol, ul");
+  const listTag = list?.tagName.toUpperCase();
+  if (listTag === "OL") {
+    const start = Number(list?.getAttribute("start") ?? 1);
+    const siblings = list ? Array.from(list.querySelectorAll(":scope > li")) : [];
+    const index = Math.max(0, siblings.indexOf(el));
+    return `${start + index}.`;
+  }
+  return listTag === "UL" ? "•" : "";
+}
+
+/** 折叠空白：文本节点里的换行与缩进压成单个空格 */
+function collapseInline(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 弹出「另存为」对话框并写入文件。
+ * @returns 实际写入的路径；用户取消返回 null
+ */
+export async function saveExportFile(
+  defaultName: string,
+  filters: { name: string; extensions: string[] }[],
+  data: string | Uint8Array
+): Promise<string | null> {
+  if (!isTauri) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const { writeTextFile, writeFile } = await import("@tauri-apps/plugin-fs");
+  const target = await save({ defaultPath: defaultName, filters });
+  if (!target) return null;
+  if (typeof data === "string") await writeTextFile(target, data);
+  else await writeFile(target, data);
+  return target;
+}

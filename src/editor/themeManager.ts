@@ -76,7 +76,7 @@ async function readThemeCss(path: string): Promise<string> {
     // readFile（二进制）不可用时（例如 dev 进程未重启、
     // fs:allow-read-file 权限尚未编译进应用），回退到 readTextFile。
     // 其对应权限 fs:allow-read-text-file 从一开始就存在，保证 UTF-8 文件仍可导入。
-    console.warn("[MilkTypo] readFile unavailable, fallback to readTextFile:", err);
+    console.warn("[NoteMark] readFile unavailable, fallback to readTextFile:", err);
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return readTextFile(path);
   }
@@ -192,7 +192,7 @@ export function applyCustomTheme(css: string): void {
   customDarkCss = extractMediaDarkBlocks(css);
   applyCustomDarkCss();
   console.log(
-    `[MilkTypo] custom theme applied (${normalized.length} chars; dark blocks: ${customDarkCss.length} chars; head has ${document.head.querySelectorAll("style").length} style tags)`
+    `[NoteMark] custom theme applied (${normalized.length} chars; dark blocks: ${customDarkCss.length} chars; head has ${document.head.querySelectorAll("style").length} style tags)`
   );
 }
 
@@ -213,7 +213,7 @@ export async function resetToDefaultTheme(): Promise<void> {
     await store.delete(THEME_PATH_KEY);
     await store.save();
   } catch (err) {
-    console.warn("[MilkTypo] clear theme path failed:", err);
+    console.warn("[NoteMark] clear theme path failed:", err);
   }
 }
 
@@ -230,7 +230,7 @@ async function saveThemePath(path: string): Promise<void> {
     await store.set(THEME_PATH_KEY, path);
     await store.save();
   } catch (err) {
-    console.warn("[MilkTypo] save theme path failed:", err);
+    console.warn("[NoteMark] save theme path failed:", err);
   }
 }
 
@@ -241,7 +241,7 @@ async function loadThemePath(): Promise<string | null> {
     const value = await store.get<string>(THEME_PATH_KEY);
     return typeof value === "string" && value ? value : null;
   } catch (err) {
-    console.warn("[MilkTypo] load theme path failed:", err);
+    console.warn("[NoteMark] load theme path failed:", err);
     return null;
   }
 }
@@ -259,7 +259,7 @@ export async function loadCustomTheme(): Promise<void> {
     applyCustomTheme(css);
     activeThemePath = path;
   } catch (err) {
-    console.warn("[MilkTypo] load custom theme failed:", err);
+    console.warn("[NoteMark] load custom theme failed:", err);
   }
 }
 
@@ -362,7 +362,7 @@ async function ensureThemesDir(): Promise<string | null> {
     await mkdir(dir, { recursive: true }); // 已存在时静默成功
     return dir;
   } catch (err) {
-    console.warn("[MilkTypo] ensure themes dir failed:", err);
+    console.warn("[NoteMark] ensure themes dir failed:", err);
     return null;
   }
 }
@@ -398,7 +398,7 @@ async function uniqueThemeFileName(
       if (!names.has(candidate.toLowerCase())) return candidate;
     }
   } catch (err) {
-    console.warn("[MilkTypo] check theme name conflict failed:", err);
+    console.warn("[NoteMark] check theme name conflict failed:", err);
   }
   return `${stem}.css`;
 }
@@ -426,7 +426,7 @@ export async function listInstalledThemes(): Promise<
     );
     return themes.sort((a, b) => a.name.localeCompare(b.name, "zh"));
   } catch (err) {
-    console.warn("[MilkTypo] list themes failed:", err);
+    console.warn("[NoteMark] list themes failed:", err);
     return [];
   }
 }
@@ -448,7 +448,7 @@ export async function openThemesDir(): Promise<string | null> {
     await openPath(dir);
     return dir;
   } catch (err) {
-    console.warn("[MilkTypo] open themes dir failed:", err);
+    console.warn("[NoteMark] open themes dir failed:", err);
     return null;
   }
 }
@@ -484,7 +484,7 @@ export async function loadDarkModePreference(): Promise<boolean | null> {
     const value = await store.get<boolean>(DARK_MODE_KEY);
     return typeof value === "boolean" ? value : null;
   } catch (err) {
-    console.warn("[MilkTypo] load dark mode preference failed:", err);
+    console.warn("[NoteMark] load dark mode preference failed:", err);
     return null;
   }
 }
@@ -497,6 +497,6 @@ export async function saveDarkModePreference(dark: boolean): Promise<void> {
     await store.set(DARK_MODE_KEY, dark);
     await store.save();
   } catch (err) {
-    console.warn("[MilkTypo] save dark mode preference failed:", err);
+    console.warn("[NoteMark] save dark mode preference failed:", err);
   }
 }

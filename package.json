@@ -1,5 +1,5 @@
 {
-  "name": "milktypo",
+  "name": "notemark",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -24,6 +24,7 @@
     "@tauri-apps/plugin-fs": "^2",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-store": "^2.4.4",
+    "docx": "^9.7.1",
     "remark-frontmatter": "^5.0.0",
     "vue": "^3.5.41"
   },

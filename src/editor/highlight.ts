@@ -59,7 +59,7 @@ const highlightRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
 };
 
 export const highlightRemark = $remark(
-  "milktypo-highlight",
+  "notemark-highlight",
   () => highlightRemarkTransform
 );
 

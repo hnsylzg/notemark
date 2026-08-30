@@ -71,6 +71,6 @@ const htmlMergeTransform: RemarkPluginRaw<never[]> = () => (tree) => {
   visit(tree as unknown as MarkdownNode);
 };
 
-export const htmlMergeRemark = $remark("milktypo-html-merge", () => htmlMergeTransform);
+export const htmlMergeRemark = $remark("notemark-html-merge", () => htmlMergeTransform);
 
 export const htmlMergePlugins: MilkdownPlugin[] = [...htmlMergeRemark];

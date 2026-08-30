@@ -1,5 +1,5 @@
 /*
- * custom-theme.example.css — MilkTypo 自定义主题示例（暗色）
+ * custom-theme.example.css — NoteMark 自定义主题示例（暗色）
  *
  * 使用方法：
  *   工具栏「主题」→「导入自定义主题...」→ 选择本文件
@@ -100,3 +100,41 @@
  *   .milkdown h1 { font-size: 32px; color: var(--mt-color-primary); }
  *   .milkdown .milkdown-code-block { border: 1px solid #3a4150; }
  */
+
+/* ============ 图片排版（可选） ============
+ * 内置只保证图片不溢出（max-width:100%），不替用户决定排版：
+ * 垂直对齐沿用 CSS 初始值 baseline（图片底边落在文字基线上），
+ * 与外部 Markdown 渲染（GitHub 等）一致。需要的话在下面开启。
+ *
+ * 两段可以同时启用，互不冲突：
+ *   ① 单独成行的图片（带 .mt-image-block 标记）→ 水平居中
+ *   ② 与文字同排的图片（无该标记）             → 垂直居中
+ *
+ * 标记从哪来：src/editor/image-block.ts 用 ProseMirror Decoration 给
+ * 「所在段落里只有它一个子节点」的图片加上 .mt-image-block，
+ * 文档一变就自动重算（在图片前打字，标记立刻消失）。
+ * 没有这个标记，纯 CSS 分不开两种情况：选择器看不到文本节点，
+ * 且 ProseMirror 会在段落里插入 separator / trailingBreak 两个辅助元素，
+ * 使 :only-child、:only-of-type 全部失效。
+ *
+ * 生效方式：删掉目标片段首尾两行的块注释标记即可。
+ */
+
+/* ---- ① 单独成行的图片：水平居中 ----
+ * 不需要就整段删掉，或在首尾补上块注释标记。 */
+.milkdown img.mt-image-block {
+  display: block;
+  margin: 1.2em auto;
+}
+
+/* ---- ② 与文字同排的图片：垂直居中 ----
+ * 把默认的 baseline 改成 middle，图片中线与文字中线对齐。
+ * 实测 200x120 的图：baseline 时图片中心比文字中心高 54px
+ * （文字吊在图片底部），middle 后差值降到 2px。
+ *
+ * :not(.ProseMirror-separator) 不能省：ProseMirror 会在每个行内节点后
+ * 插入 1px 透明占位 img 用于放置光标，它同样是 img。
+ * 不需要就整段删掉，或在首尾补上块注释标记。 */
+.milkdown img:not(.ProseMirror-separator) {
+  vertical-align: middle;
+}

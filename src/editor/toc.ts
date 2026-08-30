@@ -70,7 +70,7 @@ const tocRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
   visit(tree as unknown as MarkdownNode);
 };
 
-export const tocRemark = $remark("milktypo-toc", () => tocRemarkTransform);
+export const tocRemark = $remark("notemark-toc", () => tocRemarkTransform);
 
 export const tocSchema = $nodeSchema(TOC_NAME, () => ({
   group: "block",
@@ -212,7 +212,7 @@ export const tocView = $view(tocSchema.node, () => {
  */
 export const tocPlugin = $prose(() =>
   new Plugin({
-    key: new PluginKey("milktypo-toc"),
+    key: new PluginKey("notemark-toc"),
     view: (editorView) => {
       const refresh = () => {
         const containers = editorView.dom.querySelectorAll(

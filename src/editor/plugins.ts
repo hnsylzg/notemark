@@ -40,6 +40,10 @@ import { codeBlockComponent } from "@milkdown/components/code-block";
 import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
+import { findReplacePlugin } from "./find-replace";
+import { imagePastePlugin } from "./image-paste";
+import { imageDropPlugin } from "./image-drop";
+import { imageBlockPlugin } from "./image-block";
 import "@milkdown/prose/gapcursor/style/gapcursor.css";
 
 const gapcursorPlugin = $prose(() => gapCursor());
@@ -65,6 +69,13 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     diagramView,
     gapcursorPlugin,
     tableMenuPlugin,
+    findReplacePlugin,
+    // 必须排在 clipboard 之前：ProseMirror 的 handlePaste 按注册顺序取第一个
+    // 返回 true 的插件，纯图片粘贴没有 text/html 与 text/plain，
+    // 交给 clipboard 解析只会得到空内容（图片丢失），这里先接管。
+    imagePastePlugin,
+    imageDropPlugin,
+    imageBlockPlugin,
     clipboard,
     ...alertPlugins,
     ...highlightPlugins,

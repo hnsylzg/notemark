@@ -83,6 +83,15 @@
   --mt-alert-note-bg: #e5ebf179;
   --mt-alert-note-border: #0969da;
 
+  /* ============ 查找高亮（find.css 消费） ============
+   * 非当前匹配用半透明琥珀底（不遮挡文字），当前匹配用实底 + 深色描边，
+   * 两者必须在深色/浅色下都能与正文区分。
+   */
+  --mt-find-bg: rgba(255, 176, 0, 0.38);
+  --mt-find-bg-current: #ffb300;
+  --mt-find-fg-current: #1a1a1a;
+  --mt-find-border-current: #e65100;
+
   /* ============ 阴影 / 圆角 ============ */
   --mt-radius: 6px;
   --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
@@ -148,6 +157,12 @@
   --mt-alert-note-fg: #6cb0ff;
   --mt-alert-note-bg: rgba(91, 155, 255, 0.14);
   --mt-alert-note-border: #5b9bff;
+
+  /* ============ 查找高亮（暗色：底色降饱和，当前匹配加深以承载白字） ============ */
+  --mt-find-bg: rgba(255, 176, 0, 0.26);
+  --mt-find-bg-current: #b26a00;
+  --mt-find-fg-current: #ffffff;
+  --mt-find-border-current: #ffca28;
 
   --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 

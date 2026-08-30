@@ -145,7 +145,7 @@ export const diagramView = $view(diagramSchema.node, () => {
         });
     };
 
-    // 双击图表进入源码编辑；Esc 取消，Ctrl/Cmd+Enter 或失焦保存。
+    // 单击图表进入源码编辑；Esc 取消，Ctrl/Cmd+Enter 或失焦保存。
     // stopEvent 拦截的是传给 ProseMirror 的事件，不影响挂在本 DOM 上的监听器。
     const startEdit = () => {
       if (editing) return;
@@ -202,7 +202,7 @@ export const diagramView = $view(diagramSchema.node, () => {
       textarea.addEventListener("blur", () => finish(true));
     };
 
-    dom.addEventListener("dblclick", startEdit);
+    dom.addEventListener("click", startEdit);
     render();
     renderers.add(render);
 

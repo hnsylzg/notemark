@@ -26,7 +26,7 @@ import remarkFrontmatter from "remark-frontmatter";
 const FRONTMATTER_OPTIONS = { type: "yaml", marker: "-" };
 
 export const frontmatterRemark = $remark(
-  "milktypo-frontmatter",
+  "notemark-frontmatter",
   () => remarkFrontmatter as RemarkPluginRaw<typeof FRONTMATTER_OPTIONS>,
   FRONTMATTER_OPTIONS
 );

@@ -125,6 +125,9 @@
 :where(.milkdown .editor) img {
   max-width: 100%;
   border-radius: 0; /* 图片保持直角，不切圆角 */
+  /* 不设置 vertical-align：沿用 CSS 初始值 baseline（浏览器默认，
+     Milkdown 也未覆盖），即图片底边落在文字基线上。
+     这里保持与外部 Markdown 渲染（GitHub 等）一致，不做主观调整。 */
 }
 
 /* ============ 列表 ============

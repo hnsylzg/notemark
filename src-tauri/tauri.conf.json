@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "MilkTypo",
+  "productName": "NoteMark",
   "version": "0.1.0",
-  "identifier": "com.milktypo.app",
+  "identifier": "com.notemark.editor",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "MilkTypo",
+        "title": "NoteMark",
         "width": 1000,
         "height": 720,
         "minWidth": 480,
@@ -20,7 +20,8 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "decorations": true
+        "decorations": true,
+        "dragDropEnabled": true
       }
     ],
     "security": {
@@ -47,7 +48,7 @@
     ],
     "category": "Productivity",
     "shortDescription": "A Typora-style WYSIWYG Markdown editor.",
-    "longDescription": "MilkTypo — a distraction-free, WYSIWYG Markdown editor built on Milkdown + Tauri.",
+    "longDescription": "NoteMark — a distraction-free, WYSIWYG Markdown editor built on Milkdown + Tauri.",
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

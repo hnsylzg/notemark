@@ -81,7 +81,7 @@ const alertRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
   visit(tree as unknown as MarkdownNode);
 };
 
-export const alertRemark = $remark("milktypo-alert", () => alertRemarkTransform);
+export const alertRemark = $remark("notemark-alert", () => alertRemarkTransform);
 
 export const alertSchema = $nodeSchema("alert", () => ({
   group: "block",
