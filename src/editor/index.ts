@@ -1037,6 +1037,29 @@ export function coordsAtPos(
 }
 
 /**
+ * 聚焦编辑器并把光标放到文档开头。
+ *
+ * 新建文档后调用：否则焦点还留在工具栏按钮上，用户必须再用鼠标点一下
+ * 编辑区才能开始打字。
+ */
+export function focusEditorStart(editor: Editor): void {
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    // 空文档时内容尺寸为 2（一个空段落），光标收敛到 1 即段落内容起始，
+    // 直接用 1 在极端情况下（文档被清空到 0）会解析越界。
+    const size = view.state.doc.content.size;
+    const pos = Math.min(1, Math.max(0, size));
+    try {
+      const $pos = view.state.doc.resolve(pos);
+      view.dispatch(view.state.tr.setSelection(TextSelection.near($pos)));
+    } catch {
+      /* 文档结构异常时退化为仅聚焦，不影响主流程 */
+    }
+    view.focus();
+  });
+}
+
+/**
  * 创建一个已配置插件、但未 create 的 Milkdown Editor 实例。
  * @param root 挂载的 DOM 容器（必须是带 .milkdown 类的元素）
  * @param defaultValue 初始 Markdown / HTML 内容（默认空）

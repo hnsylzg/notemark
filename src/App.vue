@@ -15,6 +15,7 @@ import {
   scrollToPos,
   posAtCoords,
   coordsAtPos,
+  focusEditorStart,
 } from "@/editor/index";
 import type { HeadingItem } from "@/editor/index";
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
@@ -815,6 +816,8 @@ async function handleNew() {
     isDirty.value = false;
     syncSourceDraft();
     refreshHeadings();
+    // 焦点还停在工具栏按钮上，交给编辑区，用户可以直接开始输入
+    focusEditorStart(editorInstance);
   }
 }
 
@@ -1088,6 +1091,8 @@ async function createNewFile() {
     await refreshWorkspace(workspaceDir.value);
     // 新建后直接打开，符合「新建即可编辑」的直觉
     await handleSidebarOpenFile(target);
+    // 同上：新建的空文档把焦点交给编辑区，打开即可输入
+    if (editorInstance) focusEditorStart(editorInstance);
   } catch (err) {
     console.error("[NoteMark] create file failed:", err);
     alert(`创建失败：${err instanceof Error ? err.message : String(err)}`);
@@ -1831,6 +1836,12 @@ onMounted(() => {
         pendingApply = null;
         // 初始文档也可能含标题（示例内容/上次加载），补一次大纲收集
         refreshHeadings();
+        // 启动后把光标放进编辑区：否则打开应用还得先点一下才能打字。
+        // 延后一帧执行——应用刚启动时窗口可能还没拿到系统焦点，
+        // 此时立刻 focus 会被浏览器忽略。
+        requestAnimationFrame(() => {
+          if (editorInstance) focusEditorStart(editorInstance);
+        });
       }
     });
   } catch (err) {

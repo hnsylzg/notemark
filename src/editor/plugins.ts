@@ -41,6 +41,7 @@ import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
 import { findReplacePlugin } from "./find-replace";
+import { inlineMarkEscapePlugin } from "./inline-mark-escape";
 import { imagePastePlugin } from "./image-paste";
 import { imageDropPlugin } from "./image-drop";
 import { imageBlockPlugin } from "./image-block";
@@ -70,6 +71,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     gapcursorPlugin,
     tableMenuPlugin,
     findReplacePlugin,
+    // 必须排在 findReplacePlugin 之后：查找栏打开时 Esc 先用于关闭查找栏，
+    // 查找栏关闭状态下 Esc 才轮到"跳出加粗等行内格式"（见 inline-mark-escape.ts）
+    inlineMarkEscapePlugin,
     // 必须排在 clipboard 之前：ProseMirror 的 handlePaste 按注册顺序取第一个
     // 返回 true 的插件，纯图片粘贴没有 text/html 与 text/plain，
     // 交给 clipboard 解析只会得到空内容（图片丢失），这里先接管。
