@@ -1,0 +1,2 @@
+# 统一换行符为 LF（跨平台：Vue 前端 + Tauri/Rust 桌面端 + Linux CI 均以 LF 为准）
+* text=auto eol=lf
