@@ -181,11 +181,11 @@ function renderTocInner(
     a.addEventListener("click", (e) => {
       e.preventDefault();
       const target = view.state.doc.resolve(h.pos);
-      const tr = view.state.tr.setSelection(
-        TextSelection.near(target),
-      );
-      view.dispatch(tr);
       const headingDom = view.nodeDOM(h.pos - 1) as HTMLElement | null;
+      const tr = view.state.tr.setSelection(TextSelection.near(target));
+      // 关掉 ProseMirror 自带的瞬时滚动，统一交给下方平滑滚动，避免“先跳一下再滑”
+      if (headingDom) tr.setMeta("scrollIntoView", false);
+      view.dispatch(tr);
       headingDom?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
     li.appendChild(a);
@@ -240,13 +240,16 @@ export const tocPlugin = $prose(() =>
       };
       setTimeout(refresh, 0);
       return {
-        update: (view) => {
+        update: (view, prevState) => {
+          // 仅在「文档内容」变化（标题增删/改名）时重建目录。
+          // 选区变化（点击目录项设光标、mousedown 落点等）不触发重建——
+          // 否则会在 mousedown 事务里把正在被点的 <a> 销毁，导致 click 事件
+          // 丢失、需要双击才跳转，且命中错位。
+          if (prevState && view.state.doc.eq(prevState.doc)) return;
           const containers = view.dom.querySelectorAll(
             `div[data-type="${TOC_NAME}"]`,
           );
-          containers.forEach((c) =>
-            renderToc(c as HTMLElement, view),
-          );
+          containers.forEach((c) => renderToc(c as HTMLElement, view));
         },
       };
     },
