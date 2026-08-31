@@ -27,5 +27,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-store = "2"
+# 记住并恢复窗口位置 / 大小（上次窗口尺寸）
+tauri-plugin-window-state = "2"
 # 删除文件到系统回收站（可恢复）；前端 fs 插件的 remove 只能直接删除
 trash = "5"

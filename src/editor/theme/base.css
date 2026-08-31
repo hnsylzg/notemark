@@ -262,7 +262,9 @@
   border-radius: 0.1px;
 }
 :where(.milkdown .editor) blockquote > p {
-  margin: 4px 0;
+  /* !important：外部未分层主题会写 .milkdown p 全局 margin，
+     此处必须用 !important 才能保证引用块内段落不被撑大、与 .md-alert 对齐 */
+  margin: 4px 0 !important;
 }
 
 /* ============ Alert 引用块（> [!NOTE] 等，GitHub 风格） ============
@@ -369,8 +371,8 @@
   border-collapse: collapse;
   margin: 1em 0;
   width: 100%;
-  overflow: hidden;
-  border-radius: var(--mt-radius);
+  overflow: visible;
+  border-radius: 0;
 }
 :where(.milkdown .editor) th,
 :where(.milkdown .editor) td {
@@ -383,7 +385,7 @@
   background: var(--mt-color-bg-soft);
   font-weight: 600;
 }
-/* 斑马纹从第 3 行开始（表头占第 1 行），与表头颜色错开 */
+/* 斑马纹从表头（首行）之后开始：奇数数据行（第 3、5、7… 行）与表头同色 */
 :where(.milkdown .editor) tr:nth-child(odd) td {
   background: var(--mt-color-bg-soft);
 }

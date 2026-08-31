@@ -48,6 +48,9 @@
   --mt-color-selection: rgba(225, 29, 72, 0.14); /* 选区 */
   --mt-color-link: #be185d;            /* 链接（深玫瑰红） */
 
+  /* ---- 表格斑马纹（对齐 Typora forest，亮色 0.03，取主色玫瑰红） ---- */
+  --mt-table-stripe: rgba(225, 29, 72, 0.03);
+
   /* ---- 排版 ---- */
   --mt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
@@ -77,6 +80,8 @@
   --mt-token-operator: #db2777;        /* 运算符 */
   --mt-token-variable: #b45309;        /* 变量 */
   --mt-token-type: #0d9488;            /* 类型 */
+  --mt-token-property: #059669;        /* 属性名 / 方法调用（绿） */
+  --mt-token-tag: #0d9488;             /* HTML 标签（青绿） */
 
   /* ---- Mermaid 图表 ---- */
   --mt-mermaid-fg: #292524;
@@ -123,6 +128,9 @@
   --mt-color-selection: rgba(244, 114, 182, 0.22);
   --mt-color-link: #f59cc2;
 
+  /* ---- 表格斑马纹（对齐 Typora forest，暗色 0.06，取主色亮玫红） ---- */
+  --mt-table-stripe: rgba(244, 114, 182, 0.06);
+
   --mt-code-bg: #121116;               /* 代码块底色 */
   --mt-code-fg: #d6d3d1;
   --mt-code-border: #2c2933;
@@ -137,6 +145,8 @@
   --mt-token-operator: #f472b6;
   --mt-token-variable: #fdba74;
   --mt-token-type: #5eead4;
+  --mt-token-property: #6ee7b7;        /* 属性名 / 方法调用（绿） */
+  --mt-token-tag: #5eead4;             /* HTML 标签（青绿） */
 
   --mt-mermaid-fg: #e7e5e4;
 
@@ -358,14 +368,13 @@
   text-align: left;
 }
 .milkdown th {
-  background: var(--mt-color-primary-soft);
-  color: var(--mt-color-primary);
-  font-weight: 600;
-  /* 上/下边框与表头背景同色（弱化横向边界）；左/右竖线用边框色（可见，与数据行一致） */
-  border-color: var(--mt-color-primary-soft) var(--mt-color-border) var(--mt-color-primary-soft) var(--mt-color-border);
+  font-weight: bold;          /* 表头仅加粗，不另设底色/文字色 */
 }
-.milkdown tr:nth-child(even) td {
-  background: var(--mt-color-bg-soft);
+/* 斑马纹从表头（首行）起即开始交替，表头也参与条纹。
+   表头用 th 覆盖、奇数数据行用 tr:nth-child(odd) 覆盖（共用 --mt-table-stripe）。 */
+.milkdown th,
+.milkdown tr:nth-child(odd) > td {
+  background: var(--mt-table-stripe);
 }
 .milkdown tr:hover td {
   background: var(--mt-color-primary-soft);

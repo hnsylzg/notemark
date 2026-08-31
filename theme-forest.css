@@ -1,0 +1,705 @@
+/*
+ * ═══════════════════════════════════════════════════════════════
+ *  NoteMark 全元素主题 · Forest（森林青绿色系）
+ * ═══════════════════════════════════════════════════════════════
+ *
+ *  通过「主题 → 导入」加载本文件即可整体换肤。
+ *
+ *  改色方法：只改第 1 节 CSS 变量即可，所有元素都引用变量。
+ *
+ *  选择器约定：内置主题规则已用 :where() 把特异性压到最低，
+ *  本文件用 .milkdown <element>（特异性 (0,1,1)）即可覆盖全部元素。
+ *
+ *  目录
+ *    1. CSS 变量（亮色 / 暗色）
+ *    2. 画布与选区
+ *    3. 标题 h1–h6
+ *    4. 段落与行内文本
+ *    5. 分割线 / 图片
+ *    6. 列表（无序 / 有序）
+ *    7. 任务列表（复选框）
+ *    8. 引用块
+ *    9. 表格
+ *   10. 行内代码
+ *   11. 代码块
+ *   12. 代码语法高亮 token
+ *   13. 数学公式（KaTeX）
+ *   14. Mermaid 图表
+ *   15. 滚动条
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ═══════════════════════════════════════════════════════════════
+ * 1. CSS 变量
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown {
+  /* ---- 基础色彩（亮色，按 Typora forest 主题取色） ---- */
+  --mt-color-fg: #363C42;              /* 正文（forest text-color） */
+  --mt-color-fg-soft: #5b6b65;         /* 次级文字 */
+  --mt-color-fg-muted: #81888D;        /* 弱化文字（forest quote-text） */
+  --mt-color-bg: #ffffff;              /* 画布 */
+  --mt-color-bg-soft: #f2f5f4;         /* 浅底（引用/表格/高亮底） */
+  --mt-color-bg-elevated: #ffffff;     /* 浮层（弹窗/选择器） */
+
+  --mt-color-primary: #00997B;         /* 主色（forest theme-primary） */
+  --mt-color-primary-soft: #e0f2ee;    /* 主色浅底 */
+  --mt-color-h1: #003444;              /* 标题 h1 深青（forest h1-text，仅亮色生效） */
+  --mt-color-border: #dde3e0;          /* 细边框（forest table-border 靠拢） */
+  --mt-color-border-strong: #c2ccc8;   /* 粗边框 */
+  --mt-color-selection: rgba(0, 153, 123, 0.2); /* 选区（forest selection） */
+  --mt-color-link: #00997B;            /* 链接（forest a-text） */
+
+  /* ---- 排版（不变） ---- */
+  --mt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+    Arial, sans-serif;
+  --mt-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono",
+    Menlo, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --mt-font-size-base: 14px;
+  --mt-line-height-base: 1.6;
+  --mt-content-width: 800px;
+  --mt-content-padding: 48px;
+
+  /* ---- 行内代码（按 forest：浅底深青字） ---- */
+  --mt-inline-code-bg: #f3f3f3;
+  --mt-inline-code-fg: #00769A;
+  --mt-inline-code-border: #e6e6e6;
+
+  /* ---- 代码块（按 forest code-mirror：深青底亮字） ---- */
+  --mt-code-bg: #003444;               /* 代码块底色（forest code bg） */
+  --mt-code-fg: #EEFFFF;               /* 代码文字（forest code text） */
+  --mt-code-border: #0d3b34;           /* 代码块边框 */
+  --mt-code-font-size: 14px;
+  --mt-code-line-height: 1.6;
+  --mt-code-gutter-fg: #546E7A;        /* 行号（forest gutter） */
+  --mt-code-gutter-bg: #003444;        /* 行号区底色 */
+  --mt-code-active-line: rgba(255, 255, 255, 0.06); /* 当前行 */
+
+  /* ---- 代码语法高亮 token（按 Typora forest code-mirror） ---- */
+  --mt-token-keyword: #C792EA;         /* 关键字（紫） */
+  --mt-token-string: #C3E88D;          /* 字符串（绿） */
+  --mt-token-number: #F77669;          /* 数字（珊瑚红） */
+  --mt-token-comment: #AEBBC2;         /* 注释（灰） */
+  --mt-token-function: #00AEC4;        /* 函数名 / 定义（亮青，对齐 cm-def） */
+  --mt-token-operator: #E9EDED;        /* 运算符（近白） */
+  --mt-token-variable: #82B1FF;        /* 变量（蓝） */
+  --mt-token-type: #DECB6B;            /* 类型（黄） */
+  --mt-token-property: #80CBAE;        /* 属性名 / 方法调用（青绿，对齐 cm-property） */
+  --mt-token-tag: #80CBC4;             /* HTML 标签（青，对齐 cm-tag） */
+
+  /* ---- 引用块底色（按 forest blockquote：主色青绿 5%） ---- */
+  --mt-quote-bg: rgba(0, 153, 123, 0.05);
+  --mt-table-stripe: rgba(0, 153, 123, 0.03);  /* 表格斑马纹（对齐 Typora forest，亮色 0.03） */
+
+  /* ---- Mermaid 图表 ---- */
+  --mt-mermaid-fg: #363C42;
+
+  /* ---- Alert 引用块（按 forest：GitHub 风格配色） ---- */
+  --mt-alert-note-fg: #0969da;
+  --mt-alert-note-bg: #e5ebf179;
+  --mt-alert-note-border: #0969da;
+  --mt-alert-tip-fg: #1F883D;
+  --mt-alert-tip-bg: #e8f4eb90;
+  --mt-alert-tip-border: #1F883D;
+  --mt-alert-important-fg: #8250df;
+  --mt-alert-important-bg: #eae6f286;
+  --mt-alert-important-border: #8250df;
+  --mt-alert-warning-fg: #9A6700;
+  --mt-alert-warning-bg: #f4f1e97d;
+  --mt-alert-warning-border: #9A6700;
+  --mt-alert-caution-fg: #CF222E;
+  --mt-alert-caution-bg: #f5ecec86;
+  --mt-alert-caution-border: #CF222E;
+
+  /* ---- 阴影 / 圆角（不变） ---- */
+  --mt-radius: 6px;
+  --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+
+  /* ---- 语义别名 ---- */
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+/* 暗色：深色开关只设置 <html data-theme="dark">，选择器须与内置 dark.css 一致 */
+.milkdown:where(html[data-theme="dark"] *) {
+  --mt-color-fg: #e5eae6;
+  --mt-color-fg-soft: #a9b5ad;
+  --mt-color-fg-muted: #6f7d74;
+  --mt-color-bg: #131a16;
+  --mt-color-bg-soft: #1b241e;
+  --mt-color-bg-elevated: #202b24;
+
+  --mt-color-primary: #2dd4bf;         /* 主色（forest 亮青绿） */
+  --mt-color-primary-soft: #0f3b34;    /* 主色浅底 */
+  --mt-color-h1: #2dd4bf;              /* 标题 h1（暗色下改用亮青绿，避免深青看不见） */
+  --mt-color-border: #2a352e;
+  --mt-color-border-strong: #3a483f;
+  --mt-color-selection: rgba(45, 212, 191, 0.22);
+  --mt-color-link: #5eead4;
+
+  /* ---- 行内代码（暗色下仍浅底深青字，与亮色一致） ---- */
+  --mt-inline-code-bg: #f3f3f3;
+  --mt-inline-code-fg: #00769A;
+  --mt-inline-code-border: #e6e6e6;
+
+  /* ---- 代码块（按 forest code-mirror 深青底亮字） ---- */
+  --mt-code-bg: #003444;
+  --mt-code-fg: #EEFFFF;
+  --mt-code-border: #0d3b34;
+  --mt-code-gutter-fg: #546E7A;
+  --mt-code-gutter-bg: #003444;
+  --mt-code-active-line: rgba(255, 255, 255, 0.06);
+
+  --mt-token-keyword: #C792EA;
+  --mt-token-string: #C3E88D;
+  --mt-token-number: #F77669;
+  --mt-token-comment: #AEBBC2;
+  --mt-token-function: #00AEC4;
+  --mt-token-operator: #E9EDED;
+  --mt-token-variable: #82B1FF;
+  --mt-token-type: #DECB6B;
+  --mt-token-property: #80CBAE;
+  --mt-token-tag: #80CBC4;
+
+  --mt-mermaid-fg: #e5eae6;
+
+  /* ---- 引用块底色（暗色：主色青绿 12%） ---- */
+  --mt-quote-bg: rgba(45, 212, 191, 0.12);
+  --mt-table-stripe: rgba(45, 212, 191, 0.06);  /* 表格斑马纹（对齐 Typora forest，暗色） */
+
+  /* ---- Alert 引用块（暗色，GitHub 同色系） ---- */
+  --mt-alert-note-fg: #6cb0ff;
+  --mt-alert-note-bg: rgba(91, 155, 255, 0.14);
+  --mt-alert-note-border: #5b9bff;
+  --mt-alert-tip-fg: #56d364;
+  --mt-alert-tip-bg: rgba(86, 211, 100, 0.14);
+  --mt-alert-tip-border: #56d364;
+  --mt-alert-important-fg: #d2a8ff;
+  --mt-alert-important-bg: rgba(210, 168, 255, 0.14);
+  --mt-alert-important-border: #a371f7;
+  --mt-alert-warning-fg: #e3b341;
+  --mt-alert-warning-bg: rgba(227, 179, 65, 0.14);
+  --mt-alert-warning-border: #d4a72c;
+  --mt-alert-caution-fg: #ff7b72;
+  --mt-alert-caution-bg: rgba(255, 123, 114, 0.14);
+  --mt-alert-caution-border: #ff8182;
+
+  --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 2. 画布与选区
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown {
+  color: var(--mt-text);
+  background: var(--mt-bg);
+  font-family: var(--mt-font-sans);
+  font-size: var(--mt-font-size-base);
+  line-height: var(--mt-line-height-base);
+}
+
+.milkdown .editor {
+  margin: 0 auto;
+  padding: 24px 0 80px;
+  box-sizing: border-box;
+}
+
+.milkdown ::selection {
+  background: var(--mt-color-selection);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 3. 标题 h1–h6
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown h1,
+.milkdown h2,
+.milkdown h3,
+.milkdown h4,
+.milkdown h5,
+.milkdown h6 {
+  line-height: 2;
+  font-style: normal;
+  margin: 14px 0;
+  position: relative;
+}
+.milkdown h2,
+.milkdown h3,
+.milkdown h4 {
+  color: var(--mt-text);
+}
+
+/* forest 标志：H2–H6 左侧 gutter 前缀标签 */
+.milkdown h2::before,
+.milkdown h3::before,
+.milkdown h4::before,
+.milkdown h5::before,
+.milkdown h6::before {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--mt-color-fg-muted);
+  font-size: 0.8rem;
+  font-weight: bold;
+  font-variant: small-caps;
+  line-height: 2;
+  padding: 0;
+  border: 0;
+}
+
+.milkdown h1 {
+  font-size: 2.1em;
+  font-weight: bold;
+  text-align: center;
+  color: var(--mt-color-h1, var(--mt-color-primary));
+  border-bottom: none;     /* forest：去掉 h1 下方横线 */
+  padding-bottom: 0;
+}
+.milkdown h2 {
+  font-size: 1.7em;
+  font-weight: bold;
+}
+.milkdown h2::before { content: 'H2'; }
+.milkdown h3 {
+  font-size: 1.4em;
+  font-weight: bold;
+}
+.milkdown h3::before { content: 'H3'; }
+.milkdown h4,
+.milkdown h5,
+.milkdown h6 {
+  font-size: 1.2em;
+  font-weight: bold;
+}
+.milkdown h6 {
+  font-size: 1.1em;
+}
+.milkdown h5 {
+  color: var(--mt-color-primary);
+}
+.milkdown h4::before { content: 'H4'; }
+.milkdown h5::before { content: 'H5'; }
+.milkdown h6 {
+  color: var(--mt-color-primary);
+}
+.milkdown h6::before { content: 'H6'; }
+
+/* ═══════════════════════════════════════════════════════════════
+ * 4. 段落与行内文本
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown p {
+  margin: 10px 0;
+}
+
+.milkdown a {
+  color: var(--mt-color-link);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.milkdown a:hover {
+  border-bottom-color: currentColor;
+}
+.milkdown strong {
+  font-weight: 600;
+  color: var(--mt-text);
+}
+.milkdown em {
+  font-style: italic;
+}
+.milkdown del {
+  text-decoration: line-through;
+  color: var(--mt-color-fg-muted);
+}
+.milkdown mark {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-text);
+  padding: 0.05em 0.2em;
+  border-radius: 3px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 5. 分割线 / 图片
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown div[mdtype='hr'] {
+  text-align: center;
+}
+.milkdown hr {
+  border: none;
+  border-top: 1px dashed var(--mt-color-primary);
+  transform: scaleY(0.5);
+  width: 100%;
+  margin: 1em 0;
+}
+.milkdown img {
+  max-width: 100%;
+  border-radius: 0; /* 图片保持直角 */
+  box-shadow: var(--mt-shadow);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 6. 列表（无序 / 有序）
+ *    列表项由 list-item-block NodeView 渲染，原生 ::marker 已禁用，
+ *    marker 由 .label-wrapper 输出，这里覆盖其颜色。
+ *    缩进 / 间距沿用内置 base.css：ul,ol padding-left 0.5em + margin
+ *    0.8em 0，li margin 0（marker 列宽由内置 .list-item 的
+ *    padding-left: 1.4em 提供，此处不再叠加缩进）
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown ul,
+.milkdown ol {
+  padding-left: 0.5em;
+  margin: 0.8em 0;
+}
+.milkdown li {
+  margin: 0;
+}
+.milkdown li > p {
+  margin: 0;
+}
+/* 列表标记统一主题色（无序圆点 / 有序数字 / 勾选框） */
+.milkdown .milkdown-list-item-block .label-wrapper .label {
+  color: var(--mt-color-primary);
+}
+.milkdown .milkdown-list-item-block .label-wrapper .label.ordered {
+  font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 7. 任务列表（SVG 复选框）
+ *    勾选框为 SVG 图标（点击自动切换 checked），布局骨架由内置
+ *    base.css 提供；已勾选行整行置灰 + 删除线。
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown .milkdown-list-item-block > .list-item:has(> .label-wrapper > .label.checked) > .children {
+  color: var(--mt-color-fg-muted);
+  text-decoration: line-through;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 8. 引用块
+ *    图标与标题由内置 base.css 提供，这里只覆盖颜色 / 圆角 / padding。
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown blockquote {
+  padding: 0.5rem 1rem;
+  border-left: 4px solid var(--mt-color-primary);
+  background-color: var(--mt-quote-bg); /* 按 forest blockquote 主色青绿 5% */
+  border-radius: 6px;
+}
+
+.milkdown .md-alert {
+  padding: 0.5rem 0.8rem;
+  border-left: 4px solid;
+  border-radius: 6px;
+}
+
+.milkdown .md-alert-tip        { border-color: var(--mt-alert-tip-border);       background: var(--mt-alert-tip-bg); }
+.milkdown .md-alert-caution    { border-color: var(--mt-alert-caution-border);   background: var(--mt-alert-caution-bg); }
+.milkdown .md-alert-warning    { border-color: var(--mt-alert-warning-border);   background: var(--mt-alert-warning-bg); }
+.milkdown .md-alert-important  { border-color: var(--mt-alert-important-border); background: var(--mt-alert-important-bg); }
+.milkdown .md-alert-note       { border-color: var(--mt-alert-note-border);      background: var(--mt-alert-note-bg); }
+
+.milkdown .md-alert p {
+  margin: 4px 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 9. 表格
+ *    overflow / border-radius 必须显式覆盖内置值，
+ *    否则内置的 overflow:hidden + border-radius 会把表头背景裁出“切角”。
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: 100%;
+  overflow: visible;
+  border-radius: 0;
+}
+.milkdown th,
+.milkdown td {
+  border: 1px solid var(--mt-color-border);
+  padding: 1px 10px;            /* 紧凑表格 */
+  line-height: 1.2;
+  text-align: left;
+}
+.milkdown th {
+  font-weight: bold;          /* 表头仅加粗，不另设底色/文字色 */
+}
+/* 斑马纹从表头（首行）起即开始交替，表头也参与条纹。
+   表头用 th 覆盖、奇数数据行用 tr:nth-child(odd) 覆盖（共用 --mt-table-stripe）。 */
+.milkdown th,
+.milkdown tr:nth-child(odd) > td {
+  background: var(--mt-table-stripe);
+}
+.milkdown tr:hover td {
+  background: var(--mt-color-primary-soft);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 10. 行内代码
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown :not(pre) > code {
+  font-family: var(--mt-font-mono);
+  font-size: 0.88em;
+  background: var(--mt-inline-code-bg);
+  color: var(--mt-inline-code-fg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  border: 1px solid var(--mt-inline-code-border);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 11. 代码块
+ *     DOM：.milkdown-code-block
+ *       ├─ .tools           工具条（语言按钮 + 复制按钮）
+ *       ├─ .codemirror-host CM6 宿主（.cm-editor）
+ *       └─ .language-picker 语言选择浮层
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown .milkdown-code-block {
+  position: relative;
+  margin: 1em 0;
+  border-radius: var(--mt-radius);
+  background: var(--mt-code-bg);
+  padding: 12px 16px;
+}
+
+/* 工具条 */
+.milkdown .milkdown-code-block .tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -12px -16px 8px;
+  padding: 4px 8px 4px 12px;
+  background: var(--mt-code-bg);
+  border-radius: var(--mt-radius) var(--mt-radius) 0 0;
+  user-select: none;
+}
+.milkdown .milkdown-code-block .language-button,
+.milkdown .milkdown-code-block .copy-button,
+.milkdown .milkdown-code-block .preview-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--mt-code-gutter-fg);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+.milkdown .milkdown-code-block .language-button:hover,
+.milkdown .milkdown-code-block .copy-button:hover,
+.milkdown .milkdown-code-block .preview-toggle-button:hover {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-primary);
+}
+
+/* 语言选择浮层 */
+.milkdown .milkdown-code-block .language-picker {
+  position: absolute;
+  z-index: 100;
+  min-width: 220px;
+  max-width: 320px;
+}
+.milkdown .milkdown-code-block .list-wrapper {
+  margin-top: 4px;
+  background: var(--mt-color-bg-elevated);
+  border: 1px solid var(--mt-code-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  color: var(--mt-color-fg);
+}
+.milkdown .milkdown-code-block .search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mt-code-border);
+}
+.milkdown .milkdown-code-block .search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  color: var(--mt-color-fg);
+}
+.milkdown .milkdown-code-block .search-input::placeholder {
+  color: var(--mt-code-gutter-fg);
+}
+.milkdown .milkdown-code-block .language-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.milkdown .milkdown-code-block .language-list-item {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--mt-color-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.milkdown .milkdown-code-block .language-list-item:hover,
+.milkdown .milkdown-code-block .language-list-item[aria-selected="true"] {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-primary);
+}
+.milkdown .milkdown-code-block .language-list-item.no-result {
+  cursor: default;
+  color: var(--mt-code-gutter-fg);
+  text-align: center;
+  padding: 16px 10px;
+}
+
+/* CM6 容器 */
+.milkdown .milkdown-code-block .codemirror-host {
+  overflow: hidden;
+  border-radius: 0 0 var(--mt-radius) var(--mt-radius);
+}
+.milkdown .cm-editor {
+  background: transparent;
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: var(--mt-code-font-size);
+  line-height: var(--mt-code-line-height);
+}
+.milkdown .cm-editor .cm-content {
+  padding: 0;
+  caret-color: var(--mt-color-primary);
+}
+.milkdown .cm-editor .cm-line {
+  padding: 0 4px;
+}
+
+/* 行号 gutter */
+.milkdown .cm-editor .cm-gutters {
+  background: var(--mt-code-gutter-bg);
+  color: var(--mt-code-gutter-fg);
+  border: none;
+  font-family: var(--mt-font-mono);
+  font-size: var(--mt-code-font-size);
+}
+.milkdown .cm-editor .cm-lineNumbers .cm-gutterElement {
+  padding: 0 8px 0 12px;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* 当前行 / 选区 / 光标 */
+.milkdown .cm-editor .cm-activeLine {
+  background: var(--mt-code-active-line);
+  opacity: 1;
+}
+.milkdown .cm-editor .cm-activeLineGutter {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-primary);
+}
+.milkdown .cm-editor .cm-selectionBackground,
+.milkdown .cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--mt-color-selection);
+}
+.milkdown .cm-editor .cm-cursor {
+  border-left-color: var(--mt-color-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 12. 代码语法高亮 token（CM6）
+ *     颜色已由第 1 节 --mt-token-* 变量控制，这里仅留兜底。
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown .cm-editor .cm-content .tok-comment {
+  font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 13. 数学公式（KaTeX）
+ *     DOM：行内 <span data-type="math_inline">、
+ *          块级 <div data-type="math_block">，内部为 .katex
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown .katex {
+  font-size: 1.05em;
+  color: var(--mt-text);
+}
+.milkdown .katex-display {
+  margin: 0.5em 0;
+}
+.milkdown div[data-type="math_block"] {
+  margin: 1em 0;
+  padding: 12px 16px;
+  border-radius: var(--mt-radius);
+  overflow-x: auto;
+  text-align: center;
+}
+.milkdown span[data-type="math_inline"] {
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 14. Mermaid 图表
+ *     DOM：<div class="diagram">，渲染为 SVG
+ *
+ *     --mermaid-* 为渲染配置（diagram-view.ts 读取），必须写在本选择器
+ *     （或更具体的选择器）上：内置默认值也写在 .diagram，CSS 变量
+ *     「自身声明优先于继承」，写在 :root / .milkdown 上不会覆盖它。
+ *       --mermaid-theme: 固定主题名（default/dark/neutral/forest/base），留空自动跟随明暗
+ *       --mermaid-flowchart-curve: 连线曲线 linear/basis
+ *       --mermaid-flowchart-html-labels: 节点/连线标签是否用 HTML 渲染（true/false）
+ *       --mermaid-flowchart-node-spacing / --mermaid-flowchart-rank-spacing: 节点间距
+ * ═══════════════════════════════════════════════════════════════ */
+.milkdown .diagram {
+  --mermaid-flowchart-curve: basis;
+  --mermaid-theme: neutral;
+  margin: 1em auto;
+  text-align: center;
+  overflow-x: auto;
+}
+.milkdown .diagram svg {
+  max-width: 100%;
+  height: auto;
+  background: transparent !important;
+  color: var(--mt-mermaid-fg);
+}
+.milkdown .diagram .error {
+  color: var(--mt-token-keyword);
+  font-family: var(--mt-font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  text-align: left;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 15. 滚动条
+ *     三个滚动容器用 :where() 合并成一个选择器（零特异性，后续主题可覆盖）：
+ *     - .milkdown 自身（主滚动条）
+ *     - .cm-scroller（代码块内部）
+ *     - .diagram（图表横向）
+ *     注意：-webkit-scrollbar 只对「真正产生滚动条的元素」生效；
+ *     track 默认透明，无需单独声明。
+ * ═══════════════════════════════════════════════════════════════ */
+:where(.milkdown, .milkdown .cm-scroller, .milkdown .diagram)::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+:where(.milkdown, .milkdown .cm-scroller, .milkdown .diagram)::-webkit-scrollbar-thumb {
+  background: var(--mt-color-border-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 5px;
+}
+:where(.milkdown, .milkdown .cm-scroller, .milkdown .diagram)::-webkit-scrollbar-thumb:hover {
+  background: var(--mt-color-primary);
+  background-clip: padding-box;
+}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, nextTick } from "vue";
 import "@/editor/theme/index.css";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import Sidebar from "@/components/Sidebar.vue";
 import FindBar from "@/components/FindBar.vue";
 import {
@@ -277,8 +278,8 @@ function scrollTextareaToOffset(
 }
 
 // 侧边栏状态（文件列表 + 大纲）
-/** 侧边栏是否展开 */
-const sidebarOpen = ref(true);
+/** 侧边栏是否展开（默认收拢；展开过会由 store 记住） */
+const sidebarOpen = ref(false);
 /** 当前工作目录（侧边栏「文件」面板浏览的目录） */
 const workspaceDir = ref<string | null>(null);
 /** 当前目录下的子目录 */
@@ -311,6 +312,26 @@ async function toggleDarkMode() {
   isDark.value = !isDark.value;
   applyDarkMode(isDark.value);
   await saveDarkModePreference(isDark.value);
+}
+
+/**
+ * 初次打开时窗口以 `visible: false` 藏起，待主题应用、首帧绘制完成后再显示，
+ * 避免 OS 打开动画期间露出窗口底色（白/黑闪）。底色跟随当前明暗，
+ * 杜绝深色模式下「整窗白闪再转深」的问题。幂等，确保只显示一次。
+ */
+let windowRevealed = false;
+async function revealWindow() {
+  if (windowRevealed || !isTauri) return;
+  windowRevealed = true;
+  try {
+    const win = getCurrentWebviewWindow();
+    const bg =
+      document.documentElement.dataset.theme === "dark" ? "#131a16" : "#ffffff";
+    await win.setBackgroundColor(bg);
+    await win.show();
+  } catch (e) {
+    console.warn("[NoteMark] reveal window failed:", e);
+  }
 }
 
 type WebviewWindow = Awaited<
@@ -1951,9 +1972,11 @@ onMounted(() => {
       isDark.value = dark;
       applyDarkMode(dark);
     })
-    .catch((e) => console.warn("[NoteMark] load dark mode failed:", e));
+    .catch((e) => console.warn("[NoteMark] load dark mode failed:", e))
+    // 主题已应用、data-theme 就绪，下一帧首绘完成后再露窗，避免打开闪屏
+    .finally(() => requestAnimationFrame(revealWindow));
 
-  // 恢复侧边栏展开状态与上次浏览的工作目录（无记录则保持默认展开、目录为空）
+  // 恢复侧边栏展开状态与上次浏览的工作目录（无记录则保持默认收拢、目录为空）
   loadSidebarOpen()
     .then((open) => {
       if (open !== null) sidebarOpen.value = open;
@@ -1967,6 +1990,9 @@ onMounted(() => {
       if (!workspaceDir.value) await clearWorkspaceDir();
     })
     .catch((e) => console.warn("[NoteMark] load workspace dir failed:", e));
+
+  // 兜底：无论主题加载是否成功/卡住，最多 1.2s 后强制显示窗口，避免窗口永久隐藏
+  setTimeout(revealWindow, 1200);
 });
 
 
