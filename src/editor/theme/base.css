@@ -259,7 +259,7 @@
   color: var(--mt-color-fg-soft);
   border-left: 4px solid var(--mt-color-border-strong);
   background: var(--mt-color-bg-soft);
-  border-radius: 0;
+  border-radius: 0.1px;
 }
 :where(.milkdown .editor) blockquote > p {
   margin: 4px 0;
@@ -281,7 +281,7 @@
   padding: 0.5rem 0.8rem;
   border-left: 4px solid var(--mt-alert-border);
   background: var(--mt-alert-bg);
-  border-radius: 0;
+  border-radius: 0.1px;
 }
 :where(.milkdown .editor) blockquote.md-alert > * {
   order: 3;
