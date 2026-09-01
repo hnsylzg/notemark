@@ -46,15 +46,19 @@
     "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
   --mt-font-size-base: 15px;
   --mt-line-height-base: 1.6;
+  --mt-content-width: 800px;
+  --mt-content-padding: 48px;
 
   /* 代码块 */
   --mt-code-bg: #15181d;
   --mt-code-fg: #c9d1d9;
   --mt-code-border: #353b44;
+  --mt-code-font-size: 14px;
+  --mt-code-line-height: 1.6;
   --mt-code-gutter-fg: #5b636d;
   --mt-code-gutter-bg: #1a1d22;
 
-  /* 语法高亮 */
+  /* 语法高亮（CM6 代码块内的关键字/字符串/标签等配色） */
   --mt-token-keyword: #ff7b72;
   --mt-token-string: #a5d6ff;
   --mt-token-number: #79c0ff;
@@ -63,16 +67,48 @@
   --mt-token-operator: #ff7b72;
   --mt-token-variable: #ffa657;
   --mt-token-type: #7ee787;
+  --mt-token-property: #79c0ff;
+  --mt-token-tag: #7ee787;
 
   /* Mermaid 图表
      配色：--mt-mermaid-fg 供 .diagram svg 使用；
-     --mt-mermaid-bg / --mt-mermaid-border 已随「无外框、背景透明」移除。
+     --mt-mermaid-bg / --mt-mermaid-border 为图表底色/描边（内置当前
+     默认「无外框、背景透明」，不强制消费；需要统一底色时在此设置）。
      mermaid 渲染配置（--mermaid-* 变量）必须写在 .milkdown .editor .diagram 上，
      内置默认值也写在 .diagram，CSS 变量「自身声明优先于继承」，
      写在 :root / .milkdown 等祖先上不会覆盖它。
      示例（追加在文件末尾即可）：
        .milkdown .editor .diagram { --mermaid-theme: neutral; } */
   --mt-mermaid-fg: #d6dde6;
+  --mt-mermaid-bg: #1e2127;
+  --mt-mermaid-border: #444b56;
+
+  /* Alert 引用块（> [!NOTE] 等）：fg 图标/标题，bg 底色，border 左竖线 */
+  --mt-alert-tip-fg: #56d364;
+  --mt-alert-tip-bg: rgba(86, 211, 100, 0.14);
+  --mt-alert-tip-border: #56d364;
+  --mt-alert-caution-fg: #ff7b72;
+  --mt-alert-caution-bg: rgba(255, 123, 114, 0.14);
+  --mt-alert-caution-border: #ff8182;
+  --mt-alert-warning-fg: #e3b341;
+  --mt-alert-warning-bg: rgba(227, 179, 65, 0.14);
+  --mt-alert-warning-border: #d4a72c;
+  --mt-alert-important-fg: #d2a8ff;
+  --mt-alert-important-bg: rgba(210, 168, 255, 0.14);
+  --mt-alert-important-border: #a371f7;
+  --mt-alert-note-fg: #6cb0ff;
+  --mt-alert-note-bg: rgba(91, 155, 255, 0.14);
+  --mt-alert-note-border: #5b9bff;
+
+  /* 查找/替换高亮：非当前匹配半透明底，当前匹配实底 + 描边 */
+  --mt-find-bg: rgba(255, 176, 0, 0.26);
+  --mt-find-bg-current: #b26a00;
+  --mt-find-fg-current: #ffffff;
+  --mt-find-border-current: #ffca28;
+
+  /* 阴影 / 圆角（卡片、斜杠菜单、链接框等） */
+  --mt-radius: 6px;
+  --mt-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 /* ============ 应用外壳（工具栏 / 菜单 / 对话框） ============
