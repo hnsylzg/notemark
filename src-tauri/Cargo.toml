@@ -31,3 +31,5 @@ tauri-plugin-store = "2"
 tauri-plugin-window-state = "2"
 # 删除文件到系统回收站（可恢复）；前端 fs 插件的 remove 只能直接删除
 trash = "5"
+# 单实例：双击关联文件时，把路径交给已运行的实例开新窗口，而不是再起一个进程
+tauri-plugin-single-instance = "2"

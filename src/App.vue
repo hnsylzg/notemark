@@ -17,6 +17,8 @@ import {
   posAtCoords,
   coordsAtPos,
   focusEditorStart,
+  mergeMarkdown,
+  cleanMarkdownTableBr,
 } from "@/editor/index";
 import type { HeadingItem } from "@/editor/index";
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
@@ -464,11 +466,17 @@ function onSourceInput(e: Event) {
  * - 源码模式下返回草稿原样（用户编辑的文本，排版原样保留）；
  * - 可视化模式下，若未发生用户编辑则返回原文基线 rawContent——
  *   保存的是磁盘原文，避免序列化在标题后等处强制补空行、改变文件格式；
- * - 可视化模式下编辑过则只能返回序列化结果（文档结构已变，排版信息已丢失）。 */
+ * - 可视化模式下编辑过则做「最小化修改保存」：把序列化结果与磁盘原文做
+ *   行级合并，未变化的行保留原文（列表符号/分割线/空行/缩进原样不动），
+ *   只有发生变化的行用序列化结果替换（模仿 Typora，而非 milkdown 的全量
+ *   重写）。 */
 function getCurrentContent(): string {
   if (!editorInstance) return "";
   if (sourceMode.value) return sourceDraft.value;
-  return visualEdited ? getMarkdown(editorInstance) : rawContent.value;
+  if (visualEdited) {
+    return mergeMarkdown(rawContent.value, getMarkdown(editorInstance));
+  }
+  return rawContent.value;
 }
 
 /**
@@ -483,7 +491,9 @@ function normalizeMarkdown(md: string): string {
     const parser = ctx.get(parserCtx);
     const serializer = ctx.get(serializerCtx);
     try {
-      return serializer(parser(md));
+      // 与 getMarkdown 走同一清理：脏检查基准必须和 markdownUpdated 回调一致，
+      // 否则表格空单元格的 <br /> 占位差异会让打开的文件被误报“未保存修改”。
+      return cleanMarkdownTableBr(serializer(parser(md)));
     } catch {
       return md;
     }
@@ -705,6 +715,35 @@ const DROP_TEXT_EXT = /\.(md|markdown|txt)$/i;
  * 分流规则：含文本文件就打开第一个（拖文档是明确的替换意图），
  * 否则把图片插到鼠标落点。
  */
+/**
+ * 按路径打开 Markdown 文档。
+ *
+ * 双击关联的 .md 文件（冷启动参数 / 单实例转发的新窗口）与拖入文档共用这条路径，
+ * 三者都要先过未保存检查，再读文件、载入编辑器。
+ */
+async function openDocumentPath(path: string): Promise<void> {
+  if (!editorInstance) return;
+  if (!(await confirmDiscardIfDirty())) return;
+  const name = path.split(/[\\/]/).pop() || path;
+  try {
+    const content = await readMarkdownFile(path);
+    await loadFileIntoEditor(path, name, content);
+    if (isTauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // 窗口标题交给 Rust 设置，绕开前端 webview 初始化时机的坑
+      invoke("set_window_title", { title: `NoteMark - ${name}` }).catch(() => {});
+      // 登记已打开文档，重复双击同一文件时聚焦本窗口而非再开一个
+      invoke("register_open_doc", {
+        path,
+        label: getCurrentWebviewWindow().label,
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error("[NoteMark] open file failed:", err);
+    alert(`打开失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function handleFileDrop(payload: {
   paths: string[];
   x: number;
@@ -716,14 +755,7 @@ async function handleFileDrop(payload: {
 
   const doc = paths.find((p) => DROP_TEXT_EXT.test(p));
   if (doc) {
-    if (!(await confirmDiscardIfDirty())) return;
-    try {
-      const content = await readMarkdownFile(doc);
-      await loadFileIntoEditor(doc, doc.split(/[\\/]/).pop() || doc, content);
-    } catch (err) {
-      console.error("[NoteMark] open dropped file failed:", err);
-      alert(`打开失败：${err instanceof Error ? err.message : String(err)}`);
-    }
+    await openDocumentPath(doc);
     return;
   }
 
@@ -1842,6 +1874,24 @@ onMounted(() => {
     if (!editorHost.value) return;
 
     editorInstance = createEditor(editorHost.value, INITIAL_CONTENT, onEditorChange);
+
+    // 本窗口是否带了待打开的文件：
+    // - 冷启动双击关联的 .md（Rust 侧把路径挂在 "main" 上）；
+    // - 运行中双击时由单实例转发新建的窗口（挂在按路径派生的 label 上）。
+    // 用「拉取」而非事件：进程刚起时前端还没订阅，此刻 emit 会丢。
+    if (isTauri) {
+      void (async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const path = await invoke<string | null>("take_window_file", {
+            label: getCurrentWebviewWindow().label,
+          });
+          if (path) await openDocumentPath(path);
+        } catch (e) {
+          console.warn("[NoteMark] take window file failed:", e);
+        }
+      })();
+    }
 
     // 斜杠菜单的「图片」命令：插件不直接调 Tauri，由这里开系统文件对话框，
     // 选完路径后交回 importImagePaths 落盘并插入文档。

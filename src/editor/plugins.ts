@@ -35,6 +35,7 @@ import { imageView } from "./image-view";
 import { listItemPlugins } from "./list-item";
 import { frontmatterPlugins } from "./frontmatter";
 import { tocPlugins } from "./toc";
+import { strongParensPlugins } from "./strong-parens";
 import { codeBlockComponent } from "@milkdown/components/code-block";
 // gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
 // 前后（默认未注册，原子块周围放不进光标，也无法用箭头键跨越）。
@@ -101,6 +102,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...listItemPlugins,
     ...frontmatterPlugins,
     ...tocPlugins,
+    ...strongParensPlugins,
     ...codeBlockComponent,
     // 斜杠命令菜单放最后：它依赖上面所有自定义节点（math/alert/toc/yaml 等）
     // 的 schema，注册顺序靠后可确保类型都能取到。

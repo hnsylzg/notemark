@@ -524,8 +524,11 @@ function insertWrap(
   };
 }
 
-/** 插入 3 列 × 3 行（含表头）的表格 */
-function insertTable(): Command {
+/**
+ * 插入 rows × cols 的表格（含表头行，数据行 = rows - 1），光标落进第一个单元格。
+ * 与固定 3×3 的旧实现行为一致，仅行列数可配置。
+ */
+function insertTableNxM(rows: number, cols: number): Command {
   return (state, dispatch) => {
     const { schema } = state;
     const { table, table_header_row, table_header, table_row, table_cell, paragraph } =
@@ -535,23 +538,19 @@ function insertTable(): Command {
     }
     const emptyCell = (type: NodeType): PMNode => type.create(null, paragraph.create());
 
-    const headerCells: PMNode[] = [
-      emptyCell(table_header),
-      emptyCell(table_header),
-      emptyCell(table_header),
-    ];
+    const headerCells: PMNode[] = Array.from({ length: cols }, () =>
+      emptyCell(table_header)
+    );
     const bodyRow = (): PMNode =>
-      table_row.create(null, [
-        emptyCell(table_cell),
-        emptyCell(table_cell),
-        emptyCell(table_cell),
-      ]);
+      table_row.create(
+        null,
+        Array.from({ length: cols }, () => emptyCell(table_cell))
+      );
     // table 的 content 约束是 "table_header_row table_row+"：
     // 一个表头行 + 至少一个数据行，顺序错会导致 schema 校验失败
     const node = table.create(null, [
       table_header_row.create(null, headerCells),
-      bodyRow(),
-      bodyRow(),
+      ...Array.from({ length: Math.max(1, rows - 1) }, bodyRow),
     ]);
 
     // 与 insertAtom 同理：光标在空块时整体替换，避免表格落到光标下方
@@ -735,6 +734,116 @@ function promptLinkUrl(view: EditorView, label: string): void {
       view.focus();
     }
   });
+  document.addEventListener("mousedown", onDown, true);
+}
+
+/**
+ * 弹出「列 × 行」两个数字输入框，确认后插入对应规格的表格。
+ * 交互与链接地址输入框一致：Enter 确认、Esc 取消、点框外关闭。
+ * 非法输入（非正整数 / 留空）直接放弃（不插入、不报错），
+ * 用户按 Esc 或重新输入即可。行数含表头：内部按 schema 约束
+ * 至少生成 1 个表头行 + 1 个数据行。
+ */
+function promptTableSize(view: EditorView): void {
+  // 浮层打开期间编辑器会失焦，selection 不再可靠，先把插入位置记下来
+  const insertPos = view.state.selection.from;
+
+  const host = document.querySelector<HTMLElement>(".milkdown") ?? document.body;
+  const box = document.createElement("div");
+  box.className = "mt-slash-linkbox";
+
+  // 列、行两个小数字框，中间用 × 分隔 —— 直接各填一个数字，不用输 x
+  const rowWrap = document.createElement("div");
+  rowWrap.style.display = "flex";
+  rowWrap.style.alignItems = "center";
+  rowWrap.style.gap = "6px";
+
+  const label = (text: string) => {
+    const s = document.createElement("span");
+    s.textContent = text;
+    s.style.opacity = "0.6";
+    s.style.fontSize = "12px";
+    return s;
+  };
+
+  const colsInput = document.createElement("input");
+  colsInput.type = "text";
+  colsInput.inputMode = "numeric";
+  colsInput.className = "mt-slash-linkbox__input";
+  colsInput.style.width = "56px";
+  colsInput.value = "3";
+
+  const sep = document.createElement("span");
+  sep.textContent = "×";
+  sep.style.opacity = "0.6";
+
+  const rowsInput = document.createElement("input");
+  rowsInput.type = "text";
+  rowsInput.inputMode = "numeric";
+  rowsInput.className = "mt-slash-linkbox__input";
+  rowsInput.style.width = "56px";
+  rowsInput.value = "3";
+
+  rowWrap.append(label("列"), colsInput, sep, label("行"), rowsInput);
+
+  const tip = document.createElement("div");
+  tip.className = "mt-slash-linkbox__tip";
+  tip.textContent = "Enter 确认 · Esc 取消";
+
+  box.appendChild(rowWrap);
+  box.appendChild(tip);
+  host.appendChild(box);
+
+  try {
+    const coords = view.coordsAtPos(view.state.selection.from);
+    const maxLeft = Math.max(8, window.innerWidth - box.offsetWidth - 8);
+    box.style.left = `${Math.max(8, Math.min(coords.left, maxLeft))}px`;
+    box.style.top = `${coords.bottom + 6}px`;
+  } catch {
+    /* 位置失效时保持默认角落 */
+  }
+  colsInput.focus();
+  colsInput.select();
+
+  const cleanup = () => {
+    box.remove();
+    document.removeEventListener("mousedown", onDown, true);
+  };
+  const onDown = (e: MouseEvent) => {
+    if (!box.contains(e.target as Node)) cleanup();
+  };
+  const commit = () => {
+    const rows = Number(rowsInput.value.trim());
+    const cols = Number(colsInput.value.trim());
+    cleanup();
+    // 只要求正整数，不设上限；行数含表头，内部至少生成 1 表头 + 1 数据行
+    if (!Number.isInteger(rows) || rows < 1 || !Number.isInteger(cols) || cols < 1) {
+      view.focus();
+      return;
+    }
+    // 弹框期间编辑器可能已被改动，先把光标恢复到记录的插入位置再执行命令
+    const $pos = view.state.doc.resolve(
+      Math.min(insertPos, view.state.doc.content.size)
+    );
+    view.dispatch(view.state.tr.setSelection(TextSelection.near($pos)));
+    view.focus();
+    insertTableNxM(rows, cols)(view.state, view.dispatch);
+  };
+
+  const onKey = (e: KeyboardEvent) => {
+    // 阻止冒泡，否则会被编辑器的快捷键/插件抢走
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cleanup();
+      view.focus();
+    }
+  };
+  rowsInput.addEventListener("keydown", onKey);
+  colsInput.addEventListener("keydown", onKey);
   document.addEventListener("mousedown", onDown, true);
 }
 
@@ -965,11 +1074,16 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
     {
       id: "table",
       title: "表格",
-      hint: "3×3",
+      hint: "行×列",
       icon: "▦",
       group: "高级",
       keywords: ["table", "biaoge", "表格"],
-      run: (args) => runWithDelete(args.view, args.from, args.to, insertTable()),
+      run: (args) => {
+        // 先清掉斜杠文本，再弹出行列输入框（与 /链接 同一套交互）
+        const view = args.view;
+        view.dispatch(view.state.tr.delete(args.from, args.to));
+        promptTableSize(view);
+      },
     },
     { id: "math", title: "公式块", hint: "$$", icon: "∑", group: "高级", keywords: ["math", "gongshi", "公式", "公式块", "数学公式"], run: customBlock(mathBlock) },
     { id: "imath", title: "行内公式", hint: "$", icon: "∑", group: "高级", keywords: ["imath", "inline", "行内公式", "行内数学"], run: insertInlineMath(mathInline) },

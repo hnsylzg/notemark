@@ -55,31 +55,69 @@ const mtHighlightStyle = HighlightStyle.define([
 ]);
 
 // remark-stringify 的默认转义表（mdast-util-to-markdown 的 unsafe 规则）会把文本
-// 中的 [ 和 ] 转义成 \[、\]（因它们可能是链接/图片/引用语法前缀），导致 [toc]、
-// > [!NOTE]（Obsidian Callout）等被序列化成 \[toc]、\[!NOTE]，
-// Typora/Obsidian 等外部编辑器无法再识别。
+// 中的 [、] 转义成 \[、\]（因它们可能是链接/图片/引用语法前缀），导致 [toc]、
+// > [!NOTE]（Obsidian Callout）等被序列化成 \[toc]、\[!NOTE]，外部编辑器无法识别。
+// 同理，文本中的 * 也会被转义成 \*：CommonMark 的强调规则要求闭合分隔符前不能是
+// 标点（全角括号（ ）属于 Unicode 标点），因此「**映射（Mapping）**类型」这类写法
+// 中 ** 无法配对成 strong，整段退化为普通文本节点；序列化时 remark-stringify 为了
+// round-trip 再把文本里的 ** 转义成 \*\*，把未编辑的原样内容污染掉。
 // 注意：mdast-util-to-markdown 对 options.unsafe 是"追加"而非替换，无法通过选项
-// 清掉默认表，因此这里改为在 text handler 内调用 state.safe 前临时过滤 [ ] 规则。
+// 清掉默认表，因此这里改为在 text handler 内调用 state.safe 前临时过滤 [ ] * 规则。
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore mdast-util-to-markdown 导出的 Handle 类型
 const customTextHandler: Handle = (node, _, state, info) => {
   const value = (node as { value?: string }).value ?? "";
   if (!value) return value;
-  // 短路：文本里没有 [ ] 时，过滤 unsafe 表与否结果完全相同，
+  // 短路：文本里没有需要保护的字符时，过滤 unsafe 表与否结果完全相同，
   // 直接走默认 safe。避免对文档里每个文本节点都 filter 一遍整张 unsafe 表
   // （长文档上这是纯浪费，且反复改 state.unsafe 这种共享状态风险很高）。
-  if (!value.includes("[") && !value.includes("]")) {
+  if (!/[\[\]*]/.test(value)) {
     return state.safe(value, { ...info, encode: [] });
   }
   const original = state.unsafe;
   state.unsafe = original.filter(
-    (u) => !(u.character === "[" || u.character === "]")
+    (u) => !(u.character === "[" || u.character === "]" || u.character === "*")
   );
   try {
     return state.safe(value, { ...info, encode: [] });
   } finally {
     state.unsafe = original;
   }
+};
+
+// mdast-util-to-markdown 的默认 list handler 有个「相邻列表换 bullet」机制：
+// 同一容器下两个紧邻的 list 节点若使用相同 bullet，第二个会被替换成
+// bulletOther（默认 *）——避免 `- -`、`- ---` 这类结构在解析时产生歧义。
+// 但可视化编辑器里，用户在既有列表（如含代码块的列表）后新增列表项时，
+// 新列表与旧列表恰好构成「相邻 list」，于是用户输入的 `-` 保存后被改写成
+// `*`（实测：`- abc` 变成 `* abc`）。
+// 这里包装默认 handler：处理完每个 list 后清空 bulletLastUsed，使所有列表
+// 始终使用配置的 bullet（跟随文件探测风格），与 Typora 行为一致。
+// 注：bulletOther 与 bullet 不允许相同（check-bullet-other 强制校验），
+// 因此无法用「设置 bulletOther」的方式解决，只能从 handler 层抑制。
+const customListHandler: Handle = (node, parent, state, info) => {
+  const result = defaultHandlers.list(node, parent, state, info);
+  state.bulletLastUsed = undefined;
+  return result;
+};
+
+// mdast-util-to-markdown 的 attention（strong/emphasis）序列化器在
+// 「内容首/尾字符是标点、外侧紧跟字母」时，会把外侧字符转义成 HTML 实体
+// （如 `）**类型` 中 strong 之后的「类」→ `&#x7C7B;`），以保证 round-trip
+// 解析一致。但含括号的加粗（`**映射（Mapping）**`）本就无法被 CommonMark
+// 解析（见 strong-parens.ts），该转义既救不回 round-trip（解析端仍失败），
+// 又会把 `&#x7C7B;` 这类实体写进用户文件。
+// 解析端已由 strong-parens 插件修复，因此序列化时清除该标志、原样输出。
+const customStrongHandler: Handle = (node, parent, state, info) => {
+  const result = defaultHandlers.strong(node, parent, state, info);
+  state.attentionEncodeSurroundingInfo = undefined;
+  return result;
+};
+
+const customEmphasisHandler: Handle = (node, parent, state, info) => {
+  const result = defaultHandlers.emphasis(node, parent, state, info);
+  state.attentionEncodeSurroundingInfo = undefined;
+  return result;
 };
 // listenerCtx：注册内容变化监听，用于追踪“未保存修改”状态。
 // 该 SliceType 由 listener 插件提供，必须在 .use(listener) 注册后生效。
@@ -97,6 +135,17 @@ import { serializerCtx, parserCtx, editorViewCtx, remarkCtx } from "@milkdown/ki
 // remarkStringifyOptionsCtx：Milkdown 序列化 Markdown 时传给 remark-stringify 的
 // 选项 slice，可在 config 阶段改写（init 在 ConfigReady 后才读取它创建 remark 实例）。
 import { remarkStringifyOptionsCtx } from "@milkdown/kit/core";
+// 重建序列化器：milkdown 的 serializerCtx 默认是 SerializerState.create(schema, remark)，
+// 其中 remark 就是 unified().use(remarkParse).use(remarkStringify, options)。
+// 打开老文件时需按文件风格重建（bullet/rule 跟随原文），依赖这三个包在顶层
+// node_modules 可直接解析（同为 @milkdown/core 的直接依赖）。
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import remarkStringify, { type Options as RemarkStringifyOptions } from "remark-stringify";
+import { SerializerState } from "@milkdown/kit/transformer";
+// defaultHandlers：序列化时包装 mdast-util-to-markdown 的默认 list handler，
+// 抑制「相邻列表自动换 bullet」的行为（详见 customListHandler 注释）。
+import { defaultHandlers } from "mdast-util-to-markdown";
 // 仅用于类型标注（type-only，不参与打包）
 import type { Handle } from "mdast-util-to-markdown";
 import type { Node as PMNode } from "@milkdown/kit/prose/model";
@@ -113,8 +162,506 @@ export function getMarkdown(editor: Editor): string {
   return editor.action((ctx) => {
     const serializer = ctx.get(serializerCtx);
     const view = ctx.get(editorViewCtx);
-    return serializer(view.state.doc);
+    // milkdown 用 <br /> 占位序列化空段落，表格空单元格会被误填；GFM 空单元格
+    // 本就是合法语法，统一清掉占位，避免写进用户文件（导出/保存/脏检查一致）。
+    return cleanMarkdownTableBr(serializer(view.state.doc));
   });
+}
+
+/**
+ * remark-frontmatter（marker: '-'）的已知缺陷防护。
+ *
+ * micromark-extension-frontmatter@2 的 tokenizer 只要文档开头第 1 行第 1 列是
+ * `---` 就进入 frontmatter，把后续所有行当作 value 贪婪消费；直到 EOF 都找不到
+ * 闭合 `---` 才 nok 回滚，但换行已被消费，回滚不彻底——于是「文档开头的分割线
+ * `---` 后面接列表」时，`- a\n- b\n- c` 会被并成一个段落（保存→重开即复现：
+ * 列表渲染成一行、复制出 `\- a`）。而 `---` 在文档中部（前面有内容）不受影响，
+ * 因为 frontmatter 只在第 1 行触发。
+ *
+ * 防护：若开头的 `---` 不是闭合完整的 frontmatter 块（后面不存在 `---` 闭合行），
+ * 就把开头 3 个字符临时换成 `***` 再交给解析器。`***` 与 `---` 同为合法
+ * thematicBreak、长度相同（mdast position offset 不变），且不会触发 frontmatter
+ * 开界。这仅影响解析输入；源文件文本不变，保存时仍按 rule: '-' 输出 `---`。
+ * 真正的 frontmatter（`---\n...\n---\n`）不命中，行为不变。
+ */
+function guardUnclosedFrontmatter(md: string): string {
+  // 只有「开头一行就是 ---（可带尾随空格）」才是 frontmatter 的触发形态；
+  // `----`（4+ 个 -）不是 frontmatter 围栏，也不属于此场景。
+  if (!/^---[ \t]*\r?\n/.test(md)) return md;
+  const rest = md.slice(md.indexOf("\n") + 1);
+  // 第一行之后存在闭合围栏行（行首 ---、可带尾随空格，后接换行或结尾）→ 真 frontmatter
+  if (/^---[ \t]*(\r?\n|$)/m.test(rest)) return md;
+  return "***" + md.slice(3);
+}
+
+// ==================== 最小化修改保存（模仿 Typora） ====================
+// milkdown 的 serializerCtx 只有「整棵文档树 → markdown 字符串」一个入口，
+// 序列化时按全局配置（bullet/rule 等）重排全文——老文件只要在可视化模式
+// 编辑过一次，保存就会把列表符号、分割线写法、空行等排版整体改写。
+// 这里模仿 Typora 的「最小化修改」保存，两步配合：
+// 1. 打开文件时探测原文的列表/分割线风格并重建序列化器，使序列化输出
+//    与原文风格一致（被改的行重写后风格不跑调，diff 时才不会把未改动的
+//    行也判定为「修改」而全量重写）；
+// 2. 保存时把序列化结果与磁盘原文做行级 diff（mergeMarkdown），未变化的
+//    行全部保留原文（符号/空行/缩进/排版一字不动），只有发生变化的行
+//    用序列化结果替换。
+
+export type BulletChar = "-" | "*" | "+";
+export type RuleChar = "-" | "*" | "_";
+
+export interface MarkdownStyle {
+  /** 无序列表符号；未检测到时为 null（回退默认 "-"） */
+  bullet: BulletChar | null;
+  /** 分割线符号；未检测到时为 null（回退默认 "-"） */
+  rule: RuleChar | null;
+}
+
+/**
+ * frontmatter 块的行区间 [首行, 闭合行]；非 frontmatter 返回 null。
+ * 与 remark-frontmatter 的判定一致：文档开头第一行是 `---` 即进入 frontmatter。
+ * 未闭合的开头 `---` 也会触发该插件的贪婪消费，同样视为 frontmatter 跳过，
+ * 避免它被误计为「分割线风格是 -」。
+ */
+function frontmatterLineRange(lines: string[]): [number, number] | null {
+  if (lines.length < 2 || !/^---[ \t]*$/.test(lines[0])) return null;
+  for (let i = 1; i < lines.length; i++) {
+    if (/^---[ \t]*$/.test(lines[i])) return [0, i];
+  }
+  return [0, 0];
+}
+
+/** 从计数表取出现次数最多的符号；全部为 0 返回 null */
+function pickMost<K extends string>(counts: Record<K, number>): K | null {
+  let best: K | null = null;
+  for (const key in counts) {
+    if (counts[key] > 0 && (best == null || counts[key] > counts[best])) {
+      best = key;
+    }
+  }
+  return best;
+}
+
+/**
+ * 探测 markdown 文本使用的无序列表符号与分割线符号。
+ * 只统计「行首 0-3 空格 + 符号」的列表 marker 与「整行同一符号」的分割线；
+ * 引用块（`> `）内的符号不参与统计，避免被块内内容干扰。
+ */
+export function detectMarkdownStyle(markdown: string): MarkdownStyle {
+  const bulletCounts: Record<BulletChar, number> = { "-": 0, "*": 0, "+": 0 };
+  const ruleCounts: Record<RuleChar, number> = { "-": 0, "*": 0, "_": 0 };
+  const lines = markdown.split(/\r?\n/);
+  const fm = frontmatterLineRange(lines);
+  for (let i = 0; i < lines.length; i++) {
+    if (fm && i >= fm[0] && i <= fm[1]) continue;
+    const line = lines[i];
+    // 分割线：整行由同一符号（可夹空格/tab）构成，至少 3 个。
+    // 注意 `- - -`、`***`、`___` 都符合；`----` 也是合法分割线。
+    const ruleMatch = line.match(/^ {0,3}([-_*])(?:[ \t]*\1){2,}[ \t]*$/);
+    if (ruleMatch) {
+      ruleCounts[ruleMatch[1] as RuleChar]++;
+      continue;
+    }
+    // 列表 marker：符号后必须跟空白（否则是 `*foo` 之类普通文本）。
+    // 表格分隔行（`|---|---|`）行首是 `|`，不会命中。
+    const bulletMatch = line.match(/^ {0,3}([-*+])(?=[ \t])/);
+    if (bulletMatch) bulletCounts[bulletMatch[1] as BulletChar]++;
+  }
+  return { bullet: pickMost(bulletCounts), rule: pickMost(ruleCounts) };
+}
+
+/** 当前已应用的序列化风格（初始与 config 默认一致，避免无谓重建） */
+let appliedStyle: { bullet: BulletChar; rule: RuleChar } = { bullet: "-", rule: "-" };
+
+/**
+ * 按探测到的风格重建序列化器。
+ * milkdown 默认 serializer 就是 `SerializerState.create(schema, remark)`，其中
+ * remark = unified().use(remarkParse).use(remarkStringify, remarkStringifyOptionsCtx)。
+ * 这里构造等价实例、仅改写 bullet/rule，其余选项（handlers 等）原样保留，
+ * 保证序列化输出与原文风格一致。风格未变化时跳过，避免每次 setMarkdown 重建。
+ */
+function applySerializationStyle(
+  ctx: EditorCtx,
+  view: EditorView,
+  style: MarkdownStyle
+): void {
+  const bullet = style.bullet ?? "-";
+  const rule = style.rule ?? "-";
+  if (bullet === appliedStyle.bullet && rule === appliedStyle.rule) return;
+  const remark = unified()
+    .use(remarkParse)
+    .use(remarkStringify, {
+      ...ctx.get(remarkStringifyOptionsCtx),
+      bullet,
+      rule,
+    });
+  ctx.set(serializerCtx, SerializerState.create(view.state.schema, remark));
+  appliedStyle = { bullet, rule };
+}
+
+// ============================================================================
+// 行等价判断：合并时「内容相同、仅排版不同」的行视为等价，保留原文行
+// ============================================================================
+
+/** 表格行：以 | 开头且以 | 结尾（允许行尾空白） */
+function isTableRow(line: string): boolean {
+  const t = line.trim();
+  return t.length >= 2 && t.startsWith("|") && t.endsWith("|");
+}
+
+/**
+ * milkdown 用 `<br />` 占位序列化「空段落」（preset-commonmark 默认启用
+ * remark-preserve-empty-line 插件，markdown 无法表示空段落，靠它保留文档空行）。
+ * 副作用：表格空单元格 = 空段落，也会被填成 `<br />`。GFM 空单元格本就是合法
+ * 语法（`|  |`），这里把表格行里「trim 后恰为 `<br />` 变体」的单元格清空
+ * （替换为等宽空格，不破坏 remark 已按内容算好的列宽对齐），避免把占位写进文件。
+ */
+function cleanTableBrPlaceholders(line: string): string {
+  if (!isTableRow(line)) return line;
+  // 保留行首/行尾空白（含 CRLF 的 \r），只处理中间的单元格内容
+  const leading = line.match(/^\s*/)?.[0] ?? "";
+  const trailing = line.match(/\s*$/)?.[0] ?? "";
+  const core = line.slice(leading.length, line.length - trailing.length);
+  const cells = core.slice(1, -1).split("|");
+  const cleaned = cells.map((cell) =>
+    /^<br\s*\/?>$/i.test(cell.trim()) ? " ".repeat(cell.length) : cell
+  );
+  return leading + "|" + cleaned.join("|") + "|" + trailing;
+}
+
+/** 清理 Markdown 文本里表格空单元格的 `<br />` 占位（序列化输出的统一后处理） */
+export function cleanMarkdownTableBr(md: string): string {
+  return md.split("\n").map(cleanTableBrPlaceholders).join("\n");
+}
+
+/**
+ * 表格行的规范化键：忽略所有空白，并把分隔行里连续的 `-` 折叠成一个 `-`
+ * （保留 `:` 对齐信息）。
+ * 用于让「单元格内容相同、仅列宽对齐不同」的原文行与序列化行互相匹配，
+ * 从而保留用户手工对齐的表格排版，不被 remark 按内容重新对齐。
+ */
+function tableKey(line: string): string {
+  return line.replace(/\s+/g, "").replace(/-+/g, "-");
+}
+
+/** 序列化行自带行尾空白时的哨兵后缀（内容中不可能出现，用于阻断误匹配） */
+const TRAILING_WS_GUARD = "\u0000ws";
+
+/**
+ * 原文侧的非表格行键：忽略行尾空白。
+ * 原文的「行尾空格 / 空行里的空格或 tab」因此能与被序列化清理掉的版本匹配，
+ * 匹配成功时保留原文行，用户的原始排版不被抹掉。
+ */
+function rawPlainKey(line: string): string {
+  if (line.trim() === "") return "";
+  return line.replace(/\s+$/, "");
+}
+
+/**
+ * 序列化侧的非表格行键。
+ * 序列化行自带的行尾空白是语义内容（如硬换行的两个空格），必须与原文
+ * 「无尾空白」的同内容行区分开，否则用户在编辑器里新增的硬换行会被
+ * 原文版本吞掉。故加哨兵使其不与原文行匹配。
+ */
+function serPlainKey(line: string): string {
+  if (line.trim() === "") return "";
+  const trimmed = line.replace(/\s+$/, "");
+  return /\s+$/.test(line) ? trimmed + TRAILING_WS_GUARD : trimmed;
+}
+
+/**
+ * 把连续的表格行折叠成一个占位符行，使表格整体参与 diff。
+ * 否则 LCS 可能让同一表格「部分行取原文、部分行取序列化」，
+ * 导致列宽对齐一半宽一半窄、表格视觉错乱。
+ */
+function collapseTables(lines: string[], idPrefix: string) {
+  const collapsed: string[] = [];
+  const blocks = new Map<string, string[]>();
+  let i = 0;
+  let n = 0;
+  while (i < lines.length) {
+    if (isTableRow(lines[i])) {
+      let j = i;
+      while (j < lines.length && isTableRow(lines[j])) j++;
+      const id = `\u0000${idPrefix}${n++}`;
+      blocks.set(id, lines.slice(i, j));
+      collapsed.push(id);
+      i = j;
+    } else {
+      collapsed.push(lines[i]);
+      i++;
+    }
+  }
+  return { collapsed, blocks };
+}
+
+/** 展开占位符行回原始的多行表格块 */
+function expandTables(collapsed: string[], blocks: Map<string, string[]>): string[] {
+  const out: string[] = [];
+  for (const line of collapsed) {
+    const block = blocks.get(line);
+    if (block) out.push(...block);
+    else out.push(line);
+  }
+  return out;
+}
+
+/**
+ * 合并后的行。`fromSer` 标记该行来自序列化（true）还是原文（false）——
+ * 只有序列化新增的空行才需要判断是否为「强加的块分隔符」，
+ * 原文自带的空行（哪怕是空行里的空格）一律保留。
+ */
+interface MergedLine {
+  text: string;
+  fromSer: boolean;
+}
+
+/** 取展开后的首行（若首行是表格占位符，取其表格块首行） */
+function firstExpandedLine(
+  lines: string[],
+  blocks: Map<string, string[]>
+): string | undefined {
+  const first = lines[0];
+  if (first === undefined) return undefined;
+  const block = blocks.get(first);
+  return block ? block[0] : first;
+}
+
+/** 取展开后的末行（若末行是表格占位符，取其表格块末行） */
+function lastExpandedLine(
+  lines: string[],
+  blocks: Map<string, string[]>
+): string | undefined {
+  const last = lines[lines.length - 1];
+  if (last === undefined) return undefined;
+  const block = blocks.get(last);
+  return block ? block[block.length - 1] : last;
+}
+
+/** 展开 MergedLine 里的表格占位符，来源标记由整块继承给每一行 */
+function expandMergedTables(
+  lines: MergedLine[],
+  blocks: Map<string, string[]>
+): MergedLine[] {
+  const out: MergedLine[] = [];
+  for (const item of lines) {
+    const block = blocks.get(item.text);
+    if (block) {
+      for (const text of block) out.push({ text, fromSer: item.fromSer });
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
+}
+
+/** 预计算行键（"T:" 表格块 / "P:" 普通行），供 LCS 用键比较，避免重复计算 */
+function lineKeys(
+  lines: string[],
+  blocks: Map<string, string[]>,
+  isSerialized: boolean
+): string[] {
+  return lines.map((line) => {
+    const block = blocks.get(line);
+    if (block) return "T:" + block.map(tableKey).join("\n");
+    return "P:" + (isSerialized ? serPlainKey(line) : rawPlainKey(line));
+  });
+}
+
+/**
+ * 清理序列化强加的块分隔空行。
+ * remark-stringify 在每个块（标题、段落等）后都会补一个空行，而 milkdown
+ * 的 AST 不保存空行——原文紧凑的 `# h\n- a` 会被序列化成 `# h\n\n- a`，
+ * 纯按行 diff 会把多出的空行当成「插入」写进结果，污染未改动区域。
+ * 只处理「序列化新增」的空行（fromSer），原文自带的空行（含空行里的空格、
+ * tab）一律保留。启发式（偏向保留，宁可多留空行也不误删用户的真实空行）：
+ * - 连续空行（≥2）视为真实排版，整段保留；
+ * - 孤立空行：两侧至少一侧是修改行（不在原文中）→ 可能是用户排版，保留；
+ *   两侧都是原文既有行、但它们在原文中不相邻（中间隔了其他行）→ 说明是
+ *   用户插入的空行把原本不相邻的内容隔开，保留；只有「两侧原文相邻的块
+ *   之间被强加」的空行才是 milkdown 序列化产物，丢弃；
+ * - 首尾没有参照时保守保留。
+ * 注意：不能按「是否在中间段的首尾」判断——中间段的首尾其实是文档的中部，
+ * 序列化完全可能在那里强加空行，判据只能是行的来源。
+ * 仅作用于合并的中间段（公共前缀/后缀是原文原样，不经过此处理）。
+ */
+function pruneImposedBlankLines(
+  mergedMid: MergedLine[],
+  rawLines: string[],
+  // 中间段的首尾其实是文档的中部，判断其首尾空行时要用前缀/后缀的相邻行
+  // 作为参照，否则会误判成「文档首尾」而一律保留。
+  contextBefore?: string,
+  contextAfter?: string
+): MergedLine[] {
+  const rawSet = new Set(rawLines);
+  // 行 → 首次出现索引，用于判断「空行两侧的行在原文中是否相邻」
+  const lineIndex = new Map<string, number>();
+  rawLines.forEach((line, i) => {
+    if (!lineIndex.has(line)) lineIndex.set(line, i);
+  });
+  const result: MergedLine[] = [];
+  let idx = 0;
+  while (idx < mergedMid.length) {
+    const item = mergedMid[idx];
+    const line = item.text;
+    // 非空行、以及原文自带（含原文的空行）一律原样保留
+    if (line.trim() !== "" || !item.fromSer) {
+      result.push(item);
+      idx++;
+      continue;
+    }
+    // 以下是「序列化新增的空行」：统计连续的序列化空行块
+    let k = idx;
+    while (
+      k < mergedMid.length &&
+      mergedMid[k].text.trim() === "" &&
+      mergedMid[k].fromSer
+    )
+      k++;
+    const blankCount = k - idx;
+    if (blankCount >= 2) {
+      // 连续空行视为真实排版（如用户插入的空段落），整段保留
+      for (let t = idx; t < k; t++) result.push(mergedMid[t]);
+    } else {
+      // 用相邻内容行判断：prev 可能落在公共前缀里，next 可能落在后缀里
+      const prev = result[result.length - 1]?.text ?? contextBefore;
+      const next = mergedMid[k]?.text ?? contextAfter;
+      const prevExisting = prev != null && rawSet.has(prev);
+      const nextExisting = next != null && rawSet.has(next);
+      if (prev == null || next == null) {
+        // 合并结果的首尾：没有参照，保守保留
+        result.push(item);
+      } else if (!prevExisting || !nextExisting) {
+        // 至少一侧是修改行 → 可能是用户排版，保留
+        result.push(item);
+      } else {
+        // 两侧都是原文既有行：仅当它们在原文中紧邻时才视为序列化强加
+        const ip = lineIndex.get(prev);
+        const in2 = lineIndex.get(next);
+        const adjacent = ip != null && in2 != null && Math.abs(ip - in2) === 1;
+        if (!adjacent) result.push(item);
+      }
+    }
+    idx = k;
+  }
+  return result;
+}
+
+/**
+ * 行级 LCS diff：以 a（原文中间段）为基底，应用 b（序列化中间段）的变更，
+ * 返回合并后的行序列。未变化的行取 a（与 b 相同）；删除的行不输出；
+ * 新增/修改的行输出 b 的内容。
+ * 规模保护：n*m 超过阈值时退化为整体采用 b（与全量序列化一致，不更差）。
+ */
+function lcsMergeLines(
+  a: string[],
+  b: string[],
+  aKeys: string[],
+  bKeys: string[]
+): MergedLine[] {
+  const n = a.length;
+  const m = b.length;
+  if (n * m > 2_000_000) return b.map((text) => ({ text, fromSer: true }));
+  const w = m + 1;
+  const dp = new Uint32Array((n + 1) * w);
+  for (let i = 1; i <= n; i++) {
+    const ak = aKeys[i - 1];
+    const row = i * w;
+    const prev = row - w;
+    for (let j = 1; j <= m; j++) {
+      if (ak === bKeys[j - 1]) dp[row + j] = dp[prev + j - 1] + 1;
+      else dp[row + j] = Math.max(dp[prev + j], dp[row + j - 1]);
+    }
+  }
+  const out: MergedLine[] = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (aKeys[i - 1] === bKeys[j - 1]) {
+      // 键相等：取原文行，保留其原始排版（行尾空格、表格对齐等）
+      out.push({ text: a[i - 1], fromSer: false });
+      i--;
+      j--;
+    } else if (dp[(i - 1) * w + j] >= dp[i * w + j - 1]) {
+      i--; // 原文该行在序列化中不存在 → 删除（不输出）
+    } else {
+      out.push({ text: b[j - 1], fromSer: true }); // 序列化新增/修改的行
+      j--;
+    }
+  }
+  while (j > 0) {
+    out.push({ text: b[j - 1], fromSer: true });
+    j--;
+  }
+  return out.reverse();
+}
+
+/**
+ * 把序列化结果合并回磁盘原文，实现「最小化修改保存」。
+ * 以原文为基底：未变化的行原样保留（符号/空行/缩进/排版一字不动），
+ * 只有序列化中发生变化的行替换原文对应行。行尾符跟随原文（CRLF 保持 CRLF）。
+ */
+export function mergeMarkdown(raw: string, serialized: string): string {
+  if (!raw) return serialized;
+  if (!serialized) return raw;
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const rawLines = raw.split(/\r?\n/);
+  // 序列化结果理论上只输出 \n，防御性剥掉残留 \r（CRLF 输入直接传给本函数时）。
+  // 序列化侧的表格空单元格占位 <br /> 先清掉：原文里若已是空单元格则键匹配
+  // （保留原文排版）；原文若残留占位则键不同，表格整体替换为清理后的版本。
+  const serLines = serialized
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .map(cleanTableBrPlaceholders);
+  // 表格整体参与 diff：连续表格行折叠成一行占位符（见 collapseTables）。
+  const rawTables = collapseTables(rawLines, "r");
+  const serTables = collapseTables(serLines, "s");
+  const rCollapsed = rawTables.collapsed;
+  const sCollapsed = serTables.collapsed;
+  const allBlocks = new Map([...rawTables.blocks, ...serTables.blocks]);
+  const rKeys = lineKeys(rCollapsed, rawTables.blocks, false);
+  const sKeys = lineKeys(sCollapsed, serTables.blocks, true);
+  // 公共前缀/后缀裁剪：绝大多数行两侧一致，先排除掉可大幅缩小 diff 规模。
+  // 用行键比较（而非逐字符相等），让「仅排版不同」的行也能落进前缀/后缀。
+  const minLen = Math.min(rCollapsed.length, sCollapsed.length);
+  let prefix = 0;
+  while (prefix < minLen && rKeys[prefix] === sKeys[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < minLen - prefix &&
+    rKeys[rCollapsed.length - 1 - suffix] === sKeys[sCollapsed.length - 1 - suffix]
+  )
+    suffix++;
+  const rMid = rCollapsed.slice(prefix, rCollapsed.length - suffix);
+  const sMid = sCollapsed.slice(prefix, sCollapsed.length - suffix);
+  // keys 必须与切片后的行数组一一对应
+  const rMidKeys = rKeys.slice(prefix, rKeys.length - suffix);
+  const sMidKeys = sKeys.slice(prefix, sKeys.length - suffix);
+  // 纯插入（rMid 空）同样要过 prune：sMid 里的孤立空行可能只是 milkdown
+  // 强加的块分隔符（如紧凑标题后补的空行），需要剔除。
+  const midLines: MergedLine[] =
+    rMid.length === 0
+      ? sMid.map((text) => ({ text, fromSer: true })) // 纯插入
+      : lcsMergeLines(rMid, sMid, rMidKeys, sMidKeys);
+  const mergedMid =
+    sMid.length === 0
+      ? [] // 纯删除
+      : pruneImposedBlankLines(
+          expandMergedTables(midLines, allBlocks),
+          rawLines,
+          lastExpandedLine(rCollapsed.slice(0, prefix), allBlocks),
+          firstExpandedLine(rCollapsed.slice(rCollapsed.length - suffix), allBlocks)
+        ).map((item) => item.text);
+  const merged = [
+    ...expandTables(rCollapsed.slice(0, prefix), allBlocks),
+    ...mergedMid,
+    ...expandTables(rCollapsed.slice(rCollapsed.length - suffix), allBlocks),
+  ];
+  let out = merged.join(eol);
+  // 保持原文的结尾换行形态（原文以换行结尾则补回，反之去掉）
+  const rawEndsEol = /(?:\r?\n)$/.test(raw);
+  if (rawEndsEol && !out.endsWith("\n")) out += eol;
+  else if (!rawEndsEol && out.endsWith("\n")) out = out.replace(/\r?\n$/, "");
+  return out;
 }
 
 /** 用新的 Markdown 文本整体替换编辑器内容 */
@@ -122,11 +669,15 @@ export function setMarkdown(editor: Editor, markdown: string): void {
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     const parser = ctx.get(parserCtx);
+    // 探测原文风格并重建序列化器：使保存时序列化输出与原文风格一致，
+    // 这是 mergeMarkdown 行级合并「未改动行能被原样保留」的前提。
+    applySerializationStyle(ctx, view, detectMarkdownStyle(markdown));
     // 统一行尾为 LF：CRLF 源码解析后代码块等内容会保留 \r，而 CodeMirror
     // 内部把 \r\n 规范化为 \n，两侧长度不一致会导致选区转发给 CM 时
     // 越界抛 RangeError（CRLF 文件专有，LF 下不暴露）。
     // 源码模式展示的仍是原始 CRLF 文本（rawContent），映射层负责两侧换算。
-    const doc = parser(markdown.replace(/\r\n?/g, "\n"));
+    const source = markdown.replace(/\r\n?/g, "\n");
+    const doc = parser(guardUnclosedFrontmatter(source));
     // 用新 doc 替换整棵文档树，保持 schema 合法
     view.dispatch(
       view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
@@ -599,9 +1150,15 @@ function mapCaretToMdOffset(
   );
   const ratio = textLen > 0 ? within / textLen : 0;
   // mdast 侧定位：同文本序优先，整体序号降级
+  // 无闭合围栏的开头 --- 会触发 remark-frontmatter 误吞后续块，解析前先防护；
+  // *** 与 --- 等长，mdast position offset 不变，仍可用原始 markdown 做 offset 换算
   const remark = ctx.get(remarkCtx);
   const mdBlocks: MdLeafBlock[] = [];
-  collectMdLeafBlocks(remark.parse(markdown) as MdNode, mdBlocks, markdown);
+  collectMdLeafBlocks(
+    remark.parse(guardUnclosedFrontmatter(markdown)) as MdNode,
+    mdBlocks,
+    markdown
+  );
   if (mdBlocks.length === 0) return null;
   const md =
     findBlockByOrdinal(mdBlocks, target.text, ordinal) ??
@@ -680,9 +1237,14 @@ function mapMdOffsetToDocPos(
   const docBlocks = collectDocLeafBlocks(doc);
   if (docBlocks.length === 0) return null;
   // mdast 侧找包含 offset 的块；落在块间/末尾空行取最近的左侧块；落在最前取第一块
+  // 同 mapCaretToMdOffset：解析前先防无闭合围栏的开头 --- 误吞（*** 与 --- 等长）
   const remark = ctx.get(remarkCtx);
   const mdBlocks: MdLeafBlock[] = [];
-  collectMdLeafBlocks(remark.parse(markdown) as MdNode, mdBlocks, markdown);
+  collectMdLeafBlocks(
+    remark.parse(guardUnclosedFrontmatter(markdown)) as MdNode,
+    mdBlocks,
+    markdown
+  );
   if (mdBlocks.length === 0) return null;
   let target: MdLeafBlock = mdBlocks[mdBlocks.length - 1];
   for (const b of mdBlocks) {
@@ -1092,9 +1654,19 @@ export function createEditor(
         text: customTextHandler,
         highlight: (node, _parent, state, info) =>
           `==${state.containerPhrasing(node, info)}==`,
+        list: customListHandler,
+        strong: customStrongHandler,
+        emphasis: customEmphasisHandler,
       };
-      ctx.update(remarkStringifyOptionsCtx, (options) => ({
+      ctx.update(remarkStringifyOptionsCtx, (options): RemarkStringifyOptions => ({
         ...options,
+        // 无序列表用「-」而非默认的「*」：与多数编辑器（Typora/Obsidian/VSCode）
+        // 导出的源码一致，避免混用 * / - 两种风格。
+        bullet: "-",
+        // 分割线用「---」而非默认的「***」：mdast-util-to-markdown 的分割线
+        // 选项键是 `rule`（不是 thematicBreak），默认 '*' → 输出 `***`，
+        // 改成 '-' 即输出 `---`。
+        rule: "-",
         handlers: {
           ...options.handlers,
           ...extraHandlers,
@@ -1129,7 +1701,9 @@ export function createEditor(
       // 内容变化监听：供外层做“未保存修改”追踪
       if (onChange) {
         ctx.get(listenerCtx).markdownUpdated((_ctx, markdown) => {
-          onChange(markdown);
+          // 与 getMarkdown 走同一清理：脏检查基准和回调必须对空单元格
+          // 的 <br /> 占位处理一致，否则打开/保存后会被误报“未保存修改”。
+          onChange(cleanMarkdownTableBr(markdown));
         });
       }
     })

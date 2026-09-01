@@ -1,13 +1,171 @@
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Mutex;
+use tauri::Manager;
+
+/// 每个窗口待打开的 Markdown 文件（窗口 label -> 绝对路径）。
+///
+/// 为什么用「拉取」而不是「推送」：进程刚启动时前端还没加载完，此时 emit 事件会丢。
+/// 这里先按窗口 label 存起来，等前端 ready 后自己取走。
+struct PendingFiles(Mutex<HashMap<String, String>>);
+
+/// 已打开文档的窗口映射（path 小写 -> 窗口 label）。
+/// 用于重复双击同一文件时聚焦既有窗口，而不是再开一个内容相同的窗口。
+struct OpenDocs(Mutex<HashMap<String, String>>);
+
+/// 主窗口 label。tauri.conf.json 的首个窗口未显式指定 label，Tauri 默认用 "main"。
+const MAIN_LABEL: &str = "main";
+
+/// 从命令行参数里挑出第一个真实存在的 Markdown 文件。
+///
+/// Windows 双击关联文件时系统把路径作为 argv[1] 传入，但参数里也可能夹杂
+/// --flag 之类，故只接受扩展名匹配且确实存在的文件。
+///
+/// skip(1)：argv[0] 是程序自身路径。
+fn pick_md_path(args: &[String]) -> Option<String> {
+  args
+    .iter()
+    .skip(1)
+    .find(|a| {
+      let lower = a.to_lowercase();
+      (lower.ends_with(".md") || lower.ends_with(".markdown"))
+        && std::path::Path::new(a).is_file()
+    })
+    .cloned()
+}
+
+/// 由文件路径派生稳定的窗口 label。
+///
+/// 同一文件重复双击时聚焦已有窗口，而不是开出两个内容相同的窗口；
+/// 顺带让 window-state 能复用该窗口的位置记忆（该插件按 label 存状态）。
+fn window_label_for(path: &str) -> String {
+  let mut hasher = DefaultHasher::new();
+  path.to_lowercase().hash(&mut hasher);
+  format!("doc-{:016x}", hasher.finish())
+}
+
+/// 前端调用：取走本窗口待打开的文件（取走即清空，避免重复打开）。
+#[tauri::command]
+fn take_window_file(label: String, state: tauri::State<PendingFiles>) -> Option<String> {
+  state.0.lock().ok()?.remove(&label)
+}
+
+/// 注册当前窗口已打开的文档，使重复双击同一文件时聚焦本窗口而非重复开窗口。
+///
+/// `open_in_new_window` 据此查重：双击已打开文件的关联项会 `set_focus` 既有窗口。
+/// 用 path 小写做 key，忽略大小写 / 斜杠差异（同文件在不同表述下视为同一份）。
+#[tauri::command]
+fn register_open_doc(path: String, label: String, state: tauri::State<OpenDocs>) {
+  if let Ok(mut docs) = state.0.lock() {
+    docs.insert(path.to_lowercase(), label);
+  }
+}
+
+/// 设置当前窗口标题。
+/// 由前端在打开/切换文档时调用，避免依赖前端 `webview` 变量的初始化时机
+///（它要等到 onMounted 末尾才赋值，而拉取待打开文件的代码更早执行）。
+#[tauri::command]
+fn set_window_title(window: tauri::WebviewWindow, title: String) {
+  let _ = window.set_title(&title);
+}
+
+/// 在新窗口打开指定文件；该文件的窗口若已存在则直接聚焦。
+/// `label` 由调用方按路径派生（window_label_for），保证与 PendingFiles 的 key
+/// 一致，前端取走时也用同一 label 去 State 里拉取该文件。
+fn open_in_new_window(app: &tauri::AppHandle, label: &str, path: &str) {
+  // 该文件已在某窗口打开（含主窗口 "main"）则聚焦，避免重复开内容相同的窗口
+  if let Ok(docs) = app.state::<OpenDocs>().0.lock() {
+    if let Some(existing) = docs.get(&path.to_lowercase()) {
+      if let Some(win) = app.get_webview_window(existing) {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return;
+      }
+    }
+  }
+  // 按派生 label 查（doc-xxx 窗口之间重复）
+  if let Some(win) = app.get_webview_window(label) {
+    let _ = win.unminimize();
+    let _ = win.set_focus();
+    return;
+  }
+
+  if let Ok(mut pending) = app.state::<PendingFiles>().0.lock() {
+    pending.insert(label.to_string(), path.to_string());
+  }
+
+  let title = std::path::Path::new(path)
+    .file_name()
+    .map(|n| n.to_string_lossy().to_string())
+    .unwrap_or_else(|| "NoteMark".to_string());
+
+  // visible(false)：与主窗口一致，由前端 revealWindow 在首帧渲染后显示，避免白窗闪烁
+  if let Err(e) = tauri::WebviewWindowBuilder::new(
+    app,
+    label,
+    tauri::WebviewUrl::App("index.html".into()),
+  )
+  .title(title)
+  .inner_size(1000.0, 720.0)
+  .min_inner_size(480.0, 360.0)
+  .resizable(true)
+  .center()
+  .visible(false)
+  .build()
+  {
+    log::warn!("[NoteMark] open window for {path} failed: {e}");
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // 冷启动参数：应用未运行时双击 .md，系统会把文件路径放进 argv
+  let startup_args: Vec<String> = std::env::args().collect();
+  let startup_file = pick_md_path(&startup_args);
+
   tauri::Builder::default()
-    .setup(|app| {
+    .manage(PendingFiles(Mutex::new(HashMap::new())))
+    .manage(OpenDocs(Mutex::new(HashMap::new())))
+    // 第二个进程：把文件路径交给已运行的实例开新窗口，本进程随即退出。
+    //
+    // callback 运行在「第一个实例」的窗口过程（WndProc）里，第一个实例的 GUI
+    // 线程此刻正被第二个进程的 SendMessageW 同步阻塞。绝对不能在此调用链内
+    // 同步建 WebView 窗口——run_on_main_thread / emit 在主线程都会同步执行，
+    // 而此刻消息循环被 SendMessageW 阻塞，WebView2 初始化会死锁（表现为
+    // 单实例「失效」、第二个进程既不开窗也不退出）。
+    // 因此把建窗交给 async 运行时（非主线程）：它 run_on_main_thread 时是把
+    // 任务投递到主线程消息队列，在 SendMessageW 返回、消息循环恢复后的迭代里
+    // 异步执行，建窗安全。callback 立即返回 → SendMessageW 返回 → 第二进程 exit。
+    .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+      if let Some(path) = pick_md_path(&argv) {
+        let label = window_label_for(&path);
+        if let Ok(mut pending) = app.state::<PendingFiles>().0.lock() {
+          pending.insert(label.clone(), path.clone());
+        }
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+          let task = handle.clone();
+          let window_handle = task.clone();
+          let _ = task.run_on_main_thread(move || {
+            open_in_new_window(&window_handle, &label, &path);
+          });
+        });
+      }
+    }))
+    .setup(move |app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      }
+      // 冷启动带文件时挂到主窗口，前端 ready 后取走
+      if let Some(path) = startup_file {
+        if let Ok(mut pending) = app.state::<PendingFiles>().0.lock() {
+          pending.insert(MAIN_LABEL.to_string(), path);
+        }
       }
       Ok(())
     })
@@ -19,6 +177,13 @@ pub fn run() {
     .on_window_event(|window, event| {
       use tauri::DragDropEvent;
       use tauri::Emitter;
+      // 窗口关闭时从 OpenDocs 移除其登记项，避免留下指向已销毁窗口的失效条目
+      // （否则重复双击同一文件会命中失效 label，又落到「再开一个窗口」的分支）。
+      if matches!(event, tauri::WindowEvent::Destroyed) {
+        if let Ok(mut docs) = window.state::<OpenDocs>().0.lock() {
+          docs.retain(|_, v| v != window.label());
+        }
+      }
       // 拖放统一由原生层接管，把「真实路径 + 落点坐标」转发给前端。
       //
       // 为什么不走前端的 HTML5 拖放：HTML5 的 File 对象出于安全限制拿不到
@@ -71,7 +236,13 @@ pub fn run() {
         }
       }
     })
-    .invoke_handler(tauri::generate_handler![trash_delete, export_pdf])
+    .invoke_handler(tauri::generate_handler![
+      trash_delete,
+      export_pdf,
+      take_window_file,
+      register_open_doc,
+      set_window_title
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
