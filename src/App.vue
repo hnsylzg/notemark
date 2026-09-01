@@ -2278,7 +2278,7 @@ onBeforeUnmount(() => {
         <button
           class="mt-btn mt-btn--icon"
           :class="{ 'mt-btn--icon-on': sourceMode }"
-          title="源码模式（Ctrl+/）"
+          title="源码模式"
           aria-label="源码模式"
           @click="toggleSourceMode"
         >
