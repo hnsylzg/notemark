@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================
+  文件关联：安装后让 .md / .markdown 可以用 NoteMark 打开
+
+  要点：
+  - 全部写 HKCU，安装不需要管理员权限；
+  - exe 路径用 [!Path] 引用（File 元素 Id="Path"），不硬编码文件名，
+    这样即使 productName 变化导致 exe 改名也不用改这里；
+  - 专有键（NoteMark.md / Applications\notemark.exe）用
+    Action="createAndRemoveOnUninstall"，卸载时整个删除；
+  - 共享键（.md\OpenWithProgids）**故意不设** createAndRemoveOnUninstall：
+    卸载时只移除我们写入的 NoteMark.md 值，绝不删整个 OpenWithProgids，
+    否则会连带清掉其他程序对 .md 的关联。
+  ============================================================
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="NoteMarkFileAssoc" Guid="*">
+
+        <!-- 专有 ProgID，卸载时整键删除 -->
+        <RegistryKey Root="HKCU"
+                     Key="Software\Classes\NoteMark.md"
+                     Action="createAndRemoveOnUninstall">
+          <RegistryValue Type="string" Value="Markdown Document" KeyPath="yes" />
+          <RegistryValue Type="string" Name="DefaultIcon" Value="[!Path],0" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKCU"
+                     Key="Software\Classes\NoteMark.md\shell\open\command"
+                     Action="createAndRemoveOnUninstall">
+          <RegistryValue Type="string" Value="&quot;[!Path]&quot; &quot;%1&quot;" />
+        </RegistryKey>
+
+        <!-- 让 NoteMark 出现在「打开方式」列表里 -->
+        <RegistryKey Root="HKCU"
+                     Key="Software\Classes\Applications\notemark.exe"
+                     Action="createAndRemoveOnUninstall">
+          <RegistryValue Type="string" Name="FriendlyAppName" Value="NoteMark" />
+          <RegistryValue Type="string" Name="DefaultIcon" Value="[!Path],0" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKCU"
+                     Key="Software\Classes\Applications\notemark.exe\shell\open\command"
+                     Action="createAndRemoveOnUninstall">
+          <RegistryValue Type="string" Value="&quot;[!Path]&quot; &quot;%1&quot;" />
+        </RegistryKey>
+
+        <!-- 共享键：不设 createAndRemoveOnUninstall，只写入值 -->
+        <RegistryKey Root="HKCU" Key="Software\Classes\.md\OpenWithProgids">
+          <RegistryValue Type="string" Name="NoteMark.md" Value="" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKCU" Key="Software\Classes\.markdown\OpenWithProgids">
+          <RegistryValue Type="string" Name="NoteMark.md" Value="" />
+        </RegistryKey>
+
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
