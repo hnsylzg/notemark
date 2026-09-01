@@ -22,6 +22,7 @@ import type { Ctx } from "@milkdown/ctx";
 import {
   Plugin,
   PluginKey,
+  Selection,
   TextSelection,
   type Command,
   type EditorState,
@@ -477,22 +478,24 @@ function insertAtom(
   attrs?: Record<string, unknown>
 ): Command {
   return (state, dispatch) => {
-    const paraType = state.schema.nodes.paragraph;
     const node = type.create(attrs);
     const { start, end, empty } = blockRangeAt(state);
 
     let tr: Transaction;
+    let nodeStart: number;
     if (empty) {
-      // 空块：整体替换成「节点 + 承接光标的空段落」，节点落在原块位置
-      tr = state.tr.replaceWith(start, end, [node, paraType.create()]);
-      tr.setSelection(TextSelection.near(tr.doc.resolve(start + node.nodeSize + 1)));
+      // 空块：整体替换为节点本身，节点落在原块位置
+      nodeStart = start;
+      tr = state.tr.replaceWith(start, end, node);
     } else {
-      // 非空块：在光标处插入（由 PM 负责按需切分），同样补空段落
+      // 非空块：在光标处插入（由 PM 负责按需切分）
       tr = state.tr.replaceSelectionWith(node);
       const at = tr.selection.from;
-      tr.insert(at, paraType.create());
-      tr.setSelection(TextSelection.near(tr.doc.resolve(at + 1)));
+      nodeStart = at - node.nodeSize;
     }
+    // atom 块不可编辑，光标进不去：把光标放到节点之后的最近文本位置。
+    // 与表格一致，【不】补空段落，避免序列化留下多余的 <br />。
+    tr.setSelection(Selection.near(tr.doc.resolve(nodeStart + node.nodeSize)));
     if (dispatch) dispatch(tr.scrollIntoView());
     return true;
   };
@@ -553,18 +556,19 @@ function insertTableNxM(rows: number, cols: number): Command {
       ...Array.from({ length: Math.max(1, rows - 1) }, bodyRow),
     ]);
 
-    // 与 insertAtom 同理：光标在空块时整体替换，避免表格落到光标下方
+    // 与 insertAtom 同理：光标在空块时整体替换，避免表格落到光标下方。
+    // 注意：表格本身可编辑（光标会进单元格），所以【不】像 insertAtom 那样
+    // 在后面补空段落——否则保存后会在表格下方留一行多余的 <br />。
     const { start, end, empty } = blockRangeAt(state);
     let tr: Transaction;
     let nodeStart: number;
     if (empty) {
       nodeStart = start;
-      tr = state.tr.replaceWith(start, end, [node, paragraph.create()]);
+      tr = state.tr.replaceWith(start, end, node);
     } else {
       tr = state.tr.replaceSelectionWith(node);
       const at = tr.selection.from;
       nodeStart = at - node.nodeSize;
-      tr.insert(at, paragraph.create());
     }
 
     // 光标落进第一个单元格（表头第一格），方便直接填写表头。

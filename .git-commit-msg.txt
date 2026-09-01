@@ -1,0 +1,4 @@
+fix(editor): 表格/分割线/toc 插入后不再残留多余 <br />；行内代码尾部可继续输入
+
+- insertAtom / insertTableNxM 不再无条件补空段落，避免序列化留下多余 <br />
+- 行内代码 mark 改为 inclusive，点代码尾部可继续输入，Esc 退出（对齐加粗/删除线/高亮）

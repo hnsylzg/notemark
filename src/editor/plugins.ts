@@ -10,7 +10,7 @@
  * 这里只负责“声明”插件数组，不在本文件创建 editor 实例。
  */
 import type { MilkdownPlugin } from "@milkdown/ctx";
-import { commonmark } from "@milkdown/kit/preset/commonmark";
+import { commonmark, inlineCodeSchema } from "@milkdown/kit/preset/commonmark";
 import { gfm } from "@milkdown/kit/preset/gfm";
 import { history } from "@milkdown/kit/plugin/history";
 // clipboard：粘贴纯文本时用 markdown parser 解析，从而把粘贴的
@@ -54,6 +54,20 @@ import "@milkdown/prose/gapcursor/style/gapcursor.css";
 const gapcursorPlugin = $prose(() => gapCursor());
 
 /**
+ * 行内代码改为「包含型」（inclusive: true）。
+ *
+ * milkdown 默认 inclusive: false——代码片段是闭合端，光标停在代码末尾时
+ * ProseMirror 认为光标已在代码之外，后续输入不会继承 code mark，
+ * 表现为"点代码尾部继续输入，字符进不去"。加粗 / 删除线 / 高亮都是包含型，
+ * 末尾输入自然继承，这里把行内代码对齐到同样行为；
+ * 退出交给 Esc（inline-mark-escape）或方向键，与加粗一致。
+ */
+const inlineCodeInclusiveSchema = inlineCodeSchema.extendSchema((prev) => (ctx) => ({
+  ...prev(ctx),
+  inclusive: true,
+}));
+
+/**
  * 返回一组可直接传给 Milkdown 的扩展（插件）集合。
  * 各 preset/组件导出可能是单个 MilkdownPlugin 或 MilkdownPlugin[]，
  * 统一展开成扁平的 MilkdownPlugin[] 后，整体传给 Editor.use()。
@@ -67,6 +81,8 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 本插件只在光标紧邻这两类块时才返回 true，其余一律交回默认行为。
     atomBlockDeletePlugin,
     ...commonmark,
+    // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖
+    ...inlineCodeInclusiveSchema,
     // 删除线（~ / ~~）保持 @milkdown/preset-gfm 的默认规则，不做任何改动
     ...gfm,
     ...history,
