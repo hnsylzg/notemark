@@ -19,8 +19,12 @@ import type { Editor } from "@milkdown/kit/core";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore editorViewCtx 运行时可用（d.ts 未声明）
 import { editorViewCtx } from "@milkdown/kit/core";
+
 // ?inline：以字符串形式导入处理后的主题 CSS（含 @import 展开），不注入页面
 import themeCss from "@/editor/theme/index.css?inline";
+// 语言列表：与编辑器注入 codeBlockConfig 的是同一数组实例，load() 带缓存，
+// 导出前预热后，Milkdown 初始化代码块时可直接命中
+import { languages } from "@codemirror/language-data";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -108,6 +112,20 @@ const PRINT_CSS = `
 .mt-export-body h1,
 .mt-export-body h2,
 .mt-export-body h3 { break-after: avoid; }
+/* CM6 代码在编辑态默认不换行（white-space: pre）。中文字符占 1em 宽，
+   长代码行（如长字符串常量）会把页面撑到 900+px；打印时 Chrome 对超宽
+   内容做 shrink-to-fit 整页等比缩小，导致正文字号远小于设定值（实测
+   14px 正文缩到约 9.8px、15px 缩到约 10px）。打印时强制代码换行并允许
+   .cm-content 收缩（其 CM6 默认 flex-shrink: 0），让内容宽度始终不超过
+   纸张可用宽度。行号 gutter 的 flex 布局不受影响。 */
+.mt-export-body .cm-content,
+.mt-export-body .cm-line {
+  min-width: 0 !important;
+  flex-shrink: 1 !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+}
 `;
 
 export interface StandaloneHtmlOptions {
@@ -161,12 +179,110 @@ ${bodyHtml}
  * 取编辑器正文 HTML。
  * view.dom 即 ProseMirror 的可编辑根元素，其 innerHTML 是渲染后的真实结构：
  * 公式（KaTeX）、图表（Mermaid SVG）、代码块（CM6 含高亮 span）都已在 DOM 中。
+ *
+ * 注意：调用前应先 warmUpCodeBlocks()，否则视口外的代码块仍是纯文本占位，
+ * 取到的 HTML 会丢失语法高亮。
  */
 export function getEditorHtml(editor: Editor): string {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     return view.dom.innerHTML;
   });
+}
+
+/**
+ * 导出前让所有代码块的 CodeMirror 实例完成挂载，保证取到的 HTML 带语法高亮。
+ *
+ * @milkdown/components/code-block 的 NodeView（CodeMirrorBlock）用共享的
+ * IntersectionObserver 做懒加载（root 为 null，即页面视口；rootMargin 200px）：
+ * - 构造时只渲染占位 `<pre class="milkdown-code-block-placeholder">`，内容是纯文本
+ * - 元素矩形进入视口（含 200px 余量）才回调 initializeCodeMirror()，该方法是
+ *   同步的：创建 CM6 实例、mount Vue 组件（产生带高亮的 token span）
+ * - 离开视口 5 秒后（TEARDOWN_DELAY）销毁实例并退回占位
+ *
+ * 因此直接取 view.dom.innerHTML 时，视口外的代码块只有纯文本：既没有语法
+ * 高亮，也拿不到代码块的等宽字体与前景色（HTML 与 PDF 导出都会受影响）。
+ *
+ * 官方没有提供"导出前渲染全部代码块"的开关（IO 在源码里硬编码，无 lazy/
+ * observe/renderAll 配置），而 IO 的回调表（visibilityCallbacks WeakMap）是
+ * 模块私有的，无法直接调用。这里利用 IO 的公开行为触发初始化：把未初始化
+ * 的代码块临时 `position: fixed` 叠到视口左上角，其矩形与视口的相交状态
+ * 必然发生变化 → 共享 IO 在下一帧渲染阶段回调 → 同步 initializeCodeMirror()。
+ * 全程在导出遮罩下进行，且元素临时 visibility: hidden，用户无感。
+ *
+ * 语言包提前用 LanguageDescription.load() 预热（同一数组实例、带缓存），
+ * 这样初始化时 load() 直接命中已 resolve 的 Promise，取 DOM 前高亮就绪。
+ *
+ * 方案史（均已证实不可行/已废弃）：
+ * - scale(0.001) 缩放：transform 不改变元素在文档流中的位置，远端块的 rect
+ *   仍在视口外，IO 不触发
+ * - selection dispatch：PM 的 setSelection 只下探到"选区完全落在其内部"的
+ *   那一个节点（viewdesc.setSelection 按 offset 逐子判断），不会广播给全部
+ *   NodeView，远端代码块不会初始化
+ * - 逐段滚动：能触发但用户可见整篇翻滚，观感差
+ */
+export async function warmUpCodeBlocks(editor: Editor): Promise<void> {
+  const view = editor.action((ctx) => ctx.get(editorViewCtx));
+
+  // 预热文档用到的语言包：LanguageDescription.load() 有缓存（this.loading），
+  // 预热后 Milkdown 的 LanguageLoader.load() 直接拿到已 resolve 的 Promise
+  const used = new Set<string>();
+  view.state.doc.descendants((node) => {
+    if (node.type.name === "code_block") {
+      const lang = (node.attrs as { language?: unknown }).language;
+      if (typeof lang === "string" && lang) used.add(lang);
+    }
+  });
+  if (used.size > 0) {
+    // 与 Milkdown 的 LanguageLoader 对齐：alias 全小写且含小写 name，
+    // 匹配时同样转小写，保证预热命中同一个 LanguageDescription
+    const usedLower = new Set(Array.from(used, (s) => s.toLowerCase()));
+    await Promise.all(
+      languages
+        .filter((l) => l.alias.some((a) => usedLower.has(a)))
+        .map((l) => l.load().catch(() => null))
+    );
+  }
+
+  // 找出尚未初始化的代码块（内部仍是占位、没有 CM6 高亮 span）
+  const pending = Array.from(
+    view.dom.querySelectorAll<HTMLElement>(".milkdown-code-block")
+  ).filter((el) => el.querySelector(".milkdown-code-block-placeholder"));
+  // 已全部初始化（比如用户刚好浏览到整个文档）则无需任何操作
+  if (pending.length === 0) return;
+
+  // 临时把未初始化块 fixed 到视口左上角：相交状态必然变化 → 共享 IO 在下一帧
+  // 渲染阶段回调 → initializeCodeMirror() 同步执行。记录原内联样式以便恢复。
+  const relocated = pending.map((el) => {
+    const saved = {
+      position: el.style.position,
+      top: el.style.top,
+      left: el.style.left,
+      width: el.style.width,
+      visibility: el.style.visibility,
+    };
+    el.style.position = "fixed";
+    el.style.top = "0";
+    el.style.left = "0";
+    // 遮罩本身已挡住编辑器；visibility 隐藏是双保险，避免任何瞬时闪现
+    el.style.visibility = "hidden";
+    return { el, saved };
+  });
+
+  // 等两帧：第一帧让浏览器跑 IO 的相交计算并回调（初始化同步完成），
+  // 第二帧确保语言包预热后 updateLanguage() 的微任务高亮已应用进 DOM
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+
+  // 恢复原位：DOM 结构从未变化，取 HTML 前所有代码块都已带上高亮
+  for (const { el, saved } of relocated) {
+    el.style.position = saved.position;
+    el.style.top = saved.top;
+    el.style.left = saved.left;
+    el.style.width = saved.width;
+    el.style.visibility = saved.visibility;
+  }
 }
 
 /** Blob → data URL */
@@ -381,7 +497,30 @@ function collapseInline(text: string): string {
 }
 
 /**
- * 弹出「另存为」对话框并写入文件。
+ * 只弹出「另存为」对话框，不做任何耗时准备。
+ * @returns 目标路径；用户取消返回 null
+ */
+export async function pickExportFile(
+  defaultName: string,
+  filters: { name: string; extensions: string[] }[]
+): Promise<string | null> {
+  if (!isTauri) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ defaultPath: defaultName, filters });
+}
+
+/** 把导出数据写入已选定的目标文件 */
+export async function writeExportFile(
+  target: string,
+  data: string | Uint8Array
+): Promise<void> {
+  const { writeTextFile, writeFile } = await import("@tauri-apps/plugin-fs");
+  if (typeof data === "string") await writeTextFile(target, data);
+  else await writeFile(target, data);
+}
+
+/**
+ * 弹出「另存为」对话框并写入文件（弹框后立即写，适合不需要长准备的导出）。
  * @returns 实际写入的路径；用户取消返回 null
  */
 export async function saveExportFile(
@@ -389,12 +528,8 @@ export async function saveExportFile(
   filters: { name: string; extensions: string[] }[],
   data: string | Uint8Array
 ): Promise<string | null> {
-  if (!isTauri) return null;
-  const { save } = await import("@tauri-apps/plugin-dialog");
-  const { writeTextFile, writeFile } = await import("@tauri-apps/plugin-fs");
-  const target = await save({ defaultPath: defaultName, filters });
+  const target = await pickExportFile(defaultName, filters);
   if (!target) return null;
-  if (typeof data === "string") await writeTextFile(target, data);
-  else await writeFile(target, data);
+  await writeExportFile(target, data);
   return target;
 }

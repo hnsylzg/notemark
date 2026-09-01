@@ -29,6 +29,27 @@
   padding: 12px 16px;
 }
 
+/* ============ 未挂载 CodeMirror 时的代码块占位 ============
+   CodeMirrorBlock 用 IntersectionObserver 懒加载：视口外的代码块只渲染
+     <pre class="milkdown-code-block-placeholder"><code>纯文本</code></pre>
+   内部没有 CM6 的 token span。上面的 .milkdown-code-block pre 只给了等宽
+   字体与字号、未设颜色，文字因此继承正文色——在深底代码块配色（深青底 +
+   深灰字）下对比度极低、几乎不可读。这里补齐前景色与换行：
+   pre 默认 white-space: pre，长代码行在导出时还会横向溢出页面。 */
+:where(.milkdown .editor) .milkdown-code-block-placeholder,
+:where(.milkdown .editor) .milkdown-code-block-placeholder code {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  font-family: var(--mt-font-mono);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--mt-code-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ============ 代码块工具条（语言选择 + 复制按钮） ============ */
 :where(.milkdown .editor) .milkdown-code-block .tools {
   display: flex;
