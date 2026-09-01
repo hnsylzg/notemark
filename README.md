@@ -91,7 +91,7 @@ scoop install wixtoolset nsis
 
 1. 仓库根目录提供三个示例文件作为起点：
    - `theme-custom.example.css` —— 变量覆盖模板（复制后改名即可用）
-   - `theme-emerald.css`、`theme-rose.css` —— 完整配色示例
+   - `theme-emerald.css`、`theme-forest.css`、`theme-rose.css` —— 完整配色示例
 2. 通过工具栏 **主题 → 导入自定义主题…** 选择 `.css` 文件：文件会复制到应用数据目录下的 `themes/` 并即时生效（支持一次多选，重名自动加序号）。
 3. **打开主题目录** 可在系统文件管理器里手动增删主题文件。
 4. 主题通过 CSS 层叠覆盖，只需写最简选择器（如 `.milkdown h1 { … }`）或修改 `--mt-*` 变量即可；变量定义见 `src/editor/theme/tokens.css` 等。
