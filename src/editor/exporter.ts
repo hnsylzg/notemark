@@ -208,7 +208,7 @@ export function getEditorHtml(editor: Editor): string {
  * 模块私有的，无法直接调用。这里利用 IO 的公开行为触发初始化：把未初始化
  * 的代码块临时 `position: fixed` 叠到视口左上角，其矩形与视口的相交状态
  * 必然发生变化 → 共享 IO 在下一帧渲染阶段回调 → 同步 initializeCodeMirror()。
- * 全程在导出遮罩下进行，且元素临时 visibility: hidden，用户无感。
+ * 元素临时 visibility: hidden，全程无任何可见变化，用户无感。
  *
  * 语言包提前用 LanguageDescription.load() 预热（同一数组实例、带缓存），
  * 这样初始化时 load() 直接命中已 resolve 的 Promise，取 DOM 前高亮就绪。
@@ -264,7 +264,7 @@ export async function warmUpCodeBlocks(editor: Editor): Promise<void> {
     el.style.position = "fixed";
     el.style.top = "0";
     el.style.left = "0";
-    // 遮罩本身已挡住编辑器；visibility 隐藏是双保险，避免任何瞬时闪现
+    // 折叠到视口左上角期间隐藏元素，避免任何瞬时闪现
     el.style.visibility = "hidden";
     return { el, saved };
   });

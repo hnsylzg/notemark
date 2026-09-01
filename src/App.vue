@@ -1452,27 +1452,6 @@ function resyncFindOnModeSwitch() {
 const exportMenuOpen = ref(false);
 /** 导出菜单容器（点击外部时收起） */
 const exportMenuWrap = ref<HTMLElement | null>(null);
-/** 导出进度遮罩：预热代码块 / 后端打印期间显示，避免用户看到文档瞬时变化 */
-const exporting = ref(false);
-/** 遮罩上的提示文案 */
-const exportingLabel = ref("正在导出…");
-
-/**
- * 在导出进度遮罩下执行耗时操作。
- * 预热代码块 / 后端打印都要等待，遮罩能让用户无感且防误操作。
- */
-async function withExportProgress<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  exportingLabel.value = label;
-  exporting.value = true;
-  // 确保遮罩已渲染进 DOM 再开始耗时操作，否则用户会看到代码块瞬间移动
-  await nextTick();
-  try {
-    return await fn();
-  } finally {
-    exporting.value = false;
-  }
-}
-
 /** 展开 / 收起导出菜单 */
 function toggleExportMenu() {
   exportMenuOpen.value = !exportMenuOpen.value;
@@ -1541,7 +1520,7 @@ async function currentEditorHtml(): Promise<string> {
 /**
  * 导出为自包含 HTML（内联样式 + 内嵌图片，可双击打开）。
  * 先弹保存框再准备内容：和 Typora 一致，点导出立刻出对话框，
- * 点保存后才进入遮罩（代码块预热 / 图片内联）。
+ * 点保存后直接生成（预热 / 图片内联均无可见变化，无需遮罩）。
  */
 async function exportHtml() {
   if (!editorInstance) return;
@@ -1551,13 +1530,11 @@ async function exportHtml() {
   ]);
   if (!target) return;
   try {
-    const full = await withExportProgress("正在导出 HTML…", async () => {
-      const html = await inlineImages(await currentEditorHtml());
-      return buildStandaloneHtml({
-        title: exportTitle(),
-        bodyHtml: html,
-        dark: isDark.value,
-      });
+    const html = await inlineImages(await currentEditorHtml());
+    const full = buildStandaloneHtml({
+      title: exportTitle(),
+      bodyHtml: html,
+      dark: isDark.value,
     });
     await writeExportFile(target, full);
   } catch (err) {
@@ -1575,9 +1552,7 @@ async function exportTxt() {
   ]);
   if (!target) return;
   try {
-    const text = await withExportProgress("正在导出纯文本…", async () =>
-      htmlToPlainText(await currentEditorHtml())
-    );
+    const text = htmlToPlainText(await currentEditorHtml());
     await writeExportFile(target, text);
   } catch (err) {
     console.error("[NoteMark] export txt failed:", err);
@@ -1594,9 +1569,7 @@ async function exportDocx() {
   ]);
   if (!target) return;
   try {
-    const data = await withExportProgress("正在生成 Word 文档…", () =>
-      buildDocx(editorInstance!)
-    );
+    const data = await buildDocx(editorInstance!);
     await writeExportFile(target, data);
   } catch (err) {
     console.error("[NoteMark] export docx failed:", err);
@@ -1608,13 +1581,14 @@ async function exportDocx() {
  * 导出为 PDF。
  * 优先静默生成（后端调系统 Edge/Chrome 无头打印，直接输出到用户选择的路径）；
  * 失败时回退到打印对话框（隐藏 iframe + window.print，用户选「另存为 PDF」）。
+ * 预热 / 图片内联均无可见变化，后端打印在后台执行，全程不需要遮罩。
  */
 async function exportPdf() {
   if (!isTauri || !editorInstance) return;
   exportMenuOpen.value = false;
 
   // 先选保存位置，让后端直接输出到该路径；准备内容（代码块预热 / 图片
-  // 内联）与后端打印都在保存后统一走遮罩
+  // 内联）无可见变化，后端打印在后台执行，全程不需要遮罩
   const { save } = await import("@tauri-apps/plugin-dialog");
   const target = await save({
     defaultPath: `${exportTitle()}.pdf`,
@@ -1623,41 +1597,37 @@ async function exportPdf() {
   if (!target) return;
 
   try {
-    await withExportProgress("正在生成 PDF…", async () => {
-      const html = await inlineImages(await currentEditorHtml());
-      const full = buildStandaloneHtml({
-        title: exportTitle(),
-        bodyHtml: html,
-        dark: isDark.value,
-        forPrint: true,
-      });
-
-      const { writeTextFile, remove } = await import("@tauri-apps/plugin-fs");
-      const { tempDir, join } = await import("@tauri-apps/api/path");
-      const { invoke } = await import("@tauri-apps/api/core");
-      const htmlPath = await join(await tempDir(), `notemark-export-${Date.now()}.html`);
-      try {
-        await writeTextFile(htmlPath, full);
-        await invoke<void>("export_pdf", { htmlPath, pdfPath: target });
-      } finally {
-        // 清理临时 HTML（清理失败不影响导出结果）
-        await remove(htmlPath).catch(() => {});
-      }
+    const html = await inlineImages(await currentEditorHtml());
+    const full = buildStandaloneHtml({
+      title: exportTitle(),
+      bodyHtml: html,
+      dark: isDark.value,
+      forPrint: true,
     });
+
+    const { writeTextFile, remove } = await import("@tauri-apps/plugin-fs");
+    const { tempDir, join } = await import("@tauri-apps/api/path");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const htmlPath = await join(await tempDir(), `notemark-export-${Date.now()}.html`);
+    try {
+      await writeTextFile(htmlPath, full);
+      await invoke<void>("export_pdf", { htmlPath, pdfPath: target });
+    } finally {
+      // 清理临时 HTML（清理失败不影响导出结果）
+      await remove(htmlPath).catch(() => {});
+    }
   } catch (err) {
     console.warn("[NoteMark] silent pdf export failed, fallback to print:", err);
     try {
-      await withExportProgress("正在打开打印预览…", async () => {
-        const html = await inlineImages(await currentEditorHtml());
-        printHtml(
-          buildStandaloneHtml({
-            title: exportTitle(),
-            bodyHtml: html,
-            dark: isDark.value,
-            forPrint: true,
-          })
-        );
-      });
+      const html = await inlineImages(await currentEditorHtml());
+      printHtml(
+        buildStandaloneHtml({
+          title: exportTitle(),
+          bodyHtml: html,
+          dark: isDark.value,
+          forPrint: true,
+        })
+      );
     } catch (inner) {
       console.error("[NoteMark] pdf fallback print failed:", inner);
       alert(`导出 PDF 失败：${inner instanceof Error ? inner.message : String(inner)}`);
@@ -2402,14 +2372,6 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <!-- 导出进度遮罩：预热代码块 / 后端打印期间显示，避免用户看到文档瞬时变化 -->
-    <div v-if="exporting" class="mt-export-mask" role="status" aria-live="polite">
-      <div class="mt-export-mask__box">
-        <div class="mt-export-mask__spinner" aria-hidden="true"></div>
-        <p class="mt-export-mask__text">{{ exportingLabel }}</p>
-      </div>
-    </div>
-
     <!-- 未保存修改确认对话框（保存 / 不保存 / 取消） -->
     <div v-if="confirmState" class="mt-modal-mask" @click.self="resolveConfirm('cancel')">
       <div class="mt-modal" role="dialog" aria-modal="true" aria-label="未保存的修改">
@@ -2749,52 +2711,6 @@ onBeforeUnmount(() => {
   padding: 6px 10px;
   font-size: 12px;
   color: var(--mt-muted, #888);
-}
-
-/* 导出进度遮罩（代码块预热 / 后端打印期间显示）。
-   预热会把未初始化代码块临时 fixed 到视口内触发 IntersectionObserver，
-   遮罩能挡住这一过程，同时用于后端打印的等待期并防误操作；
-   背景仍保持够浓，避免透出下方内容 */
-
-.mt-export-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 1100;
-  background: rgba(0, 0, 0, 0.8);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.mt-export-mask__box {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 22px;
-  background: var(--mt-bg, #ffffff);
-  border-radius: 8px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
-}
-
-.mt-export-mask__spinner {
-  width: 18px;
-  height: 18px;
-  border: 2px solid var(--mt-muted, #bbb);
-  border-top-color: var(--mt-primary, #4a90d9);
-  border-radius: 50%;
-  animation: mt-export-spin 0.8s linear infinite;
-}
-
-.mt-export-mask__text {
-  margin: 0;
-  font-size: 13px;
-  color: var(--mt-fg, #333);
-}
-
-@keyframes mt-export-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* 未保存修改确认对话框 */

@@ -55,6 +55,9 @@ const HEADING_LEVELS = [
 /** 图片最大宽度（像素） */
 const MAX_IMAGE_WIDTH = 480;
 
+/** 导出上下文：固定字号（docx half-points），与编辑器主题解耦 */
+type ExportContext = { base: number; code: number };
+
 /**
  * 生成 .docx 文件的二进制内容。
  * @param editor 编辑器实例
@@ -63,25 +66,36 @@ export async function buildDocx(editor: Editor): Promise<Uint8Array> {
   const doc = editor.action(
     (ctx) => ctx.get(editorViewCtx).state.doc
   ) as PMNode;
-  const children = await convertBlocks(doc);
+  // 固定字号，对齐 Typora（pandoc 导出 Word：正文 12pt = 24 half-points，代码 10.5pt = 21 half-points）
+  const sizes: ExportContext = { base: 24, code: 21 };
+  const children = await convertBlocks(doc, sizes);
   // Word 文档至少要有一个段落，空文档补一个空段落
   if (children.length === 0) children.push(new Paragraph({ children: [] }));
-  const document = new Document({ sections: [{ children }] });
+  const document = new Document({
+    styles: {
+      default: {
+        document: {
+          run: { size: sizes.base },
+        },
+      },
+    },
+    sections: [{ children }],
+  });
   const buffer = await Packer.toArrayBuffer(document);
   return new Uint8Array(buffer);
 }
 
 /* ============ 块级节点 ============ */
 
-async function convertBlocks(parent: PMNode): Promise<BlockChild[]> {
+async function convertBlocks(parent: PMNode, ctx: ExportContext): Promise<BlockChild[]> {
   const out: BlockChild[] = [];
   for (let i = 0; i < parent.childCount; i += 1) {
-    out.push(...(await convertBlock(parent.child(i))));
+    out.push(...(await convertBlock(parent.child(i), ctx)));
   }
   return out;
 }
 
-async function convertBlock(node: PMNode): Promise<BlockChild[]> {
+async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChild[]> {
   switch (node.type.name) {
     case "heading": {
       const level = clampLevel(Number(node.attrs.level) || 1);
@@ -89,14 +103,14 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
         new Paragraph({
           heading: level,
           spacing: { before: 200, after: 100 },
-          children: await convertInline(node),
+          children: await convertInline(node, ctx),
         }),
       ];
     }
 
     case "paragraph":
       return [
-        new Paragraph({ spacing: { after: 120 }, children: await convertInline(node) }),
+        new Paragraph({ spacing: { after: 120 }, children: await convertInline(node, ctx) }),
       ];
 
     case "blockquote": {
@@ -110,12 +124,12 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
               border: {
                 left: { style: BorderStyle.SINGLE, size: 12, color: "BFBFBF", space: 8 },
               },
-              children: await convertInline(child),
+              children: await convertInline(child, ctx),
             })
           );
         } else {
           // 引用块内的列表/代码块等：递归处理（缩进样式不再叠加）
-          out.push(...(await convertBlock(child)));
+          out.push(...(await convertBlock(child, ctx)));
         }
       }
       return out;
@@ -124,7 +138,7 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
     case "bullet_list": {
       const out: BlockChild[] = [];
       for (let i = 0; i < node.childCount; i += 1) {
-        out.push(...(await convertListItem(node.child(i), "• ")));
+        out.push(...(await convertListItem(node.child(i), "• ", ctx)));
       }
       return out;
     }
@@ -132,7 +146,7 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
     case "ordered_list": {
       const out: BlockChild[] = [];
       for (let i = 0; i < node.childCount; i += 1) {
-        out.push(...(await convertListItem(node.child(i), `${i + 1}. `)));
+        out.push(...(await convertListItem(node.child(i), `${i + 1}. `, ctx)));
       }
       return out;
     }
@@ -145,7 +159,7 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
           new Paragraph({
             shading: { fill: "F5F5F5" },
             spacing: { before: 0, after: 0 },
-            children: [new TextRun({ text: line || " ", font: "Consolas", size: 20 })],
+            children: [new TextRun({ text: line || " ", font: "Consolas", size: ctx.code })],
           })
       );
     }
@@ -157,7 +171,7 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
         const cells: TableCell[] = [];
         for (let c = 0; c < rowNode.childCount; c += 1) {
           const cellNode = rowNode.child(c);
-          const inner = await convertBlocks(cellNode);
+          const inner = await convertBlocks(cellNode, ctx);
           // 单元格只接受段落；嵌套表格等内容降级为段落文本
           const paragraphs = inner.filter((x): x is Paragraph => x instanceof Paragraph);
           cells.push(
@@ -203,7 +217,7 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
               text: sourceOf(node),
               font: "Consolas",
               color: "666666",
-              size: 20,
+              size: ctx.code,
             }),
           ],
         }),
@@ -215,16 +229,20 @@ async function convertBlock(node: PMNode): Promise<BlockChild[]> {
 
     default: {
       if (node.isTextblock) {
-        return [new Paragraph({ children: await convertInline(node) })];
+        return [new Paragraph({ children: await convertInline(node, ctx) })];
       }
       // 未知容器节点：递归展开其内容
-      return convertBlocks(node);
+      return convertBlocks(node, ctx);
     }
   }
 }
 
 /** 列表项：首段加标记前缀，嵌套块递归处理 */
-async function convertListItem(item: PMNode, marker: string): Promise<BlockChild[]> {
+async function convertListItem(
+  item: PMNode,
+  marker: string,
+  ctx: ExportContext
+): Promise<BlockChild[]> {
   const out: BlockChild[] = [];
   for (let i = 0; i < item.childCount; i += 1) {
     const child = item.child(i);
@@ -234,12 +252,12 @@ async function convertListItem(item: PMNode, marker: string): Promise<BlockChild
           indent: { left: 480 },
           children: [
             new TextRun({ text: marker, font: "Consolas" }),
-            ...(await convertInline(child)),
+            ...(await convertInline(child, ctx)),
           ],
         })
       );
     } else {
-      out.push(...(await convertBlock(child)));
+      out.push(...(await convertBlock(child, ctx)));
     }
   }
   return out;
@@ -247,7 +265,7 @@ async function convertListItem(item: PMNode, marker: string): Promise<BlockChild
 
 /* ============ 内联节点 ============ */
 
-async function convertInline(parent: PMNode): Promise<InlineChild[]> {
+async function convertInline(parent: PMNode, ctx: ExportContext): Promise<InlineChild[]> {
   const out: InlineChild[] = [];
   for (let i = 0; i < parent.childCount; i += 1) {
     const child = parent.child(i);
@@ -275,7 +293,7 @@ async function convertInline(parent: PMNode): Promise<InlineChild[]> {
       }
       default:
         // 未知内联节点（含加粗/斜体等 mark 容器）：递归展开
-        out.push(...(await convertInline(child)));
+        out.push(...(await convertInline(child, ctx)));
     }
   }
   return out;
