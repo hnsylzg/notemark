@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -16,6 +17,10 @@ struct OpenDocs(Mutex<HashMap<String, String>>);
 
 /// 主窗口 label。tauri.conf.json 的首个窗口未显式指定 label，Tauri 默认用 "main"。
 const MAIN_LABEL: &str = "main";
+
+/// 空白窗口 label 序号。双击桌面图标（无 .md 参数）且应用已在运行时，
+/// 每次为新的空白窗口分配唯一 label，避免与既有窗口（含已关闭的）冲突。
+static BLANK_WINDOW_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 从命令行参数里挑出第一个真实存在的 Markdown 文件。
 ///
@@ -118,6 +123,30 @@ fn open_in_new_window(app: &tauri::AppHandle, label: &str, path: &str) {
   }
 }
 
+/// 打开一个空白新窗口（应用已在运行、双击桌面图标且 argv 里没有 .md 文件时）。
+///
+/// 与 open_in_new_window 的差别：没有关联文件，不参与 OpenDocs 去重，
+/// 每次调用都新开一个窗口（类似 Typora 双击图标新开空窗的行为）。
+fn open_blank_window(app: &tauri::AppHandle) {
+  let seq = BLANK_WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
+  let label = format!("blank-{seq}");
+  if let Err(e) = tauri::WebviewWindowBuilder::new(
+    app,
+    label,
+    tauri::WebviewUrl::App("index.html".into()),
+  )
+  .title("NoteMark")
+  .inner_size(1000.0, 720.0)
+  .min_inner_size(480.0, 360.0)
+  .resizable(true)
+  .center()
+  .visible(false)
+  .build()
+  {
+    log::warn!("[NoteMark] open blank window failed: {e}");
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // 冷启动参数：应用未运行时双击 .md，系统会把文件路径放进 argv
@@ -138,17 +167,26 @@ pub fn run() {
     // 任务投递到主线程消息队列，在 SendMessageW 返回、消息循环恢复后的迭代里
     // 异步执行，建窗安全。callback 立即返回 → SendMessageW 返回 → 第二进程 exit。
     .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+      let handle = app.clone();
       if let Some(path) = pick_md_path(&argv) {
         let label = window_label_for(&path);
         if let Ok(mut pending) = app.state::<PendingFiles>().0.lock() {
           pending.insert(label.clone(), path.clone());
         }
-        let handle = app.clone();
         tauri::async_runtime::spawn(async move {
           let task = handle.clone();
           let window_handle = task.clone();
           let _ = task.run_on_main_thread(move || {
             open_in_new_window(&window_handle, &label, &path);
+          });
+        });
+      } else {
+        // 双击桌面图标启动（应用已在运行）：argv 无文件参数，开一个空白新窗口
+        tauri::async_runtime::spawn(async move {
+          let task = handle.clone();
+          let window_handle = task.clone();
+          let _ = task.run_on_main_thread(move || {
+            open_blank_window(&window_handle);
           });
         });
       }
