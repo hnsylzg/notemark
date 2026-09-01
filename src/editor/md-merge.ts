@@ -5,7 +5,8 @@
  * remark-stringify 会强制按内容重排——块间补空行、清行尾空白、按内容重排
  * 表格列宽。直接写回文件会破坏用户未改动区域的排版。
  * mergeMarkdown 以磁盘原文为基底做行级 LCS 合并：未变化的行原样保留
- * （列表符号/分割线/空行/缩进一字不动），只有发生变化的行用序列化结果替换。
+ * （列表符号/分割线/空行/缩进一字不动），只有发生变化的行用序列化结果替换；
+ * 表格块内进一步做单元格级合并，编辑单个单元格时只更新该格。
  */
 // ============================================================================
 // 行等价判断：合并时「内容相同、仅排版不同」的行视为等价，保留原文行
@@ -304,10 +305,81 @@ function lcsMergeLines(
   return out.reverse();
 }
 
+/** 解析表格行：拆出行首/行尾空白与单元格数组；非表格行返回 null */
+function parseTableRow(line: string): {
+  leading: string;
+  cells: string[];
+  trailing: string;
+} | null {
+  if (!isTableRow(line)) return null;
+  const leading = line.match(/^\s*/)?.[0] ?? "";
+  const trailing = line.match(/\s*$/)?.[0] ?? "";
+  const core = line.slice(leading.length, line.length - trailing.length);
+  return { leading, cells: core.slice(1, -1).split("|"), trailing };
+}
+
+/** 单元格内容键：忽略所有空白，用于判断单元格内容是否变化 */
+function cellKey(cell: string): string {
+  return cell.replace(/\s+/g, "");
+}
+
+/** 分隔行单元格（`---` / `:---:` 等，可含对齐冒号） */
+function isSeparatorCell(cell: string): boolean {
+  return /^:?-+:?$/.test(cell.trim());
+}
+
+/** 单元格是否等价：分隔行折叠连续 `-`（`-----` 与 `-` 语义相同）；普通内容忽略空白比较 */
+function sameCell(rawCell: string, serCell: string): boolean {
+  if (isSeparatorCell(rawCell) && isSeparatorCell(serCell)) {
+    return (
+      cellKey(rawCell).replace(/-+/g, "-") === cellKey(serCell).replace(/-+/g, "-")
+    );
+  }
+  return cellKey(rawCell) === cellKey(serCell);
+}
+
 /**
- * 表格块内行级合并：以原文行为基底，把序列化中变化的行替换进来。
- * 未变化的行（tableKey 相同）取原文，保留用户手工列宽对齐；
- * 变化的行取序列化版本（新内容 + 其对齐）。
+ * 单元格级行合并：raw/ser 同一行的两个版本。
+ * 未变化的单元格保留原文（宽度、对齐一字不动）；变化的单元格替换为
+ * 序列化内容，且尽量维持原文单元格的宽度结构——内容变长时只扩展该格
+ * （GFM 允许每行列宽不同，不影响渲染）。列结构（单元格数）不同时返回
+ * null，表示该行无法单元格级合并，交由调用方整行处理。
+ */
+function mergeTableRow(rawLine: string, serLine: string): string | null {
+  const r = parseTableRow(rawLine);
+  const s = parseTableRow(serLine);
+  if (!r || !s || r.cells.length !== s.cells.length) return null;
+  let changed = false;
+  let sameCount = 0;
+  const cells = r.cells.map((rc, i) => {
+    const sc = s.cells[i];
+    if (sameCell(rc, sc)) {
+      sameCount++;
+      return rc; // 内容未变，保留原文
+    }
+    changed = true;
+    const content = sc.trim();
+    const leftPad = rc.match(/^\s*/)?.[0] ?? "";
+    const rightPad = rc.match(/\s*$/)?.[0] ?? "";
+    if (leftPad.length + content.length + rightPad.length <= rc.length) {
+      // 原文宽度足够：保持左右缩进，剩余空间留在右边
+      return (
+        leftPad + content + " ".repeat(Math.max(1, rc.length - leftPad.length - content.length))
+      );
+    }
+    // 新内容更长：扩展该单元格（左右各留一个空格）
+    return " " + content + " ";
+  });
+  if (!changed) return rawLine;
+  if (sameCount === 0) return null; // 与 raw 行无任何相同单元格，视为不同行（整行取 ser）
+  return r.leading + "|" + cells.join("|") + "|" + r.trailing;
+}
+
+/**
+ * 表格块内单元格级合并：以原文块为基底做行级 LCS 配对（定位未变化的行
+ * 与增删行），配对的行使 mergeTableRow 逐单元格合并——编辑单个单元格时
+ * 只更新该格，其余单元格与整行对齐原样保留；列结构变化（增删列）的行
+ * 因单元格数不同而整行取序列化结果。
  */
 function mergeTableBlock(rawBlock: string[], serBlock: string[]): string[] {
   const rKeys = rawBlock.map(tableKey);
@@ -325,26 +397,54 @@ function mergeTableBlock(rawBlock: string[], serBlock: string[]): string[] {
       else dp[row + j] = Math.max(dp[prev + j], dp[row + j - 1]);
     }
   }
-  const out: string[] = [];
+  // 回溯收集匹配行对（按文档顺序）与两侧未匹配行
+  const matched: Array<[number, number]> = [];
+  const unmatchedRaw: number[] = [];
+  const unmatchedSer: number[] = [];
   let i = n;
   let j = m;
   while (i > 0 && j > 0) {
     if (rKeys[i - 1] === sKeys[j - 1]) {
-      out.push(rawBlock[i - 1]);
+      matched.push([i - 1, j - 1]);
       i--;
       j--;
     } else if (dp[(i - 1) * w + j] >= dp[i * w + j - 1]) {
+      unmatchedRaw.push(i - 1);
       i--;
     } else {
-      out.push(serBlock[j - 1]);
+      unmatchedSer.push(j - 1);
       j--;
     }
   }
-  while (j > 0) {
-    out.push(serBlock[j - 1]);
-    j--;
+  while (i > 0) unmatchedRaw.push(--i);
+  while (j > 0) unmatchedSer.push(--j);
+  unmatchedRaw.reverse();
+  unmatchedSer.reverse();
+  matched.reverse();
+
+  const out: string[] = [];
+  let rPrev = -1;
+  let sPrev = -1;
+  // 合并两个未匹配段：按顺序两两尝试单元格合并（通常是「编辑行」），
+  // 失败的 raw 行删除、ser 行插入（增删列/整行重写）
+  const mergeSegment = (rStart: number, rEnd: number, sStart: number, sEnd: number) => {
+    const rSeg = rEnd >= rStart ? rawBlock.slice(rStart, rEnd + 1) : [];
+    const sSeg = sEnd >= sStart ? serBlock.slice(sStart, sEnd + 1) : [];
+    const cnt = Math.min(rSeg.length, sSeg.length);
+    for (let k = 0; k < cnt; k++) {
+      out.push(mergeTableRow(rSeg[k], sSeg[k]) ?? sSeg[k]);
+    }
+    if (sSeg.length > cnt) out.push(...sSeg.slice(cnt)); // 新增行插入
+    // rSeg 多出的行（删除）不输出
+  };
+  for (const [ri, si] of matched) {
+    mergeSegment(rPrev + 1, ri - 1, sPrev + 1, si - 1);
+    out.push(mergeTableRow(rawBlock[ri], serBlock[si]) ?? serBlock[si]);
+    rPrev = ri;
+    sPrev = si;
   }
-  return out.reverse();
+  mergeSegment(rPrev + 1, n - 1, sPrev + 1, m - 1);
+  return out;
 }
 
 /**
@@ -369,27 +469,34 @@ export function mergeMarkdown(raw: string, serialized: string): string {
   const serTables = collapseTables(serLines, "s");
   const rCollapsed = rawTables.collapsed;
   const sCollapsed = serTables.collapsed;
-  // 表格块配对合并：表头（首行）规范化键相同的 raw/ser 块，在块内做行级
-  // 最小修改合并 —— 未变化的行保留原文（列宽对齐不动），只有变化的行取
-  // 序列化结果（编辑表格单元格时其余行不再被整体重排）。合并后两侧块
-  // 内容一致，文档级 LCS 自然匹配。
+  // 表格块配对合并：按「行级 key 交集最大」为每个 raw 块找对应的 ser 块，
+  // 在块内做单元格级最小修改合并。不用表头 key 配对——表头单元格被编辑后
+  // 表头行 key 会变，表头配对会失败导致整块被当成「删除+插入」复制一份。
+  // 配对成功后两侧块合并为同一内容，文档级 LCS 自然匹配。
   {
     const rIds = [...rawTables.blocks.keys()];
     const sIds = [...serTables.blocks.keys()];
     const usedS = new Set<string>();
     for (const rid of rIds) {
       const rb = rawTables.blocks.get(rid)!;
-      const rHeader = tableKey(rb[0]);
-      const sid = sIds.find(
-        (id) =>
-          !usedS.has(id) &&
-          tableKey(serTables.blocks.get(id)![0]) === rHeader
-      );
-      if (sid !== undefined) {
-        usedS.add(sid);
-        const merged = mergeTableBlock(rb, serTables.blocks.get(sid)!);
+      const rSet = new Set(rb.map(tableKey));
+      let bestSid: string | undefined;
+      let bestScore = -1;
+      for (const sid of sIds) {
+        if (usedS.has(sid)) continue;
+        const sb = serTables.blocks.get(sid)!;
+        let score = 0;
+        for (const line of sb) if (rSet.has(tableKey(line))) score++;
+        if (score > bestScore) {
+          bestScore = score;
+          bestSid = sid;
+        }
+      }
+      if (bestSid !== undefined) {
+        usedS.add(bestSid);
+        const merged = mergeTableBlock(rb, serTables.blocks.get(bestSid)!);
         rawTables.blocks.set(rid, merged);
-        serTables.blocks.set(sid, merged);
+        serTables.blocks.set(bestSid, merged);
       }
     }
   }
