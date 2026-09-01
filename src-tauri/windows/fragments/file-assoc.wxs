@@ -16,15 +16,46 @@
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
+    <!-- 尽力默认：安装时若 .md/.markdown 从未设置过默认程序，则写入 NoteMark.md 默认值 -->
+    <Property Id="MD_USERCHOICE">
+      <RegistrySearch Id="MdUserChoiceSearch" Root="HKCU"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.md\UserChoice"
+                      Name="ProgId" Type="raw" />
+    </Property>
+    <Property Id="MD_DEFAULT">
+      <RegistrySearch Id="MdDefaultSearch" Root="HKCU" Key="Software\Classes\.md" Type="raw" />
+    </Property>
+    <Property Id="MD_DEFAULT_MACHINE">
+      <RegistrySearch Id="MdDefaultMachineSearch" Root="HKLM" Key="Software\Classes\.md" Type="raw" />
+    </Property>
+    <Property Id="MARKDOWN_USERCHOICE">
+      <RegistrySearch Id="MarkdownUserChoiceSearch" Root="HKCU"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.markdown\UserChoice"
+                      Name="ProgId" Type="raw" />
+    </Property>
+    <Property Id="MARKDOWN_DEFAULT">
+      <RegistrySearch Id="MarkdownDefaultSearch" Root="HKCU" Key="Software\Classes\.markdown" Type="raw" />
+    </Property>
+    <Property Id="MARKDOWN_DEFAULT_MACHINE">
+      <RegistrySearch Id="MarkdownDefaultMachineSearch" Root="HKLM" Key="Software\Classes\.markdown" Type="raw" />
+    </Property>
+
     <DirectoryRef Id="INSTALLDIR">
       <Component Id="NoteMarkFileAssoc" Guid="*">
 
-        <!-- 专有 ProgID，卸载时整键删除 -->
+        <!-- 专有 ProgID，卸载时整键删除。
+             注意：DefaultIcon 必须是"子键"形式（图标路径放子键的默认值），
+             Windows 才会去解析 path,index 里的索引。写在父键的同名值下 Windows 不认。 -->
         <RegistryKey Root="HKCU"
                      Key="Software\Classes\NoteMark.md"
                      Action="createAndRemoveOnUninstall">
           <RegistryValue Type="string" Value="Markdown Document" KeyPath="yes" />
-          <RegistryValue Type="string" Name="DefaultIcon" Value="[!Path],0" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKCU"
+                     Key="Software\Classes\NoteMark.md\DefaultIcon"
+                     Action="createAndRemoveOnUninstall">
+          <RegistryValue Type="string" Value="[!Path],1" />
         </RegistryKey>
 
         <RegistryKey Root="HKCU"
@@ -38,7 +69,12 @@
                      Key="Software\Classes\Applications\notemark.exe"
                      Action="createAndRemoveOnUninstall">
           <RegistryValue Type="string" Name="FriendlyAppName" Value="NoteMark" />
-          <RegistryValue Type="string" Name="DefaultIcon" Value="[!Path],0" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKCU"
+                     Key="Software\Classes\Applications\notemark.exe\DefaultIcon"
+                     Action="createAndRemoveOnUninstall">
+          <RegistryValue Type="string" Value="[!Path],1" />
         </RegistryKey>
 
         <RegistryKey Root="HKCU"
@@ -56,6 +92,22 @@
           <RegistryValue Type="string" Name="NoteMark.md" Value="" />
         </RegistryKey>
 
+      </Component>
+
+      <!-- 尽力默认：仅当该扩展名从未设置过默认程序时写入 NoteMark.md 默认值。
+           条件为假时整个组件不安装，绝不抢已有默认；卸载时由 MSI 自动清除该值。 -->
+      <Component Id="NoteMarkMdDefault" Guid="*">
+        <Condition>NOT MD_USERCHOICE AND NOT MD_DEFAULT AND NOT MD_DEFAULT_MACHINE</Condition>
+        <RegistryKey Root="HKCU" Key="Software\Classes\.md">
+          <RegistryValue Type="string" Value="NoteMark.md" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+
+      <Component Id="NoteMarkMarkdownDefault" Guid="*">
+        <Condition>NOT MARKDOWN_USERCHOICE AND NOT MARKDOWN_DEFAULT AND NOT MARKDOWN_DEFAULT_MACHINE</Condition>
+        <RegistryKey Root="HKCU" Key="Software\Classes\.markdown">
+          <RegistryValue Type="string" Value="NoteMark.md" KeyPath="yes" />
+        </RegistryKey>
       </Component>
     </DirectoryRef>
   </Fragment>
