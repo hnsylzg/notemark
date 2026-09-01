@@ -375,9 +375,9 @@ function onEditorChange(markdown: string) {
 function enterSourceMode() {
   if (sourceMode.value || !editorInstance) return;
   const editor = editorInstance;
-  // 未在可视化模式改过内容时展示 rawContent（保留加载/保存时的用户排版，
-  // 不被序列化强制补空行）；可视化改过则只能展示序列化结果。
-  const source = visualEdited ? getMarkdown(editor) : rawContent.value;
+  // 统一走 mergeMarkdown：未编辑时展示原文基线；编辑过则把改动合并回
+  // 原文（只替换变化的行），避免序列化强加空行/重排表格污染源码草稿。
+  const source = getVisualContent();
   sourceDraft.value = source;
   sourceMode.value = true;
   // 记录 WYSIWYG 选区对应的源码字符区间（块级锚点：定位到同一块所在行，
@@ -470,13 +470,26 @@ function onSourceInput(e: Event) {
  *   行级合并，未变化的行保留原文（列表符号/分割线/空行/缩进原样不动），
  *   只有发生变化的行用序列化结果替换（模仿 Typora，而非 milkdown 的全量
  *   重写）。 */
-function getCurrentContent(): string {
+/**
+ * 可视化模式下的当前内容：
+ * - 未编辑：直接用原文基线，用户排版一字不动；
+ * - 已编辑：用 mergeMarkdown 把序列化改动合并回原文，只替换变化的行。
+ * 源码模式填充草稿、保存都必须走这里。若直接用 getMarkdown（全量序列化），
+ * 序列化强加的空行、被清掉的行尾空白、按内容重排的表格都会被写进文件，
+ * 破坏用户未改动区域的排版。
+ */
+function getVisualContent(): string {
   if (!editorInstance) return "";
-  if (sourceMode.value) return sourceDraft.value;
   if (visualEdited) {
     return mergeMarkdown(rawContent.value, getMarkdown(editorInstance));
   }
   return rawContent.value;
+}
+
+function getCurrentContent(): string {
+  if (!editorInstance) return "";
+  if (sourceMode.value) return sourceDraft.value;
+  return getVisualContent();
 }
 
 /**
@@ -503,7 +516,7 @@ function normalizeMarkdown(md: string): string {
 /** 打开/新建后若处于源码模式，把新内容同步进草稿（优先用原文基线） */
 function syncSourceDraft() {
   if (sourceMode.value && editorInstance) {
-    sourceDraft.value = visualEdited ? getMarkdown(editorInstance) : rawContent.value;
+    sourceDraft.value = getVisualContent();
   }
 }
 
