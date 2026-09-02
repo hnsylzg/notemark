@@ -21,6 +21,7 @@ import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import type { RemarkPluginRaw } from "@milkdown/transformer";
 import remarkFrontmatter from "remark-frontmatter";
+import { exitToNextLine } from "./block-exit";
 
 /** remark-frontmatter 配置：yaml 块、`---` 分隔 */
 const FRONTMATTER_OPTIONS = { type: "yaml", marker: "-" };
@@ -99,6 +100,17 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
     // 否则会被编辑器的 keymap 拦截、导致 textarea 内退格等按键失效；
     // 带修饰键（Ctrl / Cmd / Alt，如 Ctrl+S 保存、Ctrl+C/V）则放行给全局快捷键
     const onKeyDown = (e: KeyboardEvent) => {
+      // Ctrl/Cmd + Enter：与表格 / 代码块一致，跳到块后的下一行继续写。
+      // 元数据是常驻编辑态（没有"关闭编辑框"这一步），内容已在 input 里同步，
+      // 这里只需把光标移走。必须放在下面"带修饰键直接放行"之前拦截。
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        const curPos = getPos();
+        if (typeof curPos === "number") {
+          exitToNextLine(view, curPos, node.nodeSize);
+        }
+        return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       // 内容已清空时再按退格 / Delete：删掉整个元数据块。
       // 按键在这里就不再冒泡，编辑器层的 atomBlockDeletePlugin 收不到，

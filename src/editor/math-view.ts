@@ -17,6 +17,7 @@ import type { NodeViewConstructor } from "@milkdown/prose/view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { mathInlineSchema } from "@milkdown/plugin-math";
+import { exitToNextLine } from "./block-exit";
 
 const BLOCK_NAME = "math_block";
 
@@ -148,6 +149,11 @@ export const mathBlockView = $view(mathBlockSchema, () => {
         } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
           finish(true);
+          // 与表格 / 代码块一致：保存后光标跳到块后的下一行
+          const curPos = getPos();
+          if (typeof curPos === "number") {
+            exitToNextLine(view, curPos, node.nodeSize);
+          }
         }
       });
       textarea.addEventListener("blur", () => finish(true));

@@ -16,6 +16,7 @@
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import { $nodeSchema, $view } from "@milkdown/kit/utils";
 import { sanitizeHtmlBlock } from "./html-view";
+import { exitToNextLine } from "./block-exit";
 
 export const htmlBlockSchema = $nodeSchema("htmlBlock", () => ({
   group: "block",
@@ -143,6 +144,11 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         finish(true);
+        // 与表格 / 代码块一致：保存后光标跳到块后的下一行，可直接接着写
+        const curPos = getPos();
+        if (typeof curPos === "number") {
+          exitToNextLine(view, curPos, node.nodeSize);
+        }
       } else if (
         (e.key === "Backspace" || e.key === "Delete") &&
         ta.value === "" &&

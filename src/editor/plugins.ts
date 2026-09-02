@@ -44,6 +44,7 @@ import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
 import { slashMenuPlugin } from "./slash-menu";
 import { atomBlockDeletePlugin } from "./atom-block-delete";
+import { blockExitPlugin } from "./block-exit";
 import { findReplacePlugin } from "./find-replace";
 import { inlineMarkEscapePlugin } from "./inline-mark-escape";
 import { imagePastePlugin } from "./image-paste";
@@ -80,6 +81,12 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 返回 true 却什么都没做，那样排在后面的插件就永远没机会执行。
     // 本插件只在光标紧邻这两类块时才返回 true，其余一律交回默认行为。
     atomBlockDeletePlugin,
+    // 元数据 / 目录 / 分割线 / 公式块 / 流程图 / HTML 块的 Ctrl+Enter
+    // 「退出到下一行」。刻意排在最前面：这些块都是原子块，光标停在它们前后时
+    // 基础 keymap 的 Enter 链（splitBlock 等）可能先返回 true 却什么都没做，
+    // 排在后面就永远轮不到。插件只认上述几类节点，其余（表格 / 代码块等）
+    // 一律返回 false，交回它们自带的快捷键。
+    blockExitPlugin,
     ...commonmark,
     // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖
     ...inlineCodeInclusiveSchema,

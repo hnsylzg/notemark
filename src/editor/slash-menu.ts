@@ -22,7 +22,6 @@ import type { Ctx } from "@milkdown/ctx";
 import {
   Plugin,
   PluginKey,
-  Selection,
   TextSelection,
   type Command,
   type EditorState,
@@ -47,6 +46,7 @@ import { htmlBlockSchema } from "./html-block";
 import { highlightSchema } from "./highlight";
 import { diagramSchema } from "@milkdown/plugin-diagram";
 import { mathInlineSchema } from "@milkdown/plugin-math";
+import { setSelectionAfterBlock } from "./block-exit";
 
 /** 需要宿主环境（App.vue）处理的动作 */
 export type SlashAction = "image";
@@ -488,14 +488,19 @@ function insertAtom(
       nodeStart = start;
       tr = state.tr.replaceWith(start, end, node);
     } else {
-      // 非空块：在光标处插入（由 PM 负责按需切分）
+      // 非空块：在光标处插入（由 PM 负责按需切分）。
+      // 节点起点就是插入前的选区起点。不能写成
+      // `tr.selection.from - node.nodeSize`：插入后若后方没有可落脚的文本
+      // 位置，tr.selection 会往前找，减出来的起点是错的（光标跑到上一个
+      // 块的末尾，插入位置也会算错）。
+      nodeStart = state.selection.from;
       tr = state.tr.replaceSelectionWith(node);
-      const at = tr.selection.from;
-      nodeStart = at - node.nodeSize;
     }
     // atom 块不可编辑，光标进不去：把光标放到节点之后的最近文本位置。
     // 与表格一致，【不】补空段落，避免序列化留下多余的 <br />。
-    tr.setSelection(Selection.near(tr.doc.resolve(nodeStart + node.nodeSize)));
+    // 用 setSelectionAfterBlock 而非 Selection.near：后者向后找不到位置时会
+    // 往前找，光标会跳到上一个块末尾（插入后光标跑到上面的对象后面）。
+    setSelectionAfterBlock(tr, nodeStart + node.nodeSize);
     if (dispatch) dispatch(tr.scrollIntoView());
     return true;
   };
@@ -566,9 +571,10 @@ function insertTableNxM(rows: number, cols: number): Command {
       nodeStart = start;
       tr = state.tr.replaceWith(start, end, node);
     } else {
+      // 同 insertAtom：起点取插入前的选区起点（tr.selection 可能已在插入后
+      // 向前偏移，反推会算错，进而让 nodesBetween 扫到旧表格）
+      nodeStart = state.selection.from;
       tr = state.tr.replaceSelectionWith(node);
-      const at = tr.selection.from;
-      nodeStart = at - node.nodeSize;
     }
 
     // 光标落进第一个单元格（表头第一格），方便直接填写表头。
@@ -945,7 +951,7 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
       const node = type.create({ value: "" });
       const tr = state.tr.insert(0, node);
       // 光标落到元数据紧邻之后的位置（下一个块的起点）
-      tr.setSelection(TextSelection.near(tr.doc.resolve(node.nodeSize)));
+      setSelectionAfterBlock(tr, node.nodeSize);
       if (dispatch) {
         dispatch(tr.scrollIntoView());
         // 插入后自动把焦点跳进元数据的 textarea 编辑框
@@ -970,21 +976,23 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
     args: SlashCommandRunArgs
   ) => {
     runWithDelete(args.view, args.from, args.to, (state, dispatch) => {
-      const paraType = state.schema.nodes.paragraph;
       const node = type.create({ value: "" });
       const { start, end, empty } = blockRangeAt(state);
 
       let tr: Transaction;
       let nodePos: number;
       if (empty) {
-        tr = state.tr.replaceWith(start, end, [node, paraType.create()]);
+        tr = state.tr.replaceWith(start, end, node);
         nodePos = start;
       } else {
+        // 同 insertAtom：起点取插入前的选区起点，不用 tr.selection 反推
+        nodePos = state.selection.from;
         tr = state.tr.replaceSelectionWith(node);
-        nodePos = state.selection.from; // 替换前选区起点即节点起点
-        tr.insert(nodePos + node.nodeSize, paraType.create());
       }
-      tr.setSelection(TextSelection.near(tr.doc.resolve(nodePos + node.nodeSize + 1)));
+      // 与 insertAtom（目录 / 公式块）一致：插入时【不】在后面补空段落。
+      // 块后面要不要空行，交给 Ctrl+Enter 决定（见 block-exit.ts）；
+      // 自动补的空段落序列化后就是源码里多余的 <br />。
+      setSelectionAfterBlock(tr, nodePos + node.nodeSize);
       if (dispatch) {
         dispatch(tr.scrollIntoView());
         // 插入后自动把焦点跳进 HTML 编辑框
