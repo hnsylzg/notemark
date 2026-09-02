@@ -22,12 +22,20 @@
   text-rendering: optimizeLegibility;
 }
 
-/* 内容容器：模拟 Typora #write 的居中可读列。
-   外层画布（.milkdown）已占满窗口，这里只负责正文内部留白与纵向节奏。 */
+/* 内容容器：宽度沿用内置主题的页面列（860px 居中，由 index.css 的
+   .milkdown > * 控制）；高度撑满窗口（往下到底）。顶部保留 24px 留白
+   （叠加 .milkdown 的 24px），避免“放大后上边距丢失”；底部留白交给 .milkdown。 */
 .milkdown .editor {
   margin: 0 auto;
-  padding: 24px 0 80px; /* 顶部留白交给 .milkdown，这里补正文下方留白 */
+  padding: 24px 0 0; /* 顶部留白：保留 24px，避免放大后“上边距丢失” */
+  min-height: 100%; /* 编辑区高度撑满窗口（往下到底） */
   box-sizing: border-box;
+}
+
+/* 真正承载文本、由 ProseMirror 管理的编辑区同样撑满 .editor：
+   短文档时整片可见区都是 I 型光标、焦点不丢；长文档正常滚动。 */
+.milkdown .editor .ProseMirror {
+  min-height: 100%;
 }
 
 /* 选区颜色 */

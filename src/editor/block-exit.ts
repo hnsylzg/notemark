@@ -28,7 +28,7 @@ import { GapCursor } from "@milkdown/prose/gapcursor";
 import type { EditorView } from "@milkdown/prose/view";
 
 /** 支持 Ctrl+Enter 退出到下一行的块（对应斜杠菜单里的那几项） */
-const EXITABLE_BLOCKS = new Set([
+export const EXITABLE_BLOCKS = new Set([
   "yaml", // 元数据
   "toc", // 目录
   "hr", // 分割线
@@ -151,4 +151,41 @@ export const blockExitPlugin = $prose(
         },
       },
     })
+);
+
+/**
+ * 代码块「鼠标点下方空白出来」：
+ * 当文档最后一个块是 code_block、且鼠标点在其下方（页尾、没有后续内容）时，
+ * 自动在代码块后补一个空段落并把光标放进去。否则点下方空白只会把光标落到
+ * 代码块最后一行，无法在块后继续输入——原子块靠 gapcursor（横线）能点出来，
+ * 代码块是普通可编辑块，没有这个待遇，这里单独补上。仅点在其 DOM 底边之下
+ * 才生效，点代码块内部仍正常编辑。
+ */
+export const codeBlockExitClickPlugin = $prose(() =>
+  new Plugin({
+    props: {
+      handleClick(view, _pos, event) {
+        const { state } = view;
+        const last = state.doc.lastChild;
+        if (!last || last.type.name !== "code_block") return false;
+        const paraType = state.schema.nodes.paragraph;
+        if (!paraType) return false;
+
+        // 找最后一个 code_block 的 DOM，判断是否点在它下方
+        const lastPos = state.doc.content.size - last.nodeSize;
+        const dom = view.nodeDOM(lastPos);
+        if (!(dom instanceof HTMLElement)) return false;
+        const rect = dom.getBoundingClientRect();
+        if (event.clientY <= rect.bottom) return false; // 点在块内 / 边上，交回默认
+
+        // 在文档末尾（code_block 之后）补一个空段落并进入
+        const after = state.doc.content.size;
+        const tr = state.tr.insert(after, paraType.create());
+        tr.setSelection(TextSelection.near(tr.doc.resolve(after + 1)));
+        view.dispatch(tr.scrollIntoView());
+        view.focus();
+        return true;
+      },
+    },
+  })
 );

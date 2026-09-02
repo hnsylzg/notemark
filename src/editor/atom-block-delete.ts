@@ -10,23 +10,30 @@
  *   - selectNodeBackward：要求节点 selectable，直接跳过。
  *
  * 解决：接管 Backspace / Delete —— 光标紧邻这类块且为空选区时直接删掉整块。
- * 只认"块级 atom 且不可选"的节点，其余一律返回 false 交回默认行为。
+ * 认「块级叶子节点（isLeaf，如 hr / toc / yaml / htmlBlock）」+「特殊块
+ * 名单 EXITABLE_BLOCKS（如 math_block / diagram）」。表格不在内、也非 leaf，
+ * 保持默认「选中再删」，避免误删整表；段落 / 代码块 / 列表一律交回默认行为。
  */
 import { $prose } from "@milkdown/utils";
 import {
-  NodeSelection,
   Plugin,
   type Command,
 } from "@milkdown/prose/state";
+import { GapCursor } from "@milkdown/prose/gapcursor";
 import type { Node as PMNode } from "@milkdown/prose/model";
+import { EXITABLE_BLOCKS } from "./block-exit";
 
 /**
- * 是不是"标准退格链删不掉"的块级原子节点。
+ * 是不是「退格一键删除」的块级特殊节点。
  *
- * 按特征判断而不是写死节点名，以后新增同类节点自动纳入，不用回来改名单。
+ * 两类都一键删：
+ *  - isLeaf：无文本内容的叶子（hr / toc / yaml / htmlBlock）；
+ *  - EXITABLE_BLOCKS 名单：math_block / diagram（带 content 声明、内部由
+ *    NodeView 托管，但整体应作为一块一键删除）。
+ * 表格（table）不在名单、也非 leaf，保持默认「选中再删」行为，避免误删整表。
  */
-function isUnselectableAtomBlock(node: PMNode): boolean {
-  return node.isAtom && node.isBlock && !NodeSelection.isSelectable(node);
+function isDeletableAtomBlock(node: PMNode): boolean {
+  return node.isBlock && (node.isLeaf || EXITABLE_BLOCKS.has(node.type.name));
 }
 
 /**
@@ -41,8 +48,26 @@ function isUnselectableAtomBlock(node: PMNode): boolean {
  */
 function deleteAdjacentAtomBlock(dir: "backward" | "forward"): Command {
   return (state, dispatch) => {
-    const { empty, $from } = state.selection;
+    const sel = state.selection;
+    const { empty, $from } = sel;
     if (!empty) return false;
+
+    // GapCursor：光标停在两个块之间（横线），紧邻的都是块级兄弟。
+    // 此时 $from 不在段落内、parentOffset 不为 0，走下面的 TextSelection
+    // 逻辑会直接 return false，所以这里单独处理：backward 删前一兄弟、
+    // forward 删后一兄弟。插入原子块后光标常停在其后的 GapCursor，否则会
+    // 出现「块后面退格删不掉」的问题（如 toc / yaml / htmlBlock 在文末时）。
+    if (sel instanceof GapCursor) {
+      const side =
+        dir === "backward" ? sel.$from.nodeBefore : sel.$from.nodeAfter;
+      if (!side || !isDeletableAtomBlock(side)) return false;
+      const pos = dir === "backward" ? sel.from - side.nodeSize : sel.from;
+      if (dispatch) {
+        dispatch(state.tr.delete(pos, pos + side.nodeSize).scrollIntoView());
+      }
+      return true;
+    }
+
     // depth 为 0 时光标直接落在 doc 上，没有"所在块"可参照
     if ($from.depth === 0) return false;
 
@@ -65,7 +90,7 @@ function deleteAdjacentAtomBlock(dir: "backward" | "forward"): Command {
       start = $from.after(d); // 当前块之后即下一个兄弟的起点
     }
 
-    if (!target || !isUnselectableAtomBlock(target)) return false;
+    if (!target || !isDeletableAtomBlock(target)) return false;
     if (start < 0) return false;
 
     if (dispatch) {

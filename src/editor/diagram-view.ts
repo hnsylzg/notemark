@@ -171,9 +171,14 @@ export const diagramView = $view(diagramSchema.node, () => {
             const id = `diagram-${String(node.attrs.identity)}-${current}`;
             const { svg } = await mermaid.render(id, value);
             if (current !== token) return;
+            // 渲染期间用户可能已点进编辑态（textarea 已替换 dom 子节点），
+            // 此时不要把 SVG 写回去，否则 textarea（及其光标）会被吞掉。
+            if (editing) return;
             dom.innerHTML = svg;
           } catch (error) {
             if (current !== token) return;
+            // 同上：编辑态下不覆盖 textarea
+            if (editing) return;
             const pre = document.createElement("pre");
             pre.className = "error";
             pre.textContent =

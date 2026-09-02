@@ -6,6 +6,7 @@ import Sidebar from "@/components/Sidebar.vue";
 import FindBar from "@/components/FindBar.vue";
 import {
   createEditor,
+  installSurroundFocusGuard,
   getMarkdown,
   setMarkdown,
   wysiwygSelectionToMarkdownOffsets,
@@ -2074,6 +2075,8 @@ onMounted(() => {
     if (!editorHost.value) return;
 
     editorInstance = createEditor(editorHost.value, INITIAL_CONTENT, onEditorChange);
+    // 点编辑区周围留白时保持输入焦点（对齐 Typora），不改变编辑区大小
+    installSurroundFocusGuard();
 
     // 本窗口是否带了待打开的文件：
     // - 冷启动双击关联的 .md（Rust 侧把路径挂在 "main" 上）；

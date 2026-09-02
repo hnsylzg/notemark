@@ -1352,3 +1352,59 @@ export function createEditor(
 
   return editor;
 }
+
+/**
+ * 编辑区“周围留白”点击防失焦（对齐 Typora：点周围不丢焦、光标还在、可继续输入）。
+ *
+ * 布局上 .milkdown 是滚动/根容器，正文列 .ProseMirror 仅 860px 居中，
+ * 左右大片留白与顶/底 padding 落在 .ProseMirror 之外。点这些“不可编辑留白”
+ * 默认会让 .ProseMirror 失焦（光标消失、无法继续输入）。本函数在捕获阶段
+ * 拦截这些 mousedown：阻止默认（避免失焦），保持已有选区；
+ * 若当前未聚焦则把焦点交还 .ProseMirror。
+ *
+ * 不拦截：编辑区内部点击（走 ProseMirror 正常逻辑）、浮层（斜杠菜单/表格菜单/
+ * 提示气泡，它们是 .milkdown 的子节点但不应被吞掉）、滚动条拖拽。
+ */
+let surroundGuardInstalled = false;
+export function installSurroundFocusGuard(): void {
+  if (surroundGuardInstalled) return;
+  surroundGuardInstalled = true;
+
+  document.addEventListener(
+    "mousedown",
+    (e: MouseEvent) => {
+      if (e.button !== 0) return; // 仅处理左键
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      const milkdown = target.closest(".milkdown");
+      if (!milkdown) return;
+
+      const pm = milkdown.querySelector(".ProseMirror") as HTMLElement | null;
+      if (!pm) return;
+
+      // 点中可编辑区内部：正常交给 ProseMirror 处理
+      if (pm.contains(target)) return;
+
+      // 浮层（斜杠菜单 / 表格菜单 / 提示 / 链接框）：放行，否则点不到菜单项
+      if (target.closest(".mt-slash-menu, .mt-table-menu, .mt-slash-hint, .mt-slash-linkbox")) {
+        return;
+      }
+
+      // 滚动条区域：放行，否则无法拖拽滚动
+      const rect = milkdown.getBoundingClientRect();
+      const sbW = milkdown.offsetWidth - milkdown.clientWidth;
+      const sbH = milkdown.offsetHeight - milkdown.clientHeight;
+      if (sbW > 0 && e.clientX >= rect.right - sbW) return;
+      if (sbH > 0 && e.clientY >= rect.bottom - sbH) return;
+
+      // 命中“不可编辑留白”：阻止默认以避免 .ProseMirror 失焦，保持现有选区。
+      e.preventDefault();
+      if (!pm.contains(document.activeElement)) {
+        // 当前未聚焦则把焦点交还编辑区（光标落到最近一次选区 / 文末）
+        pm.focus();
+      }
+    },
+    true,
+  );
+}

@@ -183,7 +183,7 @@ body,
   height: 100%;
   width: 100%;
   margin: 0;
-  padding: 24px 32px 80px;
+  padding: 24px 32px 24px;
   border: none;
   outline: none;
   box-shadow: none;
@@ -192,7 +192,7 @@ body,
   overflow-x: auto;
 }
 
-/* 正文视觉宽度内部居中限制（不限制外层画布为小框） */
+/* 正文宽度：恢复为内置主题的页面列宽度（860px 居中）。 */
 .milkdown > * {
   max-width: 860px;
   margin-left: auto;

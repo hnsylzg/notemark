@@ -44,7 +44,7 @@ import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
 import { slashMenuPlugin } from "./slash-menu";
 import { atomBlockDeletePlugin } from "./atom-block-delete";
-import { blockExitPlugin } from "./block-exit";
+import { blockExitPlugin, codeBlockExitClickPlugin } from "./block-exit";
 import { findReplacePlugin } from "./find-replace";
 import { inlineMarkEscapePlugin } from "./inline-mark-escape";
 import { imagePastePlugin } from "./image-paste";
@@ -87,6 +87,8 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 排在后面就永远轮不到。插件只认上述几类节点，其余（表格 / 代码块等）
     // 一律返回 false，交回它们自带的快捷键。
     blockExitPlugin,
+    // 代码块在文末时，鼠标点其下方空白自动补空段落并进入（对齐原子块的点出来行为）
+    codeBlockExitClickPlugin,
     ...commonmark,
     // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖
     ...inlineCodeInclusiveSchema,
