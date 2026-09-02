@@ -33,3 +33,5 @@ tauri-plugin-window-state = "2"
 trash = "5"
 # 单实例：双击关联文件时，把路径交给已运行的实例开新窗口，而不是再起一个进程
 tauri-plugin-single-instance = "2"
+# 文件变化监听（外部程序改动当前文档时通知前端）
+notify = "6"

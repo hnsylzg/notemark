@@ -1,8 +1,11 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::Manager;
 
 /// 每个窗口待打开的 Markdown 文件（窗口 label -> 绝对路径）。
@@ -14,6 +17,12 @@ struct PendingFiles(Mutex<HashMap<String, String>>);
 /// 已打开文档的窗口映射（path 小写 -> 窗口 label）。
 /// 用于重复双击同一文件时聚焦既有窗口，而不是再开一个内容相同的窗口。
 struct OpenDocs(Mutex<HashMap<String, String>>);
+
+/// 各窗口正在监听的文档监听器（窗口 label -> watcher）。
+///
+/// 本应用每个文档一个窗口，监听必须按窗口隔离，否则 A 窗口的文件变化会
+/// 通知到 B 窗口。notify 的 watcher 被 drop 即停止监听，因此直接持有实例。
+struct DocWatchers(Mutex<HashMap<String, RecommendedWatcher>>);
 
 /// 主窗口 label。tauri.conf.json 的首个窗口未显式指定 label，Tauri 默认用 "main"。
 const MAIN_LABEL: &str = "main";
@@ -73,6 +82,97 @@ fn register_open_doc(path: String, label: String, state: tauri::State<OpenDocs>)
 #[tauri::command]
 fn set_window_title(window: tauri::WebviewWindow, title: String) {
   let _ = window.set_title(&title);
+}
+
+/// 让后端监听当前窗口打开的文档；文件被外部程序改动时通知【该窗口】。
+///
+/// 监听【文件所在目录】而不是文件本身：多数编辑器（VSCode / Typora 等）保存
+/// 采用“写临时文件 + rename”的原子替换，替换后原 inode 失效，直接 watch 文件
+/// 会在第一次外部保存后就失灵；监听目录则能稳定捕获 rename / create。
+/// 代价是同目录其它文件的事件也会进来，故回调里按文件名过滤。
+///
+/// 只负责“通知有变化”，不做内容比对——是否真的变了、要不要重载由前端
+/// 结合 mtime 与脏标记判断（前端还负责过滤自己保存造成的事件）。
+#[tauri::command]
+fn watch_doc(
+  window: tauri::WebviewWindow,
+  path: String,
+  state: tauri::State<DocWatchers>,
+) -> Result<(), String> {
+  use tauri::Emitter;
+
+  let file = PathBuf::from(&path);
+  let dir = file
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .ok_or_else(|| "无法取得文件所在目录".to_string())?
+    .to_path_buf();
+  let file_name = file
+    .file_name()
+    .ok_or_else(|| "无法取得文件名".to_string())?
+    .to_os_string();
+
+  // label 提前取出：window 稍后要 move 进回调闭包，之后就不可再借用了
+  let label = window.label().to_string();
+  // 切换文档（同一窗口重复调用）：先停掉上一个监听
+  if let Ok(mut watchers) = state.0.lock() {
+    watchers.remove(&label);
+  }
+
+  // 去抖：一次外部保存会连发多个事件（写入 / rename / 权限变更），
+  // 300ms 内的后续事件丢弃，前端只收到一次通知。
+  let start = Instant::now()
+    .checked_sub(Duration::from_secs(10))
+    .unwrap_or_else(Instant::now);
+  let debounce = Arc::new(Mutex::new(start));
+  let debounce_cb = debounce.clone();
+
+  let mut watcher = RecommendedWatcher::new(
+    move |res: Result<Event, notify::Error>| {
+      let Ok(event) = res else { return };
+      // 监听目录会带来同目录其它文件的事件，只认目标文件
+      if !event
+        .paths
+        .iter()
+        .any(|p| p.file_name() == Some(file_name.as_os_str()))
+      {
+        return;
+      }
+      // Access / Other 是读取之类的噪声，忽略
+      match event.kind {
+        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {}
+        _ => return,
+      }
+      let Ok(mut last) = debounce_cb.lock() else { return };
+      if last.elapsed() < Duration::from_millis(300) {
+        return;
+      }
+      *last = Instant::now();
+      drop(last); // 先放锁再 emit，避免回调期间长时间持锁
+      if let Err(e) = window.emit("doc-external-changed", ()) {
+        log::warn!("[NoteMark] emit doc-external-changed failed: {e}");
+      }
+    },
+    Config::default(),
+  )
+  .map_err(|e| e.to_string())?;
+
+  watcher
+    .watch(&dir, RecursiveMode::NonRecursive)
+    .map_err(|e| e.to_string())?;
+
+  if let Ok(mut watchers) = state.0.lock() {
+    watchers.insert(label, watcher);
+  }
+  Ok(())
+}
+
+/// 停止当前窗口的文档监听（关闭 / 切换文档时调用）。watcher 被移除即 drop。
+#[tauri::command]
+fn unwatch_doc(window: tauri::WebviewWindow, state: tauri::State<DocWatchers>) {
+  if let Ok(mut watchers) = state.0.lock() {
+    watchers.remove(&window.label().to_string());
+  }
 }
 
 /// 在新窗口打开指定文件；该文件的窗口若已存在则直接聚焦。
@@ -156,6 +256,7 @@ pub fn run() {
   tauri::Builder::default()
     .manage(PendingFiles(Mutex::new(HashMap::new())))
     .manage(OpenDocs(Mutex::new(HashMap::new())))
+    .manage(DocWatchers(Mutex::new(HashMap::new())))
     // 第二个进程：把文件路径交给已运行的实例开新窗口，本进程随即退出。
     //
     // callback 运行在「第一个实例」的窗口过程（WndProc）里，第一个实例的 GUI
@@ -279,7 +380,9 @@ pub fn run() {
       export_pdf,
       take_window_file,
       register_open_doc,
-      set_window_title
+      set_window_title,
+      watch_doc,
+      unwatch_doc
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

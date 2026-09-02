@@ -60,6 +60,17 @@ export interface SaveResult {
   name: string;
 }
 
+export interface SaveOptions {
+  /**
+   * 即使已有路径也强制弹出「另存为」对话框。
+   * 用于文件已被外部删除的情况：此时不该悄悄在原路径重建，
+   * 而是让用户确认写到哪里（Typora 的做法）。
+   */
+  forceDialog?: boolean;
+  /** 对话框预填的路径；缺省依次回退到 currentPath、untitled.md */
+  defaultPath?: string;
+}
+
 /**
  * 保存文件。
  * @param content 当前编辑器导出的 Markdown 文本
@@ -68,19 +79,21 @@ export interface SaveResult {
  */
 export async function saveFile(
   content: string,
-  currentPath?: string | null
+  currentPath?: string | null,
+  opts?: SaveOptions
 ): Promise<SaveResult | null> {
-  // 已有路径：直接覆盖保存
-  if (currentPath) {
+  // 已有路径且未强制弹框：直接覆盖保存
+  if (currentPath && !opts?.forceDialog) {
     await writeTextFile(currentPath, content);
     const name = currentPath.split(/[\\/]/).pop() || currentPath;
     return { path: currentPath, name };
   }
 
-  // 无路径：弹出“另存为”对话框
+  // 无路径 / 强制弹框：弹出“另存为”对话框。
+  // defaultPath 传原路径，对话框会直接定位到原目录并预填原文件名。
   const target = await save({
     filters: TEXT_FILTERS,
-    defaultPath: "untitled.md",
+    defaultPath: opts?.defaultPath ?? currentPath ?? "untitled.md",
   });
 
   if (!target) return null; // 用户取消

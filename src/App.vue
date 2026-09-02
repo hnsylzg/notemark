@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, nextTick } from "vue";
+import { onMounted, onBeforeUnmount, ref, computed, nextTick } from "vue";
 import "@/editor/theme/index.css";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import Sidebar from "@/components/Sidebar.vue";
@@ -624,11 +624,143 @@ function stemRange(name: string): [number, number] {
  * @returns 是否允许继续后续操作；用户取消或保存失败时返回 false
  */
 async function confirmDiscardIfDirty(): Promise<boolean> {
-  if (!isDirty.value) return true;
+  if (!needsSave.value) return true;
   const action = await askSaveConfirm("当前文档有未保存的修改，是否先保存？");
   if (action === "cancel") return false;
   if (action === "save") return await handleSave();
   return true;
+}
+
+// ==================== 外部修改检测 ====================
+
+/**
+ * 上次与磁盘同步（打开 / 保存 / 重新加载）时的文件 mtime（毫秒）。
+ *
+ * 后端的 watch_doc 只负责通知「这个文件有动静了」——它监听的是目录，
+ * 同目录其它文件、权限变更、读取访问都会产生事件。是否真的变了，
+ * 由这里比对 mtime 最终确认。
+ */
+let lastSyncedMtime: number | null = null;
+/** 事件处理的重入保护（后端已去抖，这里是双保险） */
+let externalHandling = false;
+/**
+ * 我们自己的保存同样会触发监听，这个时刻之前的通知一律忽略。
+ * 由 handleSave 在写盘前设置。
+ */
+let suppressExternalUntil = 0;
+/** 取消后端事件监听的句柄（onBeforeUnmount 中调用） */
+let unlistenExternal: (() => void) | null = null;
+/**
+ * 当前文件是否已被外部删除 / 移动走（stat 不到即视为此状态）。
+ *
+ * 按 Typora 的处理：不在标题栏做删除线，而是把它当成"内容只存在于内存"，
+ * 于是显示未保存圆点、关闭 / 切换文档时照常提示保存；
+ * 保存时弹出预填原名的「另存为」对话框，由用户确认写到哪里。
+ */
+const fileMissing = ref(false);
+/**
+ * 是否需要提醒保存：有未保存修改，或文件已被外部删除
+ *（后者内容只存在于内存，关掉就没了，因此同样要提示）。
+ */
+const needsSave = computed(() => isDirty.value || fileMissing.value);
+
+/** 取文件 mtime（毫秒）；文件不存在 / 无权限 / 非 Tauri 时返回 null */
+async function getFileMtime(path: string): Promise<number | null> {
+  try {
+    const { stat } = await import("@tauri-apps/plugin-fs");
+    const info = await stat(path);
+    const t = info.mtime;
+    if (t instanceof Date) return t.getTime();
+    if (typeof t === "number") return t;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 重新从磁盘读取当前文件并载入编辑器（即放弃编辑器内的改动） */
+async function reloadFromDisk(path: string) {
+  const content = await readMarkdownFile(path);
+  const name = path.split(/[\\/]/).pop() || path;
+  await loadFileIntoEditor(path, name, content);
+}
+
+/** 让后端监听当前文档（切换文档时重复调用即可，后端会先停掉上一个） */
+async function startWatching(path: string) {
+  if (!isTauri) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("watch_doc", { path });
+  } catch (e) {
+    console.warn("[NoteMark] watch_doc failed:", e);
+  }
+}
+
+/** 停止后端监听（组件卸载 / 关闭文档） */
+async function stopWatching() {
+  if (!isTauri) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("unwatch_doc");
+  } catch (e) {
+    console.warn("[NoteMark] unwatch_doc failed:", e);
+  }
+}
+
+/**
+ * 后端通知「当前文档在外部被改动」后的处理。
+ *
+ * 与 VSCode / Typora / Obsidian 保持一致：
+ * - 自己【没有】未保存的编辑 → 直接静默重新加载，一个窗都不弹；
+ * - 自己【有】未保存的编辑 → 才提示，否则重新加载等于把正在写的内容扔掉。
+ *
+ * 静默跳过的几种情况：
+ * - 没有打开具体文件（新建未保存）→ 无从比对；
+ * - 处于自己保存后的静默期 → 那是自己的写盘造成的事件；
+ * - stat 失败（文件被删 / 无权限）或 mtime 没变大 → 不是内容改动。
+ */
+async function onExternalFileChanged() {
+  if (!isTauri || externalHandling) return;
+  const path = currentPath.value;
+  if (!path || lastSyncedMtime === null) return;
+  if (Date.now() < suppressExternalUntil) return;
+
+  externalHandling = true;
+  try {
+    const mtime = await getFileMtime(path);
+    // 文件被外部删除 / 移动走：只做标记，保存时弹出"另存为"让用户确认位置（同 Typora）
+    if (mtime === null) {
+      fileMissing.value = true;
+      return;
+    }
+    fileMissing.value = false; // 文件又出现了（被恢复 / 撤销删除）
+    if (mtime <= lastSyncedMtime) return;
+
+    // 没有未保存编辑：直接重载（主流编辑器的做法，不打扰）
+    if (!isDirty.value) {
+      await reloadFromDisk(path);
+      return;
+    }
+
+    // 有未保存编辑：冲突，交给用户决定
+    const name = path.split(/[\\/]/).pop() || path;
+    const action = await askSaveConfirm(
+      `文件「${name}」已在外部被修改，当前文档也有未保存的修改：保存会覆盖外部改动，不保存则放弃你的修改并重新加载。`
+    );
+    if (action === "save") {
+      await handleSave({ force: true }); // 已在冲突里确认过，不再二次询问
+      return;
+    }
+    if (action === "discard") {
+      await reloadFromDisk(path);
+      return;
+    }
+    lastSyncedMtime = mtime; // 取消：维持现状，本次不再重复提示
+  } catch (err) {
+    console.warn("[NoteMark] external change handling failed:", err);
+  } finally {
+    externalHandling = false;
+  }
 }
 
 /**
@@ -638,6 +770,7 @@ async function confirmDiscardIfDirty(): Promise<boolean> {
 async function loadFileIntoEditor(path: string, name: string, content: string) {
   if (!editorInstance) return;
   currentPath.value = path;
+  fileMissing.value = false;
   // 必须先设置图片基准目录，再渲染文档，
   // 否则首次渲染时相对路径图片会按 WebView 页面 URL 解析导致裂图。
   setImageBaseDir(path);
@@ -666,6 +799,10 @@ async function loadFileIntoEditor(path: string, name: string, content: string) {
   await syncWorkspaceToFile(path);
   // 记入「最近打开」（写入失败仅告警，不影响已打开的文档）
   recentFiles.value = await pushRecentFile({ path, name });
+  // 记录磁盘 mtime，作为「文件是否被外部改动」的比对基准
+  lastSyncedMtime = await getFileMtime(path);
+  // 交给后端监听该文档的外部改动（切换文档时后端会先停掉上一个）
+  await startWatching(path);
 }
 
 async function handleOpen() {
@@ -681,12 +818,39 @@ async function handleOpen() {
   }
 }
 
-/** 保存文件。返回是否真正完成保存（用户取消或失败返回 false）。 */
-async function handleSave(): Promise<boolean> {
+/**
+ * 保存文件。返回是否真正完成保存（用户取消或失败返回 false）。
+ *
+ * @param opts.force 跳过"文件已被外部修改"的兜底确认。由冲突对话框里
+ *   用户已明确选择「保存」的路径传入，避免同一件事问两遍。
+ */
+async function handleSave(opts?: { force?: boolean }): Promise<boolean> {
   if (!isTauri || !editorInstance) return false;
   try {
     const content = getCurrentContent();
-    const result = await saveFile(content, currentPath.value);
+    const path = currentPath.value;
+    // 兜底：后端监听可能失效（网络盘 / 部分文件系统 / 事件丢失），而"保存"
+    // 是唯一会造成破坏的时刻，因此这里再查一次 mtime。
+    if (!opts?.force && path && lastSyncedMtime !== null) {
+      const mtime = await getFileMtime(path);
+      if (mtime !== null && mtime > lastSyncedMtime) {
+        const name = path.split(/[\\/]/).pop() || path;
+        const ok = await askConfirm(
+          `文件「${name}」已在外部被修改，保存将覆盖外部改动，是否继续？`,
+          "覆盖保存",
+          true
+        );
+        if (!ok) return false;
+      }
+    }
+    // 自己的写盘同样会触发监听，静默一小段，避免刚保存完就弹"外部已修改"
+    suppressExternalUntil = Date.now() + 2000;
+    // 文件已被外部删除时按 Typora 的做法：弹出预填原名的保存框，由用户
+    // 确认写到哪里，而不是悄悄在原路径重建。
+    const result = await saveFile(content, path, {
+      forceDialog: fileMissing.value,
+      defaultPath: path ?? undefined,
+    });
     if (!result) return false; // 用户取消
     currentPath.value = result.path;
     setImageBaseDir(result.path);
@@ -695,6 +859,7 @@ async function handleSave(): Promise<boolean> {
     // 否则源码模式保存紧凑排版后，退出源码会被误报为未保存修改。
     savedContent.value = normalizeMarkdown(content);
     isDirty.value = false;
+    fileMissing.value = false; // 内容已落盘（可能写到了新的路径）
     // 保存的内容成为新的原文基线（源码模式下即用户草稿，排版原样保留）
     rawContent.value = content;
     visualEdited = false;
@@ -705,6 +870,10 @@ async function handleSave(): Promise<boolean> {
       path: result.path,
       name: result.name,
     });
+    // 保存本身会改 mtime，同步基准，否则保存后切窗口会被误判成"外部修改"
+    lastSyncedMtime = await getFileMtime(result.path);
+    // 路径可能已变（首次保存 / 另存为 / 文件被删后存到别处）：重新监听新路径
+    await startWatching(result.path);
     return true;
   } catch (err) {
     console.error("[NoteMark] save failed:", err);
@@ -962,7 +1131,7 @@ async function handleGoParent() {
 /** 从侧边栏打开文件（有未保存修改时先询问，与「打开」保持一致） */
 async function handleSidebarOpenFile(path: string) {
   if (!isTauri || !editorInstance) return;
-  if (isDirty.value) {
+  if (needsSave.value) {
     const action = await askSaveConfirm("当前文档有未保存的修改，是否先保存？");
     if (action === "cancel") return;
     if (action === "save") {
@@ -1894,7 +2063,7 @@ function onKeydown(e: KeyboardEvent) {
 
 /** 非 Tauri（浏览器）环境的关闭前确认：有未保存修改时触发原生提示 */
 function onBeforeUnload(e: BeforeUnloadEvent) {
-  if (isDirty.value) {
+  if (needsSave.value) {
     e.preventDefault();
     e.returnValue = "";
   }
@@ -2008,7 +2177,7 @@ onMounted(() => {
         // 注意：未调用 preventDefault 时，@tauri-apps/api 会自动调用 destroy() 关闭窗口；
         // 调用 preventDefault 后则必须由我们显式 destroy() 完成关闭。
         webview.onCloseRequested(async (event) => {
-          if (!isDirty.value) return; // 无未保存修改，不拦截，交由 Tauri 正常关闭
+          if (!needsSave.value) return; // 无未保存修改，不拦截，交由 Tauri 正常关闭
           event.preventDefault(); // 先拦截本次关闭
           try {
             const action = await askSaveConfirm("文档有未保存的修改，是否保存？");
@@ -2024,6 +2193,20 @@ onMounted(() => {
             webview?.destroy().catch(() => {});
           }
         });
+
+        // 后端文件监听：外部程序改动当前文档时收到通知（见 onExternalFileChanged）
+        import("@tauri-apps/api/event")
+          .then(({ listen }) =>
+            listen("doc-external-changed", () => {
+              void onExternalFileChanged();
+            })
+          )
+          .then((fn) => {
+            unlistenExternal = fn;
+          })
+          .catch((e) =>
+            console.warn("[NoteMark] listen doc-external-changed failed:", e)
+          );
       })
       .catch((e) => console.error("[NoteMark] webview init failed:", e));
   } else {
@@ -2081,6 +2264,10 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   document.removeEventListener("click", onDocumentClick);
   window.removeEventListener("beforeunload", onBeforeUnload);
+  // 停止外部修改检测：取消事件监听 + 让后端停掉文件监听
+  unlistenExternal?.();
+  unlistenExternal = null;
+  void stopWatching();
   // 清理大纲刷新节流定时器，避免卸载后仍触发回调
   if (headingTimer !== null) {
     clearTimeout(headingTimer);
@@ -2113,7 +2300,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="mt-toolbar__center">
         <span class="mt-file-name">
-          <span v-if="isDirty" class="mt-dirty-dot" aria-hidden="true"></span>{{ displayName }}
+          <span v-if="needsSave" class="mt-dirty-dot" aria-hidden="true"></span>{{ displayName }}
         </span>
       </div>
       <div class="mt-toolbar__right">
@@ -2180,7 +2367,7 @@ onBeforeUnmount(() => {
           class="mt-btn mt-btn--icon"
           title="保存"
           aria-label="保存"
-          @click="handleSave"
+          @click="handleSave()"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
