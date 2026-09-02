@@ -200,10 +200,8 @@ fn open_in_new_window(app: &tauri::AppHandle, label: &str, path: &str) {
     pending.insert(label.to_string(), path.to_string());
   }
 
-  let title = std::path::Path::new(path)
-    .file_name()
-    .map(|n| n.to_string_lossy().to_string())
-    .unwrap_or_else(|| "NoteMark".to_string());
+  // 窗口标题只显示软件名，文件名由前端底部工具栏展示，避免重复。
+  let title = "NoteMark".to_string();
 
   // visible(false)：与主窗口一致，由前端 revealWindow 在首帧渲染后显示，避免白窗闪烁
   if let Err(e) = tauri::WebviewWindowBuilder::new(

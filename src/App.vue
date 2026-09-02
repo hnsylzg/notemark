@@ -346,9 +346,13 @@ let webview: WebviewWindow | null = null;
 
 /** 同步窗口标题与工具栏文件名 */
 function updateTitle(name: string) {
-  displayName.value = name;
-  if (isTauri && webview) {
-    webview.setTitle(`NoteMark - ${name}`);
+  displayName.value = name; // 文件名只交给底部工具栏显示
+  // 标题统一用 Rust 命令设置：前端 webview.setTitle 在本项目不可靠
+  // （openDocumentPath 里原作者也特意用 invoke 绕开 webview 初始化时机的坑），故走 invoke。
+  if (isTauri) {
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("set_window_title", { title: "NoteMark" }))
+      .catch(() => {});
   }
 }
 
@@ -915,8 +919,9 @@ async function openDocumentPath(path: string): Promise<void> {
     await loadFileIntoEditor(path, name, content);
     if (isTauri) {
       const { invoke } = await import("@tauri-apps/api/core");
-      // 窗口标题交给 Rust 设置，绕开前端 webview 初始化时机的坑
-      invoke("set_window_title", { title: `NoteMark - ${name}` }).catch(() => {});
+      // 窗口标题只显示软件名（Rust 已默认设为 NoteMark，这里保持一致；
+      // 文件名由底部工具栏展示，避免标题栏重复）。
+      invoke("set_window_title", { title: "NoteMark" }).catch(() => {});
       // 登记已打开文档，重复双击同一文件时聚焦本窗口而非再开一个
       invoke("register_open_doc", {
         path,
@@ -2074,71 +2079,117 @@ onMounted(() => {
   try {
     if (!editorHost.value) return;
 
-    editorInstance = createEditor(editorHost.value, INITIAL_CONTENT, onEditorChange);
-    // 点编辑区周围留白时保持输入焦点（对齐 Typora），不改变编辑区大小
-    installSurroundFocusGuard();
+    // 主题/深色模式必须先于编辑器渲染内容落地：
+    // 内置主题在 app 启动时已以 @layer mt-theme 进入 <head>（App.vue 顶部
+    // import "@/editor/theme/index.css"），而自定义 <style> 是“非分层”样式，
+    // 层叠优先级天然高于内置层——故自定义主题无论何时注入都能覆盖内置，
+    // 不依赖追加顺序。所以先 await 注入自定义主题，再创建编辑器，
+    // 让文档首绘即带最终样式（真正的“主题先于文档”），而非先渲染再藏窗等主题
+    // （那种做法只会延迟露窗、并未修正顺序，正是上一版被否的原因）。
+    const startEditor = () => {
+      try {
+        if (!editorHost.value) return;
 
-    // 本窗口是否带了待打开的文件：
-    // - 冷启动双击关联的 .md（Rust 侧把路径挂在 "main" 上）；
-    // - 运行中双击时由单实例转发新建的窗口（挂在按路径派生的 label 上）。
-    // 用「拉取」而非事件：进程刚起时前端还没订阅，此刻 emit 会丢。
-    if (isTauri) {
-      void (async () => {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const path = await invoke<string | null>("take_window_file", {
-            label: getCurrentWebviewWindow().label,
+        editorInstance = createEditor(editorHost.value, INITIAL_CONTENT, onEditorChange);
+        // 点编辑区周围留白时保持输入焦点（对齐 Typora），不改变编辑区大小
+        installSurroundFocusGuard();
+
+        // 本窗口是否带了待打开的文件：
+        // - 冷启动双击关联的 .md（Rust 侧把路径挂在 "main" 上）；
+        // - 运行中双击时由单实例转发新建的窗口（挂在按路径派生的 label 上）。
+        // 用「拉取」而非事件：进程刚起时前端还没订阅，此刻 emit 会丢。
+        if (isTauri) {
+          void (async () => {
+            try {
+              const { invoke } = await import("@tauri-apps/api/core");
+              const path = await invoke<string | null>("take_window_file", {
+                label: getCurrentWebviewWindow().label,
+              });
+              if (path) await openDocumentPath(path);
+            } catch (e) {
+              console.warn("[NoteMark] take window file failed:", e);
+            }
+          })();
+        }
+
+        // 斜杠菜单的「图片」命令：插件不直接调 Tauri，由这里开系统文件对话框，
+        // 选完路径后交回 importImagePaths 落盘并插入文档。
+        setSlashActionHandler(async (action, _view, pos) => {
+          if (action !== "image" || !editorInstance) return;
+          const { open } = await import("@tauri-apps/plugin-dialog");
+          const selected = await open({
+            multiple: true,
+            filters: [
+              { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] },
+            ],
           });
-          if (path) await openDocumentPath(path);
+          if (!selected) return; // 用户取消
+          const paths = (Array.isArray(selected) ? selected : [selected]).filter((p) =>
+            DROP_IMAGE_EXT.test(p)
+          );
+          if (paths.length === 0) return;
+          importImagePaths(editorInstance, paths, pos);
+        });
+
+        // 真正创建编辑器（视图在这里挂载）
+        editorInstance.create().then(() => {
+          // 初始内容不算"未保存修改"：create 完成后建立内容快照
+          if (editorInstance) {
+            savedContent.value = getMarkdown(editorInstance);
+            isDirty.value = false;
+            // 原文基线对齐初始内容（为空文档，无序列化差异问题）
+            rawContent.value = INITIAL_CONTENT;
+            visualEdited = false;
+            // 必须初始化为 null：pendingApply 靠 !== null 判断，若初始化为
+            // 初始内容（空串也算非 null），首次真实编辑会被误判成「应用草稿」，
+            // 导致 rawContent 被重置为空、visualEdited 不置位，
+            // 表现为「编辑后切到源码看到空白」
+            pendingApply = null;
+            // 初始文档也可能含标题（示例内容/上次加载），补一次大纲收集
+            refreshHeadings();
+            // 启动后把光标放进编辑区：否则打开应用还得先点一下才能打字。
+            // 延后一帧执行——应用刚启动时窗口可能还没拿到系统焦点，
+            // 此时立刻 focus 会被浏览器忽略。
+            requestAnimationFrame(() => {
+              if (editorInstance) focusEditorStart(editorInstance);
+            });
+          }
+          // 首帧已带最终主题样式（主题已在 createEditor 前注入），露窗。
+          // 仅设置匹配深/浅的底色，避免 OS 打开动画期间的背景闪——这是独立的
+          // 底色处理，并非用来遮“主题晚到”的闪烁。
+          requestAnimationFrame(revealWindow);
+        });
+      } catch (err) {
+        // 临时诊断：把运行时错误显示在页面上，便于排查白屏
+        const host = editorHost.value;
+        if (host) {
+          host.innerHTML = `<pre style="color:red;white-space:pre-wrap;padding:16px">[NoteMark init error]\n${
+            err instanceof Error ? err.stack || err.message : String(err)
+          }</pre>`;
+        }
+        console.error("[NoteMark] editor init failed:", err);
+      }
+    };
+
+    if (isTauri) {
+      // 先加载深色模式与自定义主题，再创建编辑器渲染内容
+      (async () => {
+        try {
+          const dark = await loadDarkModePreference();
+          if (dark !== null) {
+            isDark.value = dark;
+            applyDarkMode(dark);
+          }
+          await loadCustomTheme();
         } catch (e) {
-          console.warn("[NoteMark] take window file failed:", e);
+          console.warn("[NoteMark] preload theme failed:", e);
+        } finally {
+          startEditor();
         }
       })();
+    } else {
+      startEditor();
     }
-
-    // 斜杠菜单的「图片」命令：插件不直接调 Tauri，由这里开系统文件对话框，
-    // 选完路径后交回 importImagePaths 落盘并插入文档。
-    setSlashActionHandler(async (action, _view, pos) => {
-      if (action !== "image" || !editorInstance) return;
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selected = await open({
-        multiple: true,
-        filters: [
-          { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] },
-        ],
-      });
-      if (!selected) return; // 用户取消
-      const paths = (Array.isArray(selected) ? selected : [selected]).filter((p) =>
-        DROP_IMAGE_EXT.test(p)
-      );
-      if (paths.length === 0) return;
-      importImagePaths(editorInstance, paths, pos);
-    });
-
-    // 真正创建编辑器（视图在这里挂载）
-    editorInstance.create().then(() => {
-      // 初始内容不算"未保存修改"：create 完成后建立内容快照
-      if (editorInstance) {
-        savedContent.value = getMarkdown(editorInstance);
-        isDirty.value = false;
-        // 原文基线对齐初始内容（为空文档，无序列化差异问题）
-        rawContent.value = INITIAL_CONTENT;
-        visualEdited = false;
-        // 必须初始化为 null：pendingApply 靠 !== null 判断，若初始化为
-        // 初始内容（空串也算非 null），首次真实编辑会被误判成「应用草稿」，
-        // 导致 rawContent 被重置为空、visualEdited 不置位，
-        // 表现为「编辑后切到源码看到空白」
-        pendingApply = null;
-        // 初始文档也可能含标题（示例内容/上次加载），补一次大纲收集
-        refreshHeadings();
-        // 启动后把光标放进编辑区：否则打开应用还得先点一下才能打字。
-        // 延后一帧执行——应用刚启动时窗口可能还没拿到系统焦点，
-        // 此时立刻 focus 会被浏览器忽略。
-        requestAnimationFrame(() => {
-          if (editorInstance) focusEditorStart(editorInstance);
-        });
-      }
-    });
   } catch (err) {
     // 临时诊断：把运行时错误显示在页面上，便于排查白屏
     const host = editorHost.value;
@@ -2175,7 +2226,7 @@ onMounted(() => {
     import("@tauri-apps/api/webviewWindow")
       .then(({ getCurrentWebviewWindow }) => {
         webview = getCurrentWebviewWindow();
-        webview.setTitle(`NoteMark - ${displayName.value}`);
+        // 标题已由 Rust 默认设为 NoteMark（见 lib.rs），无需再用不可靠的 webview.setTitle
         // 关闭窗口前：有未保存修改时先询问是否保存，而不是直接关掉。
         // 注意：未调用 preventDefault 时，@tauri-apps/api 会自动调用 destroy() 关闭窗口；
         // 调用 preventDefault 后则必须由我们显式 destroy() 完成关闭。
@@ -2223,25 +2274,10 @@ onMounted(() => {
   loadRecentFiles()
     .then((list) => (recentFiles.value = list))
     .catch((e) => console.warn("[NoteMark] load recent files failed:", e));
-  // 应用启动时自动加载上次导入的自定义主题（非 Tauri / 无记录时内部静默跳过）
-  loadCustomTheme().catch((e) =>
-    console.warn("[NoteMark] auto-load theme failed:", e)
-  );
   // 刷新固定主题目录下的已安装主题列表（供菜单展示）
   refreshThemeList().catch((e) =>
     console.warn("[NoteMark] refresh theme list failed:", e)
   );
-
-  // 应用启动时恢复深色模式偏好（无记录时保持默认浅色）
-  loadDarkModePreference()
-    .then((dark) => {
-      if (dark === null) return;
-      isDark.value = dark;
-      applyDarkMode(dark);
-    })
-    .catch((e) => console.warn("[NoteMark] load dark mode failed:", e))
-    // 主题已应用、data-theme 就绪，下一帧首绘完成后再露窗，避免打开闪屏
-    .finally(() => requestAnimationFrame(revealWindow));
 
   // 恢复侧边栏展开状态与上次浏览的工作目录（无记录则保持默认收拢、目录为空）
   loadSidebarOpen()

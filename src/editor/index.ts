@@ -1377,7 +1377,7 @@ export function installSurroundFocusGuard(): void {
       const target = e.target as HTMLElement | null;
       if (!target) return;
 
-      const milkdown = target.closest(".milkdown");
+      const milkdown = target.closest(".milkdown") as HTMLElement | null;
       if (!milkdown) return;
 
       const pm = milkdown.querySelector(".ProseMirror") as HTMLElement | null;
