@@ -141,6 +141,12 @@ import { remarkStringifyOptionsCtx } from "@milkdown/kit/core";
 // node_modules 可直接解析（同为 @milkdown/core 的直接依赖）。
 import { unified } from "unified";
 import remarkParse from "remark-parse";
+// 重建序列化器必须带上 remark-gfm：gfm 预设（删除线/脚注/表格对齐/任务列表）
+// 的 stringify 扩展挂在 remark 处理器上。若重建时不加，凡探测出的
+// bullet/rule 风格与默认值不同（如 + 列表文件）就会触发重建，
+// 序列化时遇到 ~~删除线~~ 产生的 delete 节点即抛
+// "Cannot handle unknown node `delete`"，导致整个文件打开失败。
+import remarkGfm from "remark-gfm";
 import remarkStringify, { type Options as RemarkStringifyOptions } from "remark-stringify";
 import { SerializerState } from "@milkdown/kit/transformer";
 // defaultHandlers：序列化时包装 mdast-util-to-markdown 的默认 list handler，
@@ -289,6 +295,7 @@ function applySerializationStyle(
   if (bullet === appliedStyle.bullet && rule === appliedStyle.rule) return;
   const remark = unified()
     .use(remarkParse)
+    .use(remarkGfm)
     .use(remarkStringify, {
       ...ctx.get(remarkStringifyOptionsCtx),
       bullet,
