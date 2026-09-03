@@ -50,7 +50,7 @@
   --mt-color-link: #00997B;            /* 链接（forest a-text） */
 
   /* ---- 排版（不变） ---- */
-  --mt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
+  --mt-font-sans: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI",
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
     Arial, sans-serif;
   --mt-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono",
@@ -251,7 +251,7 @@
 
 .milkdown h1 {
   font-size: 2.1em;
-  font-weight: bold;
+  font-weight: 900;
   text-align: center;
   color: var(--mt-color-h1, var(--mt-color-primary));
   border-bottom: none;     /* forest：去掉 h1 下方横线 */
@@ -259,12 +259,12 @@
 }
 .milkdown h2 {
   font-size: 1.7em;
-  font-weight: bold;
+  font-weight: 800;
 }
 .milkdown h2::before { content: 'H2'; }
 .milkdown h3 {
   font-size: 1.4em;
-  font-weight: bold;
+  font-weight: 800;
 }
 .milkdown h3::before { content: 'H3'; }
 .milkdown h4,

@@ -141,13 +141,23 @@ import { remarkStringifyOptionsCtx } from "@milkdown/kit/core";
 // node_modules 可直接解析（同为 @milkdown/core 的直接依赖）。
 import { unified } from "unified";
 import remarkParse from "remark-parse";
-// 重建序列化器必须带上 remark-gfm：gfm 预设（删除线/脚注/表格对齐/任务列表）
-// 的 stringify 扩展挂在 remark 处理器上。若重建时不加，凡探测出的
-// bullet/rule 风格与默认值不同（如 + 列表文件）就会触发重建，
-// 序列化时遇到 ~~删除线~~ 产生的 delete 节点即抛
-// "Cannot handle unknown node `delete`"，导致整个文件打开失败。
+// 重建序列化器必须带上与 milkdown 默认 remark 一致的「全部 stringify 扩展」：
+// 1. remark-gfm：gfm 预设（删除线/脚注/表格对齐/任务列表）的 stringify 扩展
+//    挂在 remark 处理器上。若重建时不加，凡探测出的 bullet/rule 风格与默认值
+//    不同（如 + 列表文件）就会触发重建，序列化时遇到 ~~删除线~~ 产生的
+//    delete 节点即抛 "Cannot handle unknown node `delete`"。
+// 2. remark-frontmatter：yaml 元数据节点的 toMarkdown 输出 mdast yaml 节点，
+//    需要它的 stringify 扩展才能写回 --- 块；漏掉则序列化含 frontmatter 的
+//    文档抛 "Cannot handle unknown node `yaml`"（曾漏加，见 delete 同源事故）。
+// 3. remark-math：行内/块级公式（inlineMath / math）的 stringify 扩展。
+// 其余项目内 $remark（alert/toc/highlight/html-merge/strong-parens/diagram）
+// 只做「解析期 mdast 变换」，序列化端由各自 schema 的 toMarkdown runner 输出
+// 标准节点（blockquote/paragraph/html/code），无需在重建链里追加。
 import remarkGfm from "remark-gfm";
+import remarkFrontmatter from "remark-frontmatter";
+import remarkMath from "remark-math";
 import remarkStringify, { type Options as RemarkStringifyOptions } from "remark-stringify";
+import { FRONTMATTER_OPTIONS } from "./frontmatter";
 import { SerializerState } from "@milkdown/kit/transformer";
 // defaultHandlers：序列化时包装 mdast-util-to-markdown 的默认 list handler，
 // 抑制「相邻列表自动换 bullet」的行为（详见 customListHandler 注释）。
@@ -296,6 +306,8 @@ function applySerializationStyle(
   const remark = unified()
     .use(remarkParse)
     .use(remarkGfm)
+    .use(remarkFrontmatter, FRONTMATTER_OPTIONS)
+    .use(remarkMath)
     .use(remarkStringify, {
       ...ctx.get(remarkStringifyOptionsCtx),
       bullet,
@@ -1346,10 +1358,20 @@ export function createEditor(
       });
       // 内容变化监听：供外层做“未保存修改”追踪
       if (onChange) {
-        ctx.get(listenerCtx).markdownUpdated((_ctx, markdown) => {
-          // 与 getMarkdown 走同一清理：脏检查基准和回调必须对空单元格
-          // 的 <br /> 占位处理一致，否则打开/保存后会被误报“未保存修改”。
-          onChange(cleanMarkdownTableBr(markdown));
+        // 不用 markdownUpdated：listener 插件在 SerializerReady 时把 serializer
+        // 缓存成闭包常量，之后所有回调都用这份旧 serializer 序列化；而本项目
+        // 打开文件时会按原文风格重建 serializerCtx（applySerializationStyle），
+        // 重建后 markdownUpdated 仍用旧风格序列化 → 与 getMarkdown / normalize
+        // Markdown（当前 serializerCtx）口径不一致 → 打开 + 列表等非默认风格
+        // 的文件会被误报“未保存修改”（打开即脏）。
+        // 改用 updated(doc) 事件：回调内每次取当前 serializerCtx 序列化，
+        // 与 getMarkdown 走同一清理逻辑，口径统一。
+        ctx.get(listenerCtx).updated((ctx, doc) => {
+          try {
+            onChange(cleanMarkdownTableBr(ctx.get(serializerCtx)(doc)));
+          } catch {
+            /* 极端结构序列化失败时跳过本次回调，避免脏检查被拖垮 */
+          }
         });
       }
     })

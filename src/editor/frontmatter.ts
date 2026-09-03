@@ -23,8 +23,8 @@ import type { RemarkPluginRaw } from "@milkdown/transformer";
 import remarkFrontmatter from "remark-frontmatter";
 import { exitToNextLine } from "./block-exit";
 
-/** remark-frontmatter 配置：yaml 块、`---` 分隔 */
-const FRONTMATTER_OPTIONS = { type: "yaml", marker: "-" };
+/** remark-frontmatter 配置：yaml 块、`---` 分隔（index.ts 重建序列化器时复用，须保持一致） */
+export const FRONTMATTER_OPTIONS = { type: "yaml", marker: "-" };
 
 export const frontmatterRemark = $remark(
   "notemark-frontmatter",
