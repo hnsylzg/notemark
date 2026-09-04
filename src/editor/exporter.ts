@@ -27,6 +27,9 @@ import themeCss from "@/editor/theme/index.css?inline";
 // 语言列表：与编辑器注入 codeBlockConfig 的是同一数组实例，load() 带缓存，
 // 导出前预热后，Milkdown 初始化代码块时可直接命中
 import { languages } from "@codemirror/language-data";
+// EditorView.findFromDOM 是 CM6 公开 API：从 DOM 反查每个代码块的 view 实例，
+// 用于在导出前打开 CM6 的打印模式（viewState.printing）强制全量渲染
+import { EditorView } from "@codemirror/view";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -183,8 +186,10 @@ ${bodyHtml}
  * view.dom 即 ProseMirror 的可编辑根元素，其 innerHTML 是渲染后的真实结构：
  * 公式（KaTeX）、图表（Mermaid SVG）、代码块（CM6 含高亮 span）都已在 DOM 中。
  *
- * 注意：调用前应先 warmUpCodeBlocks()，否则视口外的代码块仍是纯文本占位，
- * 取到的 HTML 会丢失语法高亮。
+ * 注意：调用前应先 warmUpCodeBlocks()，它保证两件事：
+ * 1. 所有代码块完成初始化（视口外默认只有纯文本占位，无语法高亮）
+ * 2. CM6 打印模式下整块渲染（代码行默认按窗口可见区域虚拟化，视口外行会
+ *    被 .cm-gap 占位，取到的 HTML 会缺行）
  */
 export function getEditorHtml(editor: Editor): string {
   return editor.action((ctx) => {
@@ -193,8 +198,31 @@ export function getEditorHtml(editor: Editor): string {
   });
 }
 
+/** 等待 rAF 两帧（渲染阶段稳定点） */
+function nextTwoFrames(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
+/** 等一小段时间（用于轮询 placeholder / 高亮微任务落地） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** CM6 view 的内部句柄（viewState 未在 d.ts 公开，仅运行时存在） */
+type CMViewInternals = { viewState?: { printing?: boolean } };
+
+/** 块是否已渲染到整块（无 gap 占位且行数与文档一致） */
+function blockFullyRendered(v: EditorView): boolean {
+  return (
+    !v.scrollDOM.querySelector(".cm-gap") &&
+    v.scrollDOM.querySelectorAll(".cm-line").length >= v.state.doc.lines
+  );
+}
+
 /**
- * 导出前让所有代码块的 CodeMirror 实例完成挂载，保证取到的 HTML 带语法高亮。
+ * 导出前准备所有代码块，保证取到的 HTML 语法高亮完整、行数齐全。
  *
  * @milkdown/components/code-block 的 NodeView（CodeMirrorBlock）用共享的
  * IntersectionObserver 做懒加载（root 为 null，即页面视口；rootMargin 200px）：
@@ -203,18 +231,23 @@ export function getEditorHtml(editor: Editor): string {
  *   同步的：创建 CM6 实例、mount Vue 组件（产生带高亮的 token span）
  * - 离开视口 5 秒后（TEARDOWN_DELAY）销毁实例并退回占位
  *
- * 因此直接取 view.dom.innerHTML 时，视口外的代码块只有纯文本：既没有语法
- * 高亮，也拿不到代码块的等宽字体与前景色（HTML 与 PDF 导出都会受影响）。
+ * 官方没有"导出前渲染全部代码块"的开关（IO 在源码里硬编码），而 IO 的回调表
+ * （visibilityCallbacks WeakMap）是模块私有的，无法直接调用。因此：
  *
- * 官方没有提供"导出前渲染全部代码块"的开关（IO 在源码里硬编码，无 lazy/
- * observe/renderAll 配置），而 IO 的回调表（visibilityCallbacks WeakMap）是
- * 模块私有的，无法直接调用。这里利用 IO 的公开行为触发初始化：把未初始化
- * 的代码块临时 `position: fixed` 叠到视口左上角，其矩形与视口的相交状态
- * 必然发生变化 → 共享 IO 在下一帧渲染阶段回调 → 同步 initializeCodeMirror()。
- * 元素临时 visibility: hidden，全程无任何可见变化，用户无感。
+ * 第一步（初始化）：把未初始化的代码块临时 `position: fixed` 叠到视口左上角，
+ * 其矩形与视口的相交状态必然变化 → 共享 IO 下一帧回调 → 同步初始化。元素临时
+ * visibility: hidden，全程无可见变化。轮询等待 placeholder 全部消失（超时兜底）。
  *
- * 语言包提前用 LanguageDescription.load() 预热（同一数组实例、带缓存），
- * 这样初始化时 load() 直接命中已 resolve 的 Promise，取 DOM 前高亮就绪。
+ * 第二步（全量渲染）：CM6 只为"浏览器窗口内可见"的代码行创建 DOM（源码
+ * visiblePixelRange = scrollDOM 矩形与 innerWidth/innerHeight 的交集），其余行
+ * 用一个 .cm-gap 占位——所以即使初始化完成，超过一屏的代码块取到的 HTML 仍
+ * 缺行。CM6 为此内置了打印模式：打印事件会把内部开关 viewState.printing 置
+ * true，像素视口改走 fullPixelRange（整块高度，无视窗口），全部行 DOM 化
+ * （源码 onPrint / fullPixelRange，见 node_modules/@codemirror/view/dist/index.js）。
+ * 打印开关由 DOMObserver 的 onPrint 写入，属内部实现，但字段运行时公开可写：
+ * 这里用官方公开 API EditorView.findFromDOM() 拿到每个块的 view，直接写
+ * viewState.printing（与 CM6 自身打印路径同一开关），measure 收敛后所有代码块
+ * 行数齐全、.cm-gap 消失，随后立即复位。
  *
  * 方案史（均已证实不可行/已废弃）：
  * - scale(0.001) 缩放：transform 不改变元素在文档流中的位置，远端块的 rect
@@ -223,6 +256,9 @@ export function getEditorHtml(editor: Editor): string {
  *   那一个节点（viewdesc.setSelection 按 offset 逐子判断），不会广播给全部
  *   NodeView，远端代码块不会初始化
  * - 逐段滚动：能触发但用户可见整篇翻滚，观感差
+ * - 离线重建 HTML（highlightTree 自算高亮）：可行但与编辑器渲染存在不一致风险
+ * - 本方案已在 debug.html?mode=print 实测：128 个 30-60 行代码块全部满行渲染，
+ *   .cm-gap 从 94 降至 0，恢复后行 DOM 保持，导出 HTML 不再缺行
  */
 export async function warmUpCodeBlocks(editor: Editor): Promise<void> {
   const view = editor.action((ctx) => ctx.get(editorViewCtx));
@@ -247,44 +283,80 @@ export async function warmUpCodeBlocks(editor: Editor): Promise<void> {
     );
   }
 
-  // 找出尚未初始化的代码块（内部仍是占位、没有 CM6 高亮 span）
+  // 没有任何代码块则无需任何操作
+  if (!view.dom.querySelector(".milkdown-code-block")) return;
+
+  // 第一步：找出尚未初始化的代码块（内部仍是占位、没有 CM6 高亮 span），
+  // 临时 fixed 到视口左上角触发共享 IO 初始化；记录原内联样式以便恢复。
   const pending = Array.from(
     view.dom.querySelectorAll<HTMLElement>(".milkdown-code-block")
   ).filter((el) => el.querySelector(".milkdown-code-block-placeholder"));
-  // 已全部初始化（比如用户刚好浏览到整个文档）则无需任何操作
-  if (pending.length === 0) return;
+  const relocated: { el: HTMLElement; saved: Record<string, string> }[] = [];
+  if (pending.length > 0) {
+    for (const el of pending) {
+      const saved = {
+        position: el.style.position,
+        top: el.style.top,
+        left: el.style.left,
+        width: el.style.width,
+        visibility: el.style.visibility,
+      };
+      el.style.position = "fixed";
+      el.style.top = "0";
+      el.style.left = "0";
+      // 折叠到视口左上角期间隐藏元素，避免任何瞬时闪现
+      el.style.visibility = "hidden";
+      relocated.push({ el, saved });
+    }
+    // 轮询等待全部占位初始化完成（IO 回调→同步 initializeCodeMirror），
+    // 5s 超时兜底：已初始化的块足够多时导出仍可用，只是少部分丢失高亮
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await nextTwoFrames();
+      if (!view.dom.querySelector(".milkdown-code-block-placeholder")) break;
+      await sleep(50);
+    }
+  }
 
-  // 临时把未初始化块 fixed 到视口左上角：相交状态必然变化 → 共享 IO 在下一帧
-  // 渲染阶段回调 → initializeCodeMirror() 同步执行。记录原内联样式以便恢复。
-  const relocated = pending.map((el) => {
-    const saved = {
-      position: el.style.position,
-      top: el.style.top,
-      left: el.style.left,
-      width: el.style.width,
-      visibility: el.style.visibility,
-    };
-    el.style.position = "fixed";
-    el.style.top = "0";
-    el.style.left = "0";
-    // 折叠到视口左上角期间隐藏元素，避免任何瞬时闪现
-    el.style.visibility = "hidden";
-    return { el, saved };
-  });
+  // 第二步：打开 CM6 打印模式，强制每个块整块渲染。
+  const views = Array.from(
+    view.dom.querySelectorAll<HTMLElement>(".cm-editor")
+  )
+    .map((dom) => EditorView.findFromDOM(dom))
+    .filter((v): v is EditorView => !!v);
 
-  // 等两帧：第一帧让浏览器跑 IO 的相交计算并回调（初始化同步完成），
-  // 第二帧确保语言包预热后 updateLanguage() 的微任务高亮已应用进 DOM
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
-
-  // 恢复原位：DOM 结构从未变化，取 HTML 前所有代码块都已带上高亮
-  for (const { el, saved } of relocated) {
-    el.style.position = saved.position;
-    el.style.top = saved.top;
-    el.style.left = saved.left;
-    el.style.width = saved.width;
-    el.style.visibility = saved.visibility;
+  try {
+    for (const v of views) {
+      const vs = (v as unknown as CMViewInternals).viewState;
+      if (vs) vs.printing = true;
+    }
+    if (views.length > 0) {
+      // measure 循环直到全部块行数齐全（多数第一轮即收敛）
+      for (let k = 0; k < 10; k++) {
+        for (const v of views) {
+          const anyV = v as unknown as { measure?: () => void };
+          // 优先同步 measure（CM6 打印路径 onPrint 同款）；d.ts 未声明时退回公开 requestMeasure
+          if (typeof anyV.measure === "function") anyV.measure();
+          else v.requestMeasure();
+        }
+        await nextTwoFrames();
+        if (views.every(blockFullyRendered)) break;
+      }
+    }
+  } finally {
+    // 复位打印模式（无论成功与否都要恢复，避免影响后续编辑）
+    for (const v of views) {
+      const vs = (v as unknown as CMViewInternals).viewState;
+      if (vs) vs.printing = false;
+    }
+    // 恢复原位：DOM 结构从未变化，已生成的行 DOM 会保留到导出快照
+    for (const { el, saved } of relocated) {
+      el.style.position = saved.position;
+      el.style.top = saved.top;
+      el.style.left = saved.left;
+      el.style.width = saved.width;
+      el.style.visibility = saved.visibility;
+    }
   }
 }
 

@@ -2236,13 +2236,6 @@ onMounted(() => {
           requestAnimationFrame(revealWindow);
         });
       } catch (err) {
-        // 临时诊断：把运行时错误显示在页面上，便于排查白屏
-        const host = editorHost.value;
-        if (host) {
-          host.innerHTML = `<pre style="color:red;white-space:pre-wrap;padding:16px">[NoteMark init error]\n${
-            err instanceof Error ? err.stack || err.message : String(err)
-          }</pre>`;
-        }
         console.error("[NoteMark] editor init failed:", err);
       }
     };
@@ -2267,13 +2260,6 @@ onMounted(() => {
       startEditor();
     }
   } catch (err) {
-    // 临时诊断：把运行时错误显示在页面上，便于排查白屏
-    const host = editorHost.value;
-    if (host) {
-      host.innerHTML = `<pre style="color:red;white-space:pre-wrap;padding:16px">[NoteMark init error]\n${
-        err instanceof Error ? err.stack || err.message : String(err)
-      }</pre>`;
-    }
     console.error("[NoteMark] editor init failed:", err);
   }
 
