@@ -400,11 +400,26 @@ fn trash_delete(path: String) -> Result<(), String> {
 ///
 /// 先写临时 HTML，再交给浏览器 --print-to-pdf 输出，属于静默导出（无弹窗）。
 /// 失败时返回错误文本，由前端回退到 window.print() 的打印对话框。
+///
+/// 注意：浏览器以成功状态退出后，PDF 文件未必已落盘（--headless=new 偶发
+/// "先退出、后写盘"），因此退出后轮询一小段时间再判定，避免误判"未生成文件"
+/// 而触发前端的打印对话框。每次调用使用独立 user-data-dir，避免重复 / 并发
+/// 导出时默认 profile 锁竞争导致偶发失败。
 #[tauri::command]
 fn export_pdf(html_path: String, pdf_path: String) -> Result<(), String> {
   let browser = find_browser().ok_or_else(|| "未找到 Edge 或 Chrome 浏览器".to_string())?;
   // file:/// 需要正斜杠路径
   let url = format!("file:///{}", html_path.replace('\\', "/"));
+
+  // 每次导出用独立临时 profile，规避并发 / 重复调用的锁竞争
+  let user_data_dir = std::env::temp_dir().join(format!(
+    "notemark-pdf-{}-{}",
+    std::process::id(),
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_nanos())
+      .unwrap_or(0)
+  ));
 
   let mut last_err = String::new();
   // 新版 headless（--headless=new）优先，旧版回退；virtual-time-budget 保证
@@ -416,8 +431,12 @@ fn export_pdf(html_path: String, pdf_path: String) -> Result<(), String> {
         "--disable-gpu",
         "--no-sandbox",
         "--no-pdf-header-footer",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
         "--run-all-compositor-stages-before-draw",
         "--virtual-time-budget=10000",
+        &format!("--user-data-dir={}", user_data_dir.to_string_lossy()),
         &format!("--print-to-pdf={}", pdf_path),
         &url,
       ])
@@ -425,7 +444,9 @@ fn export_pdf(html_path: String, pdf_path: String) -> Result<(), String> {
 
     match output {
       Ok(out) if out.status.success() => {
-        if std::path::Path::new(&pdf_path).exists() {
+        // 浏览器已退出，但 PDF 可能尚未刷盘：轮询最多 3 秒，确认文件存在且非空
+        if wait_for_pdf(&pdf_path, std::time::Duration::from_secs(3)) {
+          let _ = std::fs::remove_dir_all(&user_data_dir);
           return Ok(());
         }
         last_err = "浏览器已退出但未生成 PDF 文件".to_string();
@@ -440,11 +461,29 @@ fn export_pdf(html_path: String, pdf_path: String) -> Result<(), String> {
     }
   }
 
+  let _ = std::fs::remove_dir_all(&user_data_dir);
+
   Err(if last_err.is_empty() {
     "生成 PDF 失败".to_string()
   } else {
     last_err
   })
+}
+
+/// 轮询等待 PDF 文件出现且非空（规避浏览器退出后文件延迟落盘的竞态）。
+fn wait_for_pdf(pdf_path: &str, timeout: std::time::Duration) -> bool {
+  let start = std::time::Instant::now();
+  loop {
+    if let Ok(meta) = std::fs::metadata(pdf_path) {
+      if meta.len() > 0 {
+        return true;
+      }
+    }
+    if start.elapsed() >= timeout {
+      return false;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+  }
 }
 
 /// 按常见安装位置探测 Edge / Chrome（Windows 为主，兼顾 macOS / Linux）
