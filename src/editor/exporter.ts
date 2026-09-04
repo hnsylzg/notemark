@@ -19,6 +19,8 @@ import type { Editor } from "@milkdown/kit/core";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore editorViewCtx 运行时可用（d.ts 未声明）
 import { editorViewCtx } from "@milkdown/kit/core";
+// 导出 / 打印自包含的 KaTeX 样式（字体已内联为 data URL），确保公式在 PDF 中正确渲染
+import { katexExportCss } from "./katex-export-css";
 
 // ?inline：以字符串形式导入处理后的主题 CSS（含 @import 展开），不注入页面
 import themeCss from "@/editor/theme/index.css?inline";
@@ -161,6 +163,7 @@ export function buildStandaloneHtml(opts: StandaloneHtmlOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(title)}</title>
 <style>${themeCss}</style>
+<style>${katexExportCss}</style>
 <style>${collectRuntimeStyles()}</style>
 <style>${EXPORT_BASE_CSS}</style>
 <style>${forPrint ? PRINT_CSS : ""}${extraCss}</style>

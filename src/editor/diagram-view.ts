@@ -149,6 +149,8 @@ export const diagramView = $view(diagramSchema.node, () => {
   const nodeView: NodeViewConstructor = (node, view, getPos) => {
     const dom = document.createElement("div");
     dom.className = "diagram";
+    // 导出定位用：docx 导出据此复用本节点已渲染好的 SVG（与屏幕/PDF 所见一致）
+    dom.dataset.diagramId = String(node.attrs.identity ?? "");
 
     let token = 0;
     let editing = false;
@@ -158,6 +160,7 @@ export const diagramView = $view(diagramSchema.node, () => {
       const current = ++token;
       const value = node.attrs.value as string;
       dom.className = "diagram";
+      dom.dataset.diagramId = String(node.attrs.identity ?? "");
       if (!value) {
         dom.textContent = "空流程图（点击输入）";
         dom.classList.add("diagram-empty");

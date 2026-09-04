@@ -16,6 +16,10 @@ const SAFE_HTML_TAGS = new Set([
   "a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "data", "del",
   "dfn", "em", "i", "iframe", "ins", "kbd", "mark", "q", "rp", "rt", "ruby", "s",
   "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var", "wbr",
+  // center：虽是废弃标签，md 里仍常见。此前不在白名单 → 被降级成纯文本，
+  // 只剩文字、丢失居中（编辑器与 PDF 里都看不出居中）。放行后由浏览器
+  // 默认样式（text-align:center）居中；它无危险属性，安全。
+  "center",
   // img 单独放行：行内 HTML 图片（<img src="...">）应真实显示。
   // 此前白名单没有 img，行内 <img> 会被降级成空文本节点 → 图片整个消失。
   // src 的协议过滤与相对路径解析见 ensureImgSrc。
@@ -138,13 +142,19 @@ const SAFE_BLOCK_TAGS = new Set([
   "header", "footer", "nav", "aside", "main", "ul", "ol", "li", "table",
   "thead", "tbody", "tfoot", "tr", "td", "th", "blockquote", "pre", "hr",
   "figure", "figcaption", "picture", "img", "details", "summary", "dl",
-  "dt", "dd", "address", "iframe", "button",
+  "dt", "dd", "address", "iframe", "button", "center",
+  // 表格结构标签：手写 HTML 表格常用，此前不在白名单 → 被降级成纯文本、
+  // <caption>/<col>/<colgroup> 整段消失。它们无脚本能力、仅做结构/样式，
+  // 放行安全。col/colgroup 依赖 span 属性（见 SAFE_BLOCK_ATTRS）。
+  "caption", "col", "colgroup",
 ]);
 
 /** 块级 HTML 允许保留的属性（其余危险属性一律移除） */
 const SAFE_BLOCK_ATTRS = new Set([
   "class", "id", "title", "width", "height", "alt", "colspan", "rowspan",
   "target", "rel", "src", "style", "loading",
+  // span：<col span="2"> / <colgroup span="2"> 跨列必备，放行以保留列结构
+  "span",
 ]);
 
 /**
