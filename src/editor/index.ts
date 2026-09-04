@@ -19,7 +19,7 @@ import { rootAttrsCtx } from "@milkdown/kit/core";
 // 因此必须注入 @codemirror/language-data 提供的常见语言列表。
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 // listItemBlockConfig：列表项 NodeView（list-item-block）的配置 slice。
-// renderLabel 决定列表项“图标区”渲染什么：普通无序列表用圆点 SVG、
+// renderLabel 决定列表项"图标区"渲染什么：普通无序列表用圆点 SVG、
 // 有序列表用数字文本、任务列表用勾选/未勾选 SVG 方块（list-item.ts）。
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { renderListItemLabel } from "./list-item";
@@ -27,7 +27,7 @@ import { languages } from "@codemirror/language-data";
 // CM6 语法高亮：
 // 关键①：@milkdown/components/code-block 默认不启用 syntaxHighlighting，
 // 代码块一直以纯色（--mt-code-fg）渲染，tokens.css 的 --mt-token-* 变量
-// 从未被消费——这就是“导入主题后代码颜色不变”的根因，必须先启用。
+// 从未被消费——这就是"导入主题后代码颜色不变"的根因，必须先启用。
 // 关键②：不能直接用 defaultHighlightStyle——它不生成 .tok-* 类名，而是
 // style-mod 混淆类名（.ͼb 等），CSS 侧无法按类名覆盖。因此这里用
 // HighlightStyle.define + CSS 变量（var(--mt-token-*)）自定义，使 CM 生成
@@ -119,7 +119,7 @@ const customEmphasisHandler: Handle = (node, parent, state, info) => {
   state.attentionEncodeSurroundingInfo = undefined;
   return result;
 };
-// listenerCtx：注册内容变化监听，用于追踪“未保存修改”状态。
+// listenerCtx：注册内容变化监听，用于追踪"未保存修改"状态。
 // 该 SliceType 由 listener 插件提供，必须在 .use(listener) 注册后生效。
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 // Milkdown v7 的 Markdown 读写通过两个内部上下文实现：
@@ -1596,14 +1596,14 @@ export function createEditor(
         ...ctx.get(listItemBlockConfig.key),
         renderLabel: renderListItemLabel,
       });
-      // 内容变化监听：供外层做“未保存修改”追踪
+      // 内容变化监听：供外层做"未保存修改"追踪
       if (onChange) {
         // 不用 markdownUpdated：listener 插件在 SerializerReady 时把 serializer
         // 缓存成闭包常量，之后所有回调都用这份旧 serializer 序列化；而本项目
         // 打开文件时会按原文风格重建 serializerCtx（applySerializationStyle），
         // 重建后 markdownUpdated 仍用旧风格序列化 → 与 getMarkdown / normalize
         // Markdown（当前 serializerCtx）口径不一致 → 打开 + 列表等非默认风格
-        // 的文件会被误报“未保存修改”（打开即脏）。
+        // 的文件会被误报"未保存修改"（打开即脏）。
         // 改用 updated(doc) 事件：回调内每次取当前 serializerCtx 序列化，
         // 与 getMarkdown 走同一清理逻辑，口径统一。
         ctx.get(listenerCtx).updated((ctx, doc) => {
@@ -1623,10 +1623,10 @@ export function createEditor(
 }
 
 /**
- * 编辑区“周围留白”点击防失焦（对齐 Typora：点周围不丢焦、光标还在、可继续输入）。
+ * 编辑区"周围留白"点击防失焦（对齐 Typora：点周围不丢焦、光标还在、可继续输入）。
  *
  * 布局上 .milkdown 是滚动/根容器，正文列 .ProseMirror 仅 860px 居中，
- * 左右大片留白与顶/底 padding 落在 .ProseMirror 之外。点这些“不可编辑留白”
+ * 左右大片留白与顶/底 padding 落在 .ProseMirror 之外。点这些"不可编辑留白"
  * 默认会让 .ProseMirror 失焦（光标消失、无法继续输入）。本函数在捕获阶段
  * 拦截这些 mousedown：阻止默认（避免失焦），保持已有选区；
  * 若当前未聚焦则把焦点交还 .ProseMirror。
@@ -1667,7 +1667,7 @@ export function installSurroundFocusGuard(): void {
       if (sbW > 0 && e.clientX >= rect.right - sbW) return;
       if (sbH > 0 && e.clientY >= rect.bottom - sbH) return;
 
-      // 命中“不可编辑留白”：阻止默认以避免 .ProseMirror 失焦，保持现有选区。
+      // 命中"不可编辑留白"：阻止默认以避免 .ProseMirror 失焦，保持现有选区。
       e.preventDefault();
       if (!pm.contains(document.activeElement)) {
         // 当前未聚焦则把焦点交还编辑区（光标落到最近一次选区 / 文末）

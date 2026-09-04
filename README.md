@@ -20,7 +20,7 @@
 - **表格右键菜单**：插入行列、合并等
 - **图片**：粘贴 / 拖拽 / 插入，相对路径资源统一管理在 `assets/`
 - **深色模式** + **自定义主题导入**（Typora 风格）
-- **导出**：HTML、Word（`.docx`）、打印
+- **导出**：HTML、PDF（静默无头打印，失败自动回退打印对话框）、纯文本（`.txt`）、Word（`.docx`）
 - **工作目录**与**最近文件**记忆
 
 ---
@@ -159,4 +159,4 @@ src-tauri/                 # Tauri / Rust 壳（Cargo.toml、src/main.rs、build
 
 ## 版本
 
-当前版本 `0.2.0`（与 `package.json` / `tauri.conf.json` / `src-tauri/Cargo.toml` 三处保持一致）。
+当前版本 `0.3.6`（与 `package.json` / `tauri.conf.json` / `src-tauri/Cargo.toml` 三处保持一致）。
