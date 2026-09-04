@@ -14,7 +14,9 @@
  *     解析时由本（block）节点的 parseMarkdown 接管，与行内 html 互不冲突。
  */
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
-import { $nodeSchema, $view } from "@milkdown/kit/utils";
+import type { MilkdownPlugin } from "@milkdown/ctx";
+import type { MarkdownNode, RemarkPluginRaw } from "@milkdown/transformer";
+import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import { sanitizeHtmlBlock } from "./html-view";
 import { exitToNextLine } from "./block-exit";
 
@@ -39,10 +41,16 @@ export const htmlBlockSchema = $nodeSchema("htmlBlock", () => ({
     "",
   ],
   parseMarkdown: {
-    // 块级 html（独立成行的 html 片段）交给本节点；行内 <u> 仍由 inline htmlSchema 处理
-    match: (node) => node.type === "html",
+    // 块级 html（独立成行的 <center>/<div>/<img>/<hr ...>/<table> 等）在 remark 阶段
+    // 已被 htmlBlockRemark 改写为 type "htmlBlock"；行内 html（<u>/<sub>/<span> 等）
+    // 仍保持 type "html"，由内置 inline htmlSchema 处理。两者类型不同，互不抢匹配。
+    // 注：Milkdown parser 用 Object.values(schema.nodes).find(match) 取第一个匹配，
+    // 并不读 priority；此前 priority:100 无效，根因是块级/行内 html 的 mdast type
+    // 都是 "html" 无法区分。改为 mdast 阶段改写类型即彻底解决。
+    match: (node) => node.type === "htmlBlock",
     runner: (state, node, type) => {
-      state.openNode(type, { value: node.value as string }).closeNode();
+      const v = (node.value as string ?? "");
+      state.addNode(type, { value: v });
     },
   },
   toMarkdown: {
@@ -76,13 +84,14 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
 
     // 渲染对象（块级 HTML 用更宽松的白名单）；空态给与公式块一致的占位提示
     const render = (value: string) => {
+      const safe = sanitizeHtmlBlock(value);
       if (!value.trim()) {
         preview.className = "mt-html-block-preview mt-html-block-empty";
         preview.textContent = "空 HTML（点击输入）";
         return;
       }
       preview.className = "mt-html-block-preview";
-      preview.innerHTML = sanitizeHtmlBlock(value);
+      preview.innerHTML = safe;
     };
 
     // 进入 / 退出编辑态（与公式块一致：编辑态只在 textarea 内本地操作，不每键
@@ -195,7 +204,82 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
   return nodeView;
 });
 
+/*
+ * htmlBlockRemark — 在 mdast 阶段把「块级 HTML」与「行内 HTML」区分开。
+ *
+ * 背景：remark 把独立成行的 <center>/<img>/<hr ...>/<table> 与段落内的 <u>/<sub>
+ * 都解析成 type:"html" 的 mdast 节点。Milkdown 的 parser 用
+ * Object.values(schema.nodes).find(match) 取【第一个】match 的节点，并不读
+ * priority，因此块级 / 行内无法靠 priority 分流——内置 inline html 节点总会抢先
+ * 匹配块级 html，而 inline 节点无法在 block 位置创建 → 块级 html 被整段丢弃。
+ *
+ * 解法：不依赖父节点类型（Milkdown 的 mdast 树结构与标准 remark 可能不同，
+ * 父节点判定不可靠），而是直接按 html 节点【自身的起始标签】判断：命中块级标签
+ * 集合（center/div/table/...）的改为 type "htmlBlock"，由 htmlBlock 的
+ * parseMarkdown 接手；其余（<u>/<sub>/<span>...）保留 type "html"，由内置 inline
+ * html 接手。两者类型不同，互不抢匹配。
+ */
+// 块级 HTML 标签：命中这些起始标签的 html 节点判定为块级（改写为 htmlBlock）。
+// 直接按标签判断，避免依赖父节点类型带来的误判。
+const BLOCK_HTML_START =
+  /^\s*<\s*(center|div|p|section|article|header|footer|nav|aside|main|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|blockquote|pre|hr|figure|figcaption|details|summary|dl|dt|dd|address|iframe|img|h[1-6]|canvas)\b/i;
+
+const htmlBlockRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
+  const root = tree as unknown as { [k: string]: any };
+  // 关键修复：remark 把 <center> 这类"块级 html"解析进 paragraph 的 children
+  // （当作行内 html = type:"html"）。只把 type 改成 "htmlBlock" 会破坏树结构——
+  // htmlBlock 成了 paragraph 的"块级子节点"，而 paragraph 的 content 不允许它，
+  // Milkdown parser 创建 paragraph 时即报 "Cannot create node for paragraph"
+  // （Content: ["htmlBlock"]），导致该段整段丢失 → 视觉上"空行"。
+  // 正确做法：把块级 html 从 paragraph 中"提升"为顶层兄弟块，其余行内内容各自
+  // 重新组成 paragraph；嵌套（blockquote / listItem）自底向上递归处理。
+  const liftBlockHtmlOutOfParagraphs = (children: any[]): any[] => {
+    const out: any[] = [];
+    for (const child of children) {
+      // 先递归处理子节点（自底向上，覆盖 blockquote / listItem 等嵌套容器）
+      if (child.children && Array.isArray(child.children)) {
+        child.children = liftBlockHtmlOutOfParagraphs(child.children);
+      }
+      // 仅当 paragraph 内混有块级 html 时才需拆分
+      if (child.type === "paragraph" && Array.isArray(child.children)) {
+        const hasBlock = child.children.some(
+          (c: any) => c.type === "html" && typeof c.value === "string" && BLOCK_HTML_START.test(c.value)
+        );
+        if (hasBlock) {
+          let inline: any[] = [];
+          for (const c of child.children) {
+            if (c.type === "html" && typeof c.value === "string" && BLOCK_HTML_START.test(c.value)) {
+              if (inline.length > 0) {
+                out.push({ type: "paragraph", children: inline });
+                inline = [];
+              }
+              out.push({ ...c, type: "htmlBlock" });
+            } else {
+              inline.push(c);
+            }
+          }
+          if (inline.length > 0) out.push({ type: "paragraph", children: inline });
+          continue;
+        }
+      }
+      out.push(child);
+    }
+    return out;
+  };
+
+  if (Array.isArray(root)) {
+    root.length = 0;
+    root.push(...liftBlockHtmlOutOfParagraphs(root));
+  } else if (root.children && Array.isArray(root.children)) {
+    root.children = liftBlockHtmlOutOfParagraphs(root.children);
+  }
+
+};
+
+export const htmlBlockRemark = $remark("notemark-html-block", () => htmlBlockRemarkTransform);
+
 export const htmlBlockPlugins = [
   ...htmlBlockSchema,
   htmlBlockView,
+  htmlBlockRemark,
 ];

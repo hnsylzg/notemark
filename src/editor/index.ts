@@ -351,10 +351,8 @@ export function setMarkdown(
     const source = markdown.replace(/\r\n?/g, "\n");
     // 解析后给空脚注定义补空段落，保证其可编辑、光标能落进定义内
     // （见 ensureFootnoteParagraphs 注释）。后续光标映射/keepCaret 均基于补空后的文档。
-    const patched = ensureFootnoteParagraphs(
-      parser(guardUnclosedFrontmatter(source)),
-      view.state.schema
-    );
+    const parsedRaw = parser(guardUnclosedFrontmatter(source));
+    const patched = normalizeParsedDoc(parsedRaw, view.state.schema);
     const tr = view.state.tr.replaceWith(
       0,
       view.state.doc.content.size,
@@ -411,6 +409,50 @@ function ensureFootnoteParagraphs(doc: PMNode, schema: Schema): PMNode {
 }
 
 /**
+ * 去掉「htmlBlock（块级 html：<center>/<div>/<table>…）之后紧跟、且其后还有内容
+ * 的空段落」。
+ *
+ * 背景：源码里 `<center>文字</center>` 后面若留了空行（块间书写习惯），会被
+ * Markdown 正常解析成一个空段落，于是渲染时 center 下方多出一行空段——这与
+ * Typora 不符（Typora 不留）。把块级 html 归位到项目的 htmlBlock 节点（见
+ * html-block.ts 的 priority 改动）只解决「被行内 html 抢走」那部分，空段仍来自
+ * 源码里的空行，需要在这里解析后清掉。
+ *
+ * 只删「htmlBlock 后、且空段后方还有内容」的空段：文档末尾的空段保留（保证文末
+ * 可编辑）；其它块（hr / 公式 / 普通段落）后的空段不受影响。
+ */
+function trimHtmlBlockTrailingEmptyParas(doc: PMNode, schema: Schema): PMNode {
+  const paraType = schema.nodes.paragraph;
+  const htmlBlockType = schema.nodes.htmlBlock;
+  if (!paraType || !htmlBlockType) return doc;
+  const kids: PMNode[] = [];
+  doc.forEach((n) => kids.push(n));
+  const toDelete = new Set<number>();
+  for (let i = 0; i < kids.length - 1; i++) {
+    const node = kids[i];
+    const next = kids[i + 1];
+    if (node.type === htmlBlockType && next.type === paraType && next.textContent.trim() === "") {
+      toDelete.add(i + 1);
+    }
+  }
+  if (toDelete.size === 0) return doc;
+  const kept = kids.filter((_, i) => !toDelete.has(i));
+  return doc.copy(Fragment.from(kept));
+}
+
+/**
+ * 解析后文档归一化：补空脚注定义的可编辑段 + 清掉 htmlBlock 后自动产生的空段。
+ * setMarkdown 与 docEqualsBaseline 共用，保证「加载后的文档」与「基线」口径一致，
+ * 否则清掉空段会让脏检查误判「已编辑」。
+ */
+function normalizeParsedDoc(doc: PMNode, schema: Schema): PMNode {
+  return trimHtmlBlockTrailingEmptyParas(
+    ensureFootnoteParagraphs(doc, schema),
+    schema
+  );
+}
+
+/**
  * 当前编辑器文档是否仍等于「markdown 基线」解析出的文档（同步判断，无防抖）。
  *
  * 背景：milkdown 的 listener 插件对 updated 事件做了 200ms 防抖
@@ -434,7 +476,7 @@ export function docEqualsBaseline(editor: Editor, markdown: string): boolean {
     const parser = ctx.get(parserCtx);
     try {
       const source = markdown.replace(/\r\n?/g, "\n");
-      const baseline = ensureFootnoteParagraphs(
+      const baseline = normalizeParsedDoc(
         parser(guardUnclosedFrontmatter(source)),
         view.state.schema,
       );

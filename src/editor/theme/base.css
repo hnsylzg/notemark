@@ -662,12 +662,16 @@
   font-size: 0.9em;
 }
 /* iframe 嵌入（如 YouTube / B 站 / 地图等）：默认 16:9 自适应，平时不抢编辑鼠标，
-   鼠标悬停到 iframe 区域后可交互（播放/滚动）。若 HTML 里写了 height 属性则优先使用 */
-:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap {
+   鼠标悬停到 iframe 区域后可交互（播放/滚动）。若 HTML 里写了 height 属性则优先使用。
+   同时覆盖行内 HTML（span[data-type="html"]）与块级 HTML（div[data-type="htmlblock"]），
+   否则被提升为块级 htmlBlock 的 iframe 会丢失 16:9 样式 */
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap,
+:where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap {
   max-width: 720px;
   margin: 0.5em auto;
 }
-:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap iframe {
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap iframe,
+:where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap iframe {
   display: block;
   width: 100%;
   height: auto;
@@ -678,7 +682,8 @@
   background: var(--mt-color-bg-soft);
   pointer-events: none; /* 平时不拦截编辑鼠标 */
 }
-:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap:hover iframe {
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap:hover iframe,
+:where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap:hover iframe {
   pointer-events: auto; /* 悬停到 iframe 区域后即可交互 */
 }
 
