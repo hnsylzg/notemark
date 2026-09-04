@@ -164,7 +164,8 @@ import { SerializerState } from "@milkdown/kit/transformer";
 import { defaultHandlers } from "mdast-util-to-markdown";
 // 仅用于类型标注（type-only，不参与打包）
 import type { Handle } from "mdast-util-to-markdown";
-import type { Node as PMNode } from "@milkdown/kit/prose/model";
+import type { Node as PMNode, Schema } from "@milkdown/kit/prose/model";
+import { Fragment, Slice } from "@milkdown/kit/prose/model";
 import type { EditorView } from "@milkdown/kit/prose/view";
 /** editor.action 回调注入的上下文类型（由 Editor API 推导，不依赖具体导出名） */
 type EditorCtx = Parameters<Parameters<Editor["action"]>[0]>[0];
@@ -178,9 +179,10 @@ export function getMarkdown(editor: Editor): string {
   return editor.action((ctx) => {
     const serializer = ctx.get(serializerCtx);
     const view = ctx.get(editorViewCtx);
-    // milkdown 用 <br /> 占位序列化空段落，表格空单元格会被误填；GFM 空单元格
-    // 本就是合法语法，统一清掉占位，避免写进用户文件（导出/保存/脏检查一致）。
-    return cleanMarkdownTableBr(serializer(view.state.doc));
+    // milkdown 用 <br /> 占位序列化空段落：表格空单元格会被误填（GFM 空单元格
+    // 本就是合法语法），空脚注定义会变成 `[^1]: <br />`。两类占位统一清掉，
+    // 避免写进用户文件（导出 / 保存 / 脏检查三条路同一口径）。
+    return cleanMarkdownBr(serializer(view.state.doc));
   });
 }
 
@@ -319,12 +321,23 @@ function applySerializationStyle(
 }
 
 
-import { mergeMarkdown, cleanMarkdownTableBr } from "./md-merge";
-export { mergeMarkdown, cleanMarkdownTableBr };
+import { mergeMarkdown, cleanMarkdownBr } from "./md-merge";
+export { mergeMarkdown, cleanMarkdownBr };
 
 
-/** 用新的 Markdown 文本整体替换编辑器内容 */
-export function setMarkdown(editor: Editor, markdown: string): void {
+/**
+ * 用新的 Markdown 文本整体替换编辑器内容。
+ * @param opts.keepCaret 重载（外部改动 / 保存后回灌）时尽量保留原光标位置。
+ *   整树替换会清空选区，PM 通常把光标映射回文档末尾——而脚注定义在最末，
+ *   于是「保存完光标跳到脚注上」。用「顶层块序号 + 块内偏移」做近似锚点还原，
+ *   重载前后内容几乎一致，足以精确定位回原位。打开文件等首次载入不传，
+ *   由调用方控制光标（如 focusEditorStart）。
+ */
+export function setMarkdown(
+  editor: Editor,
+  markdown: string,
+  opts?: { keepCaret?: boolean }
+): void {
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     const parser = ctx.get(parserCtx);
@@ -336,11 +349,101 @@ export function setMarkdown(editor: Editor, markdown: string): void {
     // 越界抛 RangeError（CRLF 文件专有，LF 下不暴露）。
     // 源码模式展示的仍是原始 CRLF 文本（rawContent），映射层负责两侧换算。
     const source = markdown.replace(/\r\n?/g, "\n");
-    const doc = parser(guardUnclosedFrontmatter(source));
-    // 用新 doc 替换整棵文档树，保持 schema 合法
-    view.dispatch(
-      view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
+    // 解析后给空脚注定义补空段落，保证其可编辑、光标能落进定义内
+    // （见 ensureFootnoteParagraphs 注释）。后续光标映射/keepCaret 均基于补空后的文档。
+    const patched = ensureFootnoteParagraphs(
+      parser(guardUnclosedFrontmatter(source)),
+      view.state.schema
     );
+    const tr = view.state.tr.replaceWith(
+      0,
+      view.state.doc.content.size,
+      patched.content
+    );
+    if (opts?.keepCaret) {
+      const { $from } = view.state.selection;
+      if ($from.depth > 0) {
+        // 记录原光标所在的顶层块序号与块内偏移，替换后在新文档还原
+        const blockStart = $from.before(1);
+        const index = Math.min($from.index(0), patched.childCount - 1);
+        let pos = 0;
+        for (let i = 0; i < index; i++) pos += patched.child(i).nodeSize;
+        const child = patched.child(index);
+        const max = child.isTextblock ? child.content.size : 0;
+        const offset = Math.max(0, $from.pos - blockStart - 1);
+        tr.setSelection(
+          TextSelection.near(patched.resolve(pos + 1 + Math.min(offset, max)))
+        );
+      }
+    }
+    view.dispatch(tr);
+  });
+}
+
+/**
+ * 给「空脚注定义」补一个空段落。
+ *
+ * milkdown 解析 `[^1]:`（无内容）得到的 footnote_definition 节点，其 content 是
+ * `block+`，但当解析路径没有自动补默认子节点时，可能得到一个 content 为空的节点。
+ * 这种节点没有任何可编辑位置：光标会被推到定义【之前】（上一个块末尾），于是
+ * 「在脚注前输入」的内容经源码往返后丢失，光标映射也会退化到「上一个块」。
+ * insertFootnote 里同样显式补了空段落（见 footnote.ts:144），这里在每次解析时
+ * 统一兜底，保证空定义始终可编辑、光标能稳定落进定义内。
+ * 仅在 content 确为空时插入，已含段落的定义不受影响。
+ */
+function ensureFootnoteParagraphs(doc: PMNode, schema: Schema): PMNode {
+  const defType = schema.nodes.footnote_definition;
+  const paraType = schema.nodes.paragraph;
+  if (!defType || !paraType) return doc;
+  const inserts: number[] = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name === defType.name && node.content.size === 0) {
+      inserts.push(pos + 1);
+    }
+  });
+  if (inserts.length === 0) return doc;
+  let patched = doc;
+  // 从后往前插入，避免前面的插入改变后面节点的 pos
+  for (const p of inserts.reverse()) {
+    patched = patched.replace(p, p, new Slice(Fragment.from(paraType.create()), 0, 0));
+  }
+  return patched;
+}
+
+/**
+ * 当前编辑器文档是否仍等于「markdown 基线」解析出的文档（同步判断，无防抖）。
+ *
+ * 背景：milkdown 的 listener 插件对 updated 事件做了 200ms 防抖
+ * （@milkdown/plugin-listener 内部 debounce(handler, 200)），App.vue 的
+ * visualEdited / pendingApply 都只能由这个防抖回调置位/消费。于是存在两个
+ * 真实竞态窗口：
+ * 1. 用户刚打完字就切源码（< 200ms）→ visualEdited 仍未置位；
+ * 2. 用户打开文件 / 退出源码后立刻输入（< 200ms）→ 输入被误当作 pendingApply
+ *    的「加载回调」消费，visualEdited 永不置位，rawContent 还被重置为旧值。
+ * 两种情况下 getVisualContent() 都返回旧的 rawContent —— 刚输入的文字在源码
+ * 草稿中凭空消失，再切回 WYSIWYG 即被真正删除。
+ *
+ * 这里以「当前文档是否偏离 rawContent 基线」为同步判据，与 setMarkdown 走
+ * 同一解析管线（LF 归一化 + guardUnclosedFrontmatter + ensureFootnoteParagraphs），
+ * 保证「刚应用过基线、用户未编辑」时必然返回 true；任何用户编辑都会让文档
+ * 结构偏离基线，从而被准确捕获。
+ */
+export function docEqualsBaseline(editor: Editor, markdown: string): boolean {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const parser = ctx.get(parserCtx);
+    try {
+      const source = markdown.replace(/\r\n?/g, "\n");
+      const baseline = ensureFootnoteParagraphs(
+        parser(guardUnclosedFrontmatter(source)),
+        view.state.schema,
+      );
+      return baseline.eq(view.state.doc);
+    } catch {
+      // 解析异常时保守视为「已偏离基线」，走 mergeMarkdown 路径，
+      // 至少不会丢掉用户刚输入的内容。
+      return false;
+    }
   });
 }
 
@@ -383,13 +486,21 @@ interface DocLeafBlock {
   node: PMNode;
 }
 
-/** mdast 中会渲染成 ProseMirror 叶子块的节点类型（两侧结构对称） */
+/**
+ * mdast 中会渲染成 ProseMirror 叶子块的节点类型（两侧结构对称）。
+ * 注意是「候选集」+ isMdLeafBlock 的「不含块级子节点」二次判定：
+ * - 空脚注定义 [^1]: 解析后内部无 paragraph 子节点 → 当作叶子块，
+ *   让光标偏移能落在它身上（否则 offset 落空会退化到「上一个块」，
+ *   表现为切回 WYSIWYG 时光标跑到脚注定义上一行）。
+ * - 非空脚注定义含 paragraph → 不算叶子，下钻收集内部段落，与普通段落对称。
+ */
 const MD_LEAF_BLOCK_TYPES = new Set([
   "paragraph",
   "heading",
   "code",
   "math",
   "tableCell",
+  "footnoteDefinition",
 ]);
 
 /** 判断 mdast 节点是否为叶子块：是块级类型且不含块级子节点 */
@@ -475,6 +586,27 @@ function collectMdLeafBlocks(
     return; // 叶子块不再下钻（inline 子节点无需处理）
   }
   for (const c of node.children ?? []) collectMdLeafBlocks(c, out, source);
+}
+
+/**
+ * 收集源码中「独立成行的 [toc]」的字符区间 [start, end)，用于反向光标映射。
+ *
+ * 注意：toc 在 mdast 侧不是叶子块（不在 MD_LEAF_BLOCK_TYPES 里），
+ * collectMdLeafBlocks 不会收集它，因此无法从 mdBlocks 拿到 toc 的源码位置；
+ * 这里改为直接按行扫描源码，找「整行仅 [toc]」的行，得到其 [start, end)。
+ * 行尾的 \r 已计入 line.length，故 end 落在换行符之前，offset 体系与传入的
+ * markdown / offset 保持一致。
+ */
+function collectSourceTocRanges(src: string): { start: number; end: number }[] {
+  const ranges: { start: number; end: number }[] = [];
+  const lines = src.split("\n");
+  let offset = 0;
+  for (const line of lines) {
+    const lineEnd = offset + line.length;
+    if (/^\s*\[toc\]\s*$/.test(line)) ranges.push({ start: offset, end: lineEnd });
+    offset = lineEnd + 1; // 跳过换行符（CRLF 的 \r 已计入 line.length）
+  }
+  return ranges;
 }
 
 /**
@@ -775,6 +907,35 @@ function mapCaretToMdOffset(
   if (doc.content.size <= 0) return null;
   const docBlocks = collectDocLeafBlocks(doc);
   if (docBlocks.length === 0) return null;
+  // [toc] 是「整行语法」的块级 atom，光标不可能落在它内部，只能悬在其前后边界。
+  // 光标恰在 toc 结束边界（= 其后内容开始之前）时，视觉上属于 [toc] 之后：
+  // 后随内容块 → 视同光标在该块内容开头（源码锚到该行文本起点）；
+  // toc 是文档末尾的语法块 → 视同光标在文末（源码锚到文本末尾）。
+  // 否则会把空 toc 块当锚：其文本为空、md 侧却是文本段落 "[toc]"（两侧结构
+  // 天然不对称），配对失败降级到该段落 textStart，光标就落到 `[` 前面。
+  for (let guard = 0; guard < docBlocks.length; guard++) {
+    const toc = docBlocks.find(
+      (b) =>
+        b.node.type.name === "toc" &&
+        (pos === b.pos || pos === b.pos + b.size)
+    );
+    if (!toc) break;
+    // 多个 toc 时按文档顺序取对应的源码 [toc] 行
+    const tocIndex = docBlocks
+      .filter((b) => b.node.type.name === "toc")
+      .indexOf(toc);
+    const src = collectSourceTocRanges(markdown)[tocIndex];
+    if (pos === toc.pos + toc.size) {
+      // 光标在 toc 之后：文末 → 源码末尾；否则落到下一个内容块开头
+      const next = docBlocks.find((b) => b.pos > toc.pos);
+      if (!next) return markdown.length; // [toc] 在文档末尾 → 锚到源码末尾
+      pos = next.pos + 1; // 跳到下一块内容开头；紧邻仍是 toc 时循环继续跳过
+    } else {
+      // 光标在 toc 之前：锚到 [toc] 源码行开头，保证「之前」往返一致
+      if (src) return src.start;
+      pos = toc.pos + 1;
+    }
+  }
   // 光标所在叶子块：优先取包含 pos 的块；
   // pos 落在块间/文档开头（不在任何块区间内）时，取「块中心」与 pos 最近的块
   const cursor = docBlocks.find((b) => pos >= b.pos && pos <= b.pos + b.size);
@@ -837,10 +998,27 @@ function mapCaretToMdOffset(
   // 把可视偏移比例落到 mdast 块：从内容开头前进 ratio*normLen 个可视字符，
   // advanceVisible 跳过 \r，返回与 textarea 同一 offset 体系（含 \r）的位置
   const normLen = normText(md.text).length;
-  return Math.min(
+  // 空块（如空脚注定义 `[^1]:`、空表格单元格）：两侧都无文本，比例恒 0，
+  // 上面的估算会落到 textStart——脚注的 textStart 是 `[`（行首），表现为
+  // 「切源码后光标停在 [^1]: 前面」。空内容本无块内位置可分，直接落到
+  // 块尾 = 内容起点（`:` 之后），源码里在此输入即进入脚注内容。
+  if (textLen === 0 && normLen === 0) return md.end;
+  // PM 空块但 md 侧没有对应空块（配对降级到有内容的块）：常见于文末空段落
+  // （回车后未输入就切源码）、[toc] 后新起的空段落等。空块内部没有可量化的
+  // 位置，若光标在它内容区且它是文档最后一块，源码里唯一合理锚点是「文本
+  // 末尾」——否则比例估算会落到降级块的 textStart（[toc] 的 `[` 前 / 文首）。
+  if (
+    textLen === 0 &&
+    pos >= target.pos + 1 &&
+    target === docBlocks[docBlocks.length - 1]
+  ) {
+    return markdown.length;
+  }
+  const _f = Math.min(
     md.end,
     Math.max(md.start, advanceVisible(markdown, md.textStart, Math.round(ratio * normLen)))
   );
+  return _f;
 }
 
 /**
@@ -906,12 +1084,29 @@ function mapMdOffsetToDocPos(
   // mdast 侧找包含 offset 的块；落在块间/末尾空行取最近的左侧块；落在最前取第一块
   // 同 mapCaretToMdOffset：解析前先防无闭合围栏的开头 --- 误吞（*** 与 --- 等长）
   const remark = ctx.get(remarkCtx);
+  const ast = remark.parse(guardUnclosedFrontmatter(markdown)) as MdNode;
   const mdBlocks: MdLeafBlock[] = [];
-  collectMdLeafBlocks(
-    remark.parse(guardUnclosedFrontmatter(markdown)) as MdNode,
-    mdBlocks,
-    markdown
-  );
+  collectMdLeafBlocks(ast, mdBlocks, markdown);
+  // [toc] 反向对称处理：toc 在 mdast 侧不进 mdBlocks（见 MD_LEAF_BLOCK_TYPES），
+  // 源码里 [toc] 行是「空洞」。若 offset 落在 [toc] 行（含）到「下一个 md 块起点」
+  // 之间（即 toc 之后的空白/空洞区；toc 为文档末尾时不存在下一个 md 块，nextMdStart
+  // 为 Infinity），光标应置于该 toc 节点之后。这样既能修正「输入 [toc] 后切源码再切
+  // 回，光标跑 toc 前面」的问题，也覆盖「文档仅含 [toc]」这种 mdBlocks 为空的场景
+  // （故本分支须放在 mdBlocks 空检查之前）。当 offset 已深入 toc 之后的真实内容块时，
+  // 交给下方通用逻辑以保持块内精度。
+  const tocRanges = collectSourceTocRanges(markdown);
+  const lastTocDoc = [...docBlocks]
+    .reverse()
+    .find((b) => b.node.type.name === "toc");
+  const lastTocSrc = tocRanges.length ? tocRanges[tocRanges.length - 1] : null;
+  if (lastTocDoc && lastTocSrc && offset >= lastTocSrc.start) {
+    const nextMdStart = mdBlocks
+      .filter((b) => b.start > lastTocSrc.start)
+      .reduce((m, b) => Math.min(m, b.start), Infinity);
+    if (offset < nextMdStart) {
+      return lastTocDoc.pos + lastTocDoc.size;
+    }
+  }
   if (mdBlocks.length === 0) return null;
   let target: MdLeafBlock = mdBlocks[mdBlocks.length - 1];
   for (const b of mdBlocks) {
@@ -953,10 +1148,11 @@ function mapMdOffsetToDocPos(
   // （CRLF 文件加载的代码块文本含 \r，直接加可视偏移会少算）。
   const docTextLen = normText(docBlock.text).length;
   const docRawWithin = visibleSpanRaw(docBlock.text, Math.round(docTextLen * ratio));
-  return Math.max(
+  const _r = Math.max(
     docBlock.pos,
     Math.min(docBlock.pos + docBlock.size, docBlock.pos + 1 + docRawWithin)
   );
+  return _r;
 }
 
 /** 安全地派发选区：位置按当前文档长度收敛并兜底异常，避免越界抛错 */
@@ -979,6 +1175,26 @@ function dispatchSelectionSafely(
     /* 文档已变动导致位置失效，忽略 */
     return false;
   }
+}
+
+/**
+ * 文档末尾若是块级原子（如 toc、独立图片），其「之后」不是一个合法的文本光标位，
+ * ProseMirror 会把光标吸附到前一块末尾（原子上一行）。此时插入一个空段落承接光标，
+ * 使其真正落在原子之后、可继续输入；返回修正后的光标位置。
+ * 仅当目标位置恰好等于文档末尾（原子之后）才处理，其余位置原样返回。
+ */
+function ensureTrailingParagraphForCaret(view: EditorView, pos: number): number {
+  const doc = view.state.doc;
+  if (pos !== doc.content.size) return pos; // 不在文档末尾（原子之后），无需处理
+  const last = doc.lastChild;
+  if (!last || last.isTextblock) return pos; // 末尾已是文本块，位置合法
+  const paraType = view.state.schema.nodes.paragraph;
+  if (!paraType) return pos;
+  const para = paraType.createAndFill();
+  if (!para) return pos;
+  const tr = view.state.tr.insert(doc.content.size, para);
+  view.dispatch(tr);
+  return tr.doc.content.size - para.nodeSize + 1; // 新段落内容起点
 }
 
 /** 请求把当前选区滚动到可见（不改变选区本身） */
@@ -1085,6 +1301,7 @@ function stabilizeSelection(view: EditorView, start: number, end: number): void 
  * 同文本序优先、整体序号降级，失败时保持原光标位置不变。
  * @param markdown 源码 textarea 中的文本（与编辑器当前内容一致）
  */
+
 export function setCaretByMarkdownOffset(
   editor: Editor,
   markdown: string,
@@ -1103,7 +1320,10 @@ export function setCaretByMarkdownOffset(
     if (docSize <= 0) return;
     const pos = mapMdOffsetToDocPos(view, ctx, markdown, offset);
     if (pos == null) return;
-    dispatchSelectionSafely(view, pos, pos, true);
+    // 文档末尾非文本原子（如 toc）之后不是合法光标位，PM 会吸附到上一行；
+    // 插入空段落承接，让光标真正落在原子之后。
+    const caretPos = ensureTrailingParagraphForCaret(view, pos);
+    dispatchSelectionSafely(view, caretPos, caretPos, true);
     view.focus();
     // 可视化容器可能刚从 display:none 恢复（退出源码模式），首帧布局尚未稳定，
     // scrollIntoView 算不出位置，下一帧补一次滚动
@@ -1328,6 +1548,10 @@ export function createEditor(
           `^${state.containerPhrasing(node, info)}^`,
         subscript: (node, _parent, state, info) =>
           `~${state.containerPhrasing(node, info)}~`,
+        // 下划线 <u>…</u>（underline.ts）：序列化回行内 HTML 源码，
+        // 不引入新语法，外部编辑器也能正常显示。
+        underline: (node, _parent, state, info) =>
+          `<u>${state.containerPhrasing(node, info)}</u>`,
         list: customListHandler,
         strong: customStrongHandler,
         emphasis: customEmphasisHandler,
@@ -1384,7 +1608,7 @@ export function createEditor(
         // 与 getMarkdown 走同一清理逻辑，口径统一。
         ctx.get(listenerCtx).updated((ctx, doc) => {
           try {
-            onChange(cleanMarkdownTableBr(ctx.get(serializerCtx)(doc)));
+            onChange(cleanMarkdownBr(ctx.get(serializerCtx)(doc)));
           } catch {
             /* 极端结构序列化失败时跳过本次回调，避免脏检查被拖垮 */
           }

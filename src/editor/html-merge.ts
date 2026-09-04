@@ -63,7 +63,18 @@ function mergeInlineHtml(children: MarkdownNode[]): MarkdownNode[] {
       merged.push(node);
       continue;
     }
-    const inner = children.slice(i + 1, closeIdx).map(nodeRawText).join("");
+    const innerNodes = children.slice(i + 1, closeIdx);
+    // <u>text</u>：识别成下划线 mark（underline.ts），md 源码仍保持 <u>…</u>
+    // 形态（不引入新语法、跨工具兼容），但编辑器内是可编辑 / 可撤销的 mark。
+    // 仅当内部不再嵌套 html 标签时转 mark（u 标签带属性也转，序列化回 <u>text</u>
+    // 时属性自然丢弃——u 实际很少带属性）；嵌套等复杂形态退回下方
+    // "合并为行内 html 节点"的原逻辑（由 html-view 按白名单渲染）。
+    if (tag === "u" && innerNodes.length > 0 && innerNodes.every((c) => c.type !== "html")) {
+      merged.push({ type: "underline", children: innerNodes });
+      i = closeIdx;
+      continue;
+    }
+    const inner = innerNodes.map(nodeRawText).join("");
     merged.push({ type: "html", value: `${node.value}${inner}${closeTag}` });
     i = closeIdx;
   }

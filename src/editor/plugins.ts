@@ -35,6 +35,7 @@ import { highlightPlugins } from "./highlight";
 import { scriptPlugins } from "./script";
 import { htmlView } from "./html-view";
 import { htmlMergePlugins } from "./html-merge";
+import { underlinePlugins } from "./underline";
 import { htmlBlockPlugins } from "./html-block";
 import { imageView } from "./image-view";
 import { listItemPlugins } from "./list-item";
@@ -47,7 +48,9 @@ import { codeBlockComponent } from "@milkdown/components/code-block";
 import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
 import { tableMenuPlugin } from "./table-menu";
+import { formatMenuPlugin } from "./format-menu";
 import { slashMenuPlugin } from "./slash-menu";
+import { footnotePlugins } from "./footnote";
 import { atomBlockDeletePlugin } from "./atom-block-delete";
 import { blockExitPlugin, codeBlockExitClickPlugin } from "./block-exit";
 import { findReplacePlugin } from "./find-replace";
@@ -117,6 +120,10 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 表格 / 任务列表 / 脚注 / 删除线等 GFM 支持（remark-gfm 与删除线输入
     // 规则已替换为只认 ~~ 的严格版，单波浪 ~ 让给下标，见 script.ts）
     ...gfmPlugins,
+    // 脚注的「添加入口 + 点击跳转 + Ctrl+Alt+F」。
+    // 节点本身（footnote_reference / footnote_definition）由上面的 gfmPlugins
+    // 注册，解析与序列化也由它负责，所以必须排在其后；本插件只补交互。
+    ...footnotePlugins,
     ...history,
     // 只取 @milkdown/plugin-math 的 inline 部分（remark-math + katex 配置 + 行内公式 schema/输入规则），
     // block 公式完全由本项目自定义的 mathBlockPlugins 接管，避免官方 schema.toDOM 自带 KaTeX 导致的双重渲染。
@@ -129,6 +136,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...diagram,
     diagramView,
     gapcursorPlugin,
+    // 右键格式菜单必须排在 tableMenuPlugin 之前：单元格内右键落在文字选区上时
+    // 由本菜单接管（给选中的文字套格式），其余表格内右键才让位给表格菜单
+    formatMenuPlugin,
     tableMenuPlugin,
     findReplacePlugin,
     // 必须排在 findReplacePlugin 之后：查找栏打开时 Esc 先用于关闭查找栏，
@@ -149,6 +159,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     htmlView,
     imageView,
     ...htmlMergePlugins,
+    // 下划线 <u>…</u>：html-merge 解析出 underline 节点后需要对应 mark schema
+    // 承接（见 underline.ts）。mark schema 注册顺序不影响解析链。
+    ...underlinePlugins,
     ...htmlBlockPlugins,
     ...listItemPlugins,
     ...frontmatterPlugins,

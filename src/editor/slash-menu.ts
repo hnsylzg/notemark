@@ -43,9 +43,7 @@ import { alertSchema } from "./alert";
 import { tocSchema } from "./toc";
 import { frontmatterSchema } from "./frontmatter";
 import { htmlBlockSchema } from "./html-block";
-import { highlightSchema } from "./highlight";
 import { diagramSchema } from "@milkdown/plugin-diagram";
-import { mathInlineSchema } from "@milkdown/plugin-math";
 import { setSelectionAfterBlock } from "./block-exit";
 
 /** 需要宿主环境（App.vue）处理的动作 */
@@ -105,12 +103,13 @@ let currentCtx: Ctx;
 let imeComposing = false;
 
 /**
- * 持续输入的行内 mark（典型是行内代码）。
+ * 持续输入的行内 mark。
  *
- * inlineCode 的 inclusive 为 false——光标停在代码内容末尾时，后续输入
- * 不会继承该 mark，表现为"输入第一个字符后就退出行内代码"。
- * 这里记住 mark 类型，由 handleTextInput 给后续每个字符显式补 mark，
- * 从而能连续输入代码内容。按方向键 / Enter / Esc 或点到别处即退出。
+ * 注：本项目中所有 format mark 都是 inclusive:true（行内代码已在
+ * plugins.ts 通过 inlineCodeInclusiveSchema 覆盖成 inclusive:true）。
+ * 因此非包含型补 mark 的路径在当前 schema 下不会触发——行内代码的
+ * 连续输入改由"空光标强制写 storedMarks + inclusive 自然继承"实现。
+ * 此函数保留作通用兜底（理论上仍可服务任何 inclusive:false 的 mark）。
  */
 /**
  * 保存完整的 mark【实例】而不是 MarkType：
@@ -338,8 +337,9 @@ function setBlockAt(type: NodeType, attrs: Record<string, unknown> | null): Comm
 /**
  * 开启"持续输入"模式并应用 mark。
  *
- * 只用于 inclusive === false 的 mark（如 inlineCode）：这类 mark 在光标位于
- * 内容末尾时不会被继承，必须靠后续逐字符补 mark 才能连续输入。
+ * 用于后续逐字符补 mark 的场景。本项目中所有 format mark 均为
+ * inclusive:true（含被覆盖成 inclusive 的行内代码），该路径当前不触发，
+ * 仅作通用兜底保留。
  */
 function startContinuousMark(type: MarkType): Command {
   return (state, dispatch) => {
@@ -867,8 +867,6 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
   const yaml = frontmatterSchema.type(ctx) as NodeType;
   const htmlBlock = htmlBlockSchema.type(ctx) as NodeType;
   const diagram = diagramSchema.type(ctx) as NodeType;
-  const highlight = highlightSchema.type(ctx) as unknown as MarkType;
-  const mathInline = mathInlineSchema.type(ctx) as NodeType;
 
   /** 内置节点通过 schema 名取（commonmark / gfm 已确认命名） */
   const builtin = (view: EditorView) => view.state.schema;
@@ -887,42 +885,6 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
     const type = builtin(args.view).nodes[name];
     if (!type) return;
     runWithDelete(args.view, args.from, args.to, wrapInList(type));
-  };
-
-  /**
-   * 只有【非包含型】mark 才用持续输入模式接管逐字符输入。
-   *
-   * 包含型 mark（加粗/斜体/删除线/高亮）绝不能接管：接管意味着
-   * handleTextInput 直接 return true，Milkdown 的输入规则就没机会执行了——
-   * 于是用户敲 == 想结束高亮时，这对 == 不会被 highlightInputRule 转换，
-   * 反而原样写进正文，看起来就像"莫名其妙多了 ==".
-   * 包含型 mark 靠 inclusive 自然继承即可持续，退出交给 Esc（通用退出）。
-   */
-  const markOf = (type: MarkType): Command =>
-    type.spec.inclusive === false ? startContinuousMark(type) : toggleMark(type);
-
-  /** 应用 mark；若因此进入持续输入模式，显示"怎么退出"的提示气泡 */
-  const applyMark = (
-    args: SlashCommandRunArgs,
-    type: MarkType,
-    label: string
-  ): void => {
-    runWithDelete(args.view, args.from, args.to, markOf(type));
-    // 一律提示退出方式：包含型 mark 虽没进持续模式，但同样会一直继承下去，
-    // 用户照样需要知道按 Esc 能退出。
-    showContinuousHint(args.view, label);
-  };
-
-  const mark = (name: string, label: string) => (args: SlashCommandRunArgs) => {
-    const type = builtin(args.view).marks[name];
-    if (!type) return;
-    applyMark(args, type, label);
-  };
-
-  const customMark = (type: MarkType, label: string) => (
-    args: SlashCommandRunArgs
-  ) => {
-    applyMark(args, type, label);
   };
 
   const customBlock = (type: NodeType, attrs?: Record<string, unknown>) => (
@@ -1009,25 +971,6 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
     });
   };
 
-  /**
-   * 行内公式：math_inline 是「行内原子节点」（不是 mark），不能用 applyMark
-   * 插入。直接在光标处插入一个空 math_inline 节点；编辑框由 mathInlineView
-   * 接管，用户点一下该公式即可进入编辑（行为同公式块）。
-   */
-  const insertInlineMath = (type: NodeType) => (
-    args: SlashCommandRunArgs
-  ) => {
-    runWithDelete(args.view, args.from, args.to, (state, dispatch) => {
-      const node = type.create(null);
-      const pos = state.selection.from;
-      const tr = state.tr.insert(pos, node);
-      // 关闭自动进入编辑：先让编辑器稳定收下节点，用户点公式即可编辑
-      tr.setSelection(TextSelection.create(tr.doc, pos + node.nodeSize));
-      if (dispatch) dispatch(tr.scrollIntoView());
-      return true;
-    });
-  };
-
   const commands: SlashCommand[] = [
     // ---------- 基础 ----------
     { id: "text", title: "正文", icon: "¶", group: "基础", keywords: ["text", "p", "zhengwen", "正文", "段落"], run: block("paragraph") },
@@ -1098,7 +1041,6 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
       },
     },
     { id: "math", title: "公式块", hint: "$$", icon: "∑", group: "高级", keywords: ["math", "gongshi", "公式", "公式块", "数学公式"], run: customBlock(mathBlock) },
-    { id: "imath", title: "行内公式", hint: "$", icon: "∑", group: "高级", keywords: ["imath", "inline", "行内公式", "行内数学"], run: insertInlineMath(mathInline) },
     { id: "diagram", title: "流程图", hint: "mermaid", icon: "◫", group: "高级", keywords: ["mermaid", "diagram", "liuchengtu", "流程图", "图表"], run: customBlock(diagram, { value: "graph TD\n  A[开始] --> B[结束]" }) },
     {
       id: "alert-note",
@@ -1172,14 +1114,15 @@ function buildCommands(ctx: Ctx): SlashCommand[] {
       keywords: ["frontmatter", "yaml", "元数据", "头部", "front"],
       run: insertFrontmatter(yaml),
     },
+    // 行内格式（加粗/斜体/删除线/行内代码/高亮）已整体移到右键菜单
+    //（format-menu.ts）——选中文字后点右键即可转换，不再需要行首 "/"。
+    // 上标/下标/下划线、图片/链接 的右键入口见 format-menu.ts；
+    // 行内公式与脚注同样只在右键菜单：它们要落在正文光标处，而 "/" 只在
+    // 段落开头触发（见上方 handleTextInput 的 parentOffset === 0），
+    // 一句话写到一半时根本弹不出菜单，放这里只会误导。
+    // "/" 里保留图片、链接、日期这三个「插入」命令。
 
-    // ---------- 行内格式 ----------
-    { id: "bold", title: "加粗", hint: "**", icon: "B", group: "格式", keywords: ["bold", "b", "jiacu", "加粗", "粗体"], run: mark("strong", "加粗") },
-    { id: "italic", title: "斜体", hint: "*", icon: "I", group: "格式", keywords: ["italic", "i", "xieti", "斜体", "倾斜"], run: mark("emphasis", "斜体") },
-    { id: "strike", title: "删除线", hint: "~~", icon: "S", group: "格式", keywords: ["strike", "s", "del", "shanchuxian", "删除线"], run: mark("strike_through", "删除线") },
-    { id: "inlineCode", title: "行内代码", hint: "`", icon: "`", group: "格式", keywords: ["inline", "icode", "行内代码"], run: mark("inlineCode", "行内代码") },
-    { id: "highlight", title: "高亮", hint: "==", icon: "▬", group: "格式", keywords: ["hl", "highlight", "gaoliang", "高亮", "标记"], run: customMark(highlight, "高亮") },
-
+    // ---------- 插入 ----------
     // ---------- 插入 ----------
     {
       id: "image",
@@ -1660,3 +1603,57 @@ export const slashMenuPlugin = $prose((ctx) => {
     },
   });
 });
+
+// ==================== 供右键格式菜单复用（format-menu.ts） ====================
+// 行内格式已从 "/" 移到右键菜单，但持续输入状态机仍挂在本插件的
+// handleTextInput / handleKeyDown 上（与菜单是否打开无关）。右键菜单只需
+// "启动"持续输入，后续逐字符补 mark、Esc 退出等仍由这里接管，行为完全一致。
+
+/** 对当前选区/光标应用行内格式（不删除文本，与 / 命令行为一致）。
+ * 非空选区 = toggle 该格式；空选区 = 开启持续输入（后续字符带格式，
+ * 按 Esc 退出）。inclusive:false 的 mark（如行内代码）进入逐字符补 mark
+ * 的持续模式，由本插件的 handleTextInput 托管。 */
+export function applyFormatMark(
+  view: EditorView,
+  markName: string,
+  label: string
+): void {
+  const type = view.state.schema.marks[markName];
+  if (!type) return;
+  view.focus();
+  // 只有空选区才进入持续输入：非空选区 toggle 是一次性修改，改完即生效，
+  // 弹"输入中"气泡既与事实不符，还会作为旧气泡停驻在原地误导用户。
+  const { empty } = view.state.selection;
+  if (empty) {
+    // 无选区：开启持续输入。本项目所有 format mark 均为 inclusive:true
+    // （行内代码在 plugins.ts 被覆盖成 inclusive:true），故恒走
+    // "强制写 storedMarks" 分支；下方 inclusive===false 分支为防御性兜底，
+    // 当前 schema 下不会命中。
+    // 为何强制写而非 toggleMark：行首右键时 posAtCoords 常落在块边界
+    // （上一块末尾），$from.marks() 带着前一段的尾格式，markIsActive 会误判
+    // 为"已激活"而反向删除，导致打字不带格式。强制写可避免该误判，
+    // 且 inclusive:true 让首字符后输入自然继承、不会断。
+    if (type.spec.inclusive === false) {
+      startContinuousMark(type)(view.state, view.dispatch);
+    } else {
+      const base = view.state.storedMarks ?? view.state.selection.$from.marks();
+      const next = type.isInSet(base) ? base : base.concat(type.create());
+      view.dispatch(view.state.tr.setStoredMarks(next));
+    }
+    showContinuousHint(view, label);
+    return;
+  }
+  const cmd =
+    type.spec.inclusive === false ? startContinuousMark(type) : toggleMark(type);
+  cmd(view.state, view.dispatch);
+}
+
+/** 供右键菜单复用：打开宿主（App.vue）注册的图片选择对话框，插图到 pos */
+export function openImagePicker(view: EditorView, pos: number): void {
+  actionHandler?.("image", view, pos);
+}
+
+/** 供右键菜单复用：在光标处插入占位链接文本并弹地址输入框（行为同 /链接） */
+export function promptLinkUrlDialog(view: EditorView, label: string): void {
+  promptLinkUrl(view, label);
+}

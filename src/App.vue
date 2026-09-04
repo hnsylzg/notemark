@@ -8,6 +8,7 @@ import {
   createEditor,
   installSurroundFocusGuard,
   getMarkdown,
+  docEqualsBaseline,
   setMarkdown,
   wysiwygSelectionToMarkdownOffsets,
   setCaretByMarkdownOffset,
@@ -19,7 +20,7 @@ import {
   coordsAtPos,
   focusEditorStart,
   mergeMarkdown,
-  cleanMarkdownTableBr,
+  cleanMarkdownBr,
 } from "@/editor/index";
 import type { HeadingItem } from "@/editor/index";
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
@@ -487,7 +488,12 @@ function onSourceInput(e: Event) {
  */
 function getVisualContent(): string {
   if (!editorInstance) return "";
-  if (visualEdited) {
+  // visualEdited 由 200ms 防抖的 markdownUpdated 回调置位（@milkdown/plugin-listener
+  // 内部 debounce），打字后立即切源码 / 打开文件后立即输入时可能尚未置位，会漏掉
+  // 刚输入的内容。docEqualsBaseline 是同步判据（当前文档是否偏离 rawContent 基线），
+  // 与 visualEdited 取或：任何时刻切换源码模式都能拿到最新编辑，不会丢字。
+  const edited = visualEdited || !docEqualsBaseline(editorInstance, rawContent.value);
+  if (edited) {
     return mergeMarkdown(rawContent.value, getMarkdown(editorInstance));
   }
   return rawContent.value;
@@ -513,7 +519,7 @@ function normalizeMarkdown(md: string): string {
     try {
       // 与 getMarkdown 走同一清理：脏检查基准必须和 markdownUpdated 回调一致，
       // 否则表格空单元格的 <br /> 占位差异会让打开的文件被误报“未保存修改”。
-      return cleanMarkdownTableBr(serializer(parser(md)));
+      return cleanMarkdownBr(serializer(parser(md)));
     } catch {
       return md;
     }
@@ -687,7 +693,8 @@ async function getFileMtime(path: string): Promise<number | null> {
 async function reloadFromDisk(path: string) {
   const content = await readMarkdownFile(path);
   const name = path.split(/[\\/]/).pop() || path;
-  await loadFileIntoEditor(path, name, content);
+  // 静默重载（外部改动 / 保存后回灌）不该把用户正在写的位置弄丢：保留光标
+  await loadFileIntoEditor(path, name, content, { keepCaret: true });
 }
 
 /** 让后端监听当前文档（切换文档时重复调用即可，后端会先停掉上一个） */
@@ -696,6 +703,11 @@ async function startWatching(path: string) {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("watch_doc", { path });
+    // 订阅完成后后端可能补发一次初始事件（自身写盘 / 重订阅都会触发）。
+    // 在写盘后一连串 await（扫描目录、写最近文件、取 mtime）之后才到这里，
+    // 之前设置的静默期很可能已过期——这里再静默一小段，否则「保存完光标
+    // 跳到文末脚注」这类自家事件会被当成外部改动触发重载。
+    suppressExternalUntil = Math.max(suppressExternalUntil, Date.now() + 2000);
   } catch (e) {
     console.warn("[NoteMark] watch_doc failed:", e);
   }
@@ -772,7 +784,12 @@ async function onExternalFileChanged() {
  * 把文件内容载入编辑器，并同步标题、脏标记、侧边栏与最近文件列表。
  * 「打开对话框」与「最近打开」两个入口共用这段逻辑，避免行为分叉。
  */
-async function loadFileIntoEditor(path: string, name: string, content: string) {
+async function loadFileIntoEditor(
+  path: string,
+  name: string,
+  content: string,
+  opts?: { keepCaret?: boolean }
+) {
   if (!editorInstance) return;
   currentPath.value = path;
   fileMissing.value = false;
@@ -786,7 +803,9 @@ async function loadFileIntoEditor(path: string, name: string, content: string) {
   // setMarkdown 触发的 markdownUpdated 是异步回调，届时 sourceMode 可能已变，
   // 用 pendingApply 标记让该回调命中「应用了原文」分支，不置 visualEdited。
   pendingApply = content;
-  await setMarkdown(editorInstance, content);
+  // 静默重载（外部改动 / 保存后回灌）传 keepCaret，保留用户光标位置；
+  // 打开文件等首次载入不传，由调用方决定光标（如 focusEditorStart）。
+  await setMarkdown(editorInstance, content, { keepCaret: opts?.keepCaret });
   updateTitle(name);
   // 快照必须用"编辑器序列化结果"而非文件原文：
   // setMarkdown 会触发 markdownUpdated，其回调拿到的文本是序列化结果，
@@ -828,15 +847,20 @@ async function handleOpen() {
  *
  * @param opts.force 跳过"文件已被外部修改"的兜底确认。由冲突对话框里
  *   用户已明确选择「保存」的路径传入，避免同一件事问两遍。
+ * @param opts.saveAs 强制弹「另存为」对话框，把当前内容写为一份新文件
+ *   （复制）。目标路径由用户在对话框中显式选定——即使落回原路径也视为
+ *   用户主动覆盖，因此跳过下方针对原路径的外部修改兜底检查。
  */
-async function handleSave(opts?: { force?: boolean }): Promise<boolean> {
+async function handleSave(opts?: { force?: boolean; saveAs?: boolean }): Promise<boolean> {
   if (!isTauri || !editorInstance) return false;
   try {
     const content = getCurrentContent();
     const path = currentPath.value;
     // 兜底：后端监听可能失效（网络盘 / 部分文件系统 / 事件丢失），而"保存"
-    // 是唯一会造成破坏的时刻，因此这里再查一次 mtime。
-    if (!opts?.force && path && lastSyncedMtime !== null) {
+    // 是唯一会造成破坏的时刻，因此这里再查一次 mtime。另存为跳过该检查：
+    // 目标是新路径时与原文件外部状态无关，落回原路径时用户在对话框中
+    // 已显式确认过目标文件。
+    if (!opts?.force && !opts?.saveAs && path && lastSyncedMtime !== null) {
       const mtime = await getFileMtime(path);
       if (mtime !== null && mtime > lastSyncedMtime) {
         const name = path.split(/[\\/]/).pop() || path;
@@ -853,7 +877,7 @@ async function handleSave(opts?: { force?: boolean }): Promise<boolean> {
     // 文件已被外部删除时按 Typora 的做法：弹出预填原名的保存框，由用户
     // 确认写到哪里，而不是悄悄在原路径重建。
     const result = await saveFile(content, path, {
-      forceDialog: fileMissing.value,
+      forceDialog: !!opts?.saveAs || fileMissing.value,
       defaultPath: path ?? undefined,
     });
     if (!result) return false; // 用户取消
@@ -868,6 +892,13 @@ async function handleSave(opts?: { force?: boolean }): Promise<boolean> {
     // 保存的内容成为新的原文基线（源码模式下即用户草稿，排版原样保留）
     rawContent.value = content;
     visualEdited = false;
+    // 保存已落盘：立刻刷新 mtime 基准并延长静默期，覆盖后续一连串 await
+    // （扫目录 / 写最近文件 / 重新订阅）。否则这些操作耗时一旦超过 saveFile
+    // 前设的 2 秒静默期，自家写盘事件会被当成「外部改动」触发静默重载，
+    // 整树替换把光标冲到文末脚注（见 setMarkdown 的 keepCaret）。
+    // 先刷新基准：即便事件姗姗来迟（超过静默期），mtime 已等于新值 → 直接 return。
+    lastSyncedMtime = await getFileMtime(result.path);
+    suppressExternalUntil = Date.now() + 3000;
     // 另存为/首次保存：侧边栏同步到新文件所在目录，使新文件出现在列表中
     await syncWorkspaceToFile(result.path);
     // 首次保存 / 另存为产生的新路径也应进入「最近打开」
@@ -875,8 +906,6 @@ async function handleSave(opts?: { force?: boolean }): Promise<boolean> {
       path: result.path,
       name: result.name,
     });
-    // 保存本身会改 mtime，同步基准，否则保存后切窗口会被误判成"外部修改"
-    lastSyncedMtime = await getFileMtime(result.path);
     // 路径可能已变（首次保存 / 另存为 / 文件被删后存到别处）：重新监听新路径
     await startWatching(result.path);
     return true;
@@ -885,6 +914,13 @@ async function handleSave(opts?: { force?: boolean }): Promise<boolean> {
     alert(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
+}
+
+/** 另存为：强制弹「另存为」对话框，把当前内容保存为一份新文件（复制）。
+ * 落盘后的标题 / 脏标记 / 侧边栏 / 最近打开 / 文件监听等同步全部由
+ * handleSave 完成，因此这里只是带 saveAs 标志转发。 */
+async function handleSaveAs(): Promise<boolean> {
+  return handleSave({ saveAs: true });
 }
 
 // ==================== 原生拖放（图片插入 / 文档打开） ====================
@@ -1642,6 +1678,22 @@ function toggleRecentMenu() {
   recentMenuOpen.value = !recentMenuOpen.value;
 }
 
+/** 保存拆分按钮的「另存为」下拉菜单是否展开 */
+const saveMenuOpen = ref(false);
+/** 保存拆分按钮容器（点击外部时收起菜单） */
+const saveMenuWrap = ref<HTMLElement | null>(null);
+
+/** 展开 / 收起「另存为」下拉菜单 */
+function toggleSaveMenu() {
+  saveMenuOpen.value = !saveMenuOpen.value;
+}
+
+/** 执行另存为并收起下拉菜单 */
+async function runSaveAs() {
+  saveMenuOpen.value = false;
+  await handleSaveAs();
+}
+
 /**
  * 打开最近列表中的某个文件。
  * 文件已失效（被删除/移动）时提示并从列表移除，避免留下打不开的死条目。
@@ -1922,6 +1974,9 @@ function onDocumentClick(e: MouseEvent) {
   if (recentMenuOpen.value && !recentMenuWrap.value?.contains(e.target as Node)) {
     recentMenuOpen.value = false;
   }
+  if (saveMenuOpen.value && !saveMenuWrap.value?.contains(e.target as Node)) {
+    saveMenuOpen.value = false;
+  }
   // 编辑器内点击超链接：交给系统浏览器打开
   const target = e.target as Element | null;
   const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
@@ -2049,9 +2104,13 @@ function onKeydown(e: KeyboardEvent) {
   } else if (key === "o") {
     e.preventDefault();
     handleOpen();
-  } else if (key === "s") {
+  } else if (key === "s" && !e.shiftKey) {
     e.preventDefault();
     handleSave();
+  } else if (key === "s" && e.shiftKey) {
+    // 另存为（浏览器默认无此组合，不影响）
+    e.preventDefault();
+    handleSaveAs();
   } else if (key === "n") {
     e.preventDefault();
     handleNew();
@@ -2143,7 +2202,9 @@ onMounted(() => {
             DROP_IMAGE_EXT.test(p)
           );
           if (paths.length === 0) return;
-          importImagePaths(editorInstance, paths, pos);
+          // 右键插图：插完把光标放到图片之后，并把焦点还给编辑器
+          // （拖放走另一条路 handleFileDrop，那里刻意不移动光标）
+          importImagePaths(editorInstance, paths, pos, true);
         });
 
         // 真正创建编辑器（视图在这里挂载）
@@ -2417,18 +2478,38 @@ onBeforeUnmount(() => {
             <div v-else class="mt-theme-menu__empty">（暂无记录）</div>
           </div>
         </div>
-        <button
-          class="mt-btn mt-btn--icon"
-          title="保存"
-          aria-label="保存"
-          @click="handleSave()"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-            <polyline points="17 21 17 13 7 13 7 21" />
-            <polyline points="7 3 7 8 15 8" />
-          </svg>
-        </button>
+        <div ref="saveMenuWrap" class="mt-split">
+          <button
+            class="mt-btn mt-btn--icon mt-split__main"
+            title="保存 (Ctrl+S)"
+            aria-label="保存"
+            @click="handleSave()"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <polyline points="17 21 17 13 7 13 7 21" />
+              <polyline points="7 3 7 8 15 8" />
+            </svg>
+          </button>
+          <button
+            class="mt-btn mt-btn--icon mt-split__arrow"
+            title="另存为 (Ctrl+Shift+S)"
+            aria-label="另存为"
+            :aria-expanded="saveMenuOpen"
+            @click.stop="toggleSaveMenu"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          <div v-if="saveMenuOpen" class="mt-theme-menu" role="menu">
+            <button
+              class="mt-theme-menu__item"
+              role="menuitem"
+              @click="runSaveAs"
+            >另存为…</button>
+          </div>
+        </div>
         <div ref="exportMenuWrap" class="mt-theme-wrap">
           <button
             class="mt-btn mt-btn--icon"

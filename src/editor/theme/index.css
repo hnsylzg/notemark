@@ -273,6 +273,31 @@ body,
   margin: 0;
 }
 
+/* ------------------------------------------------------------
+ * 脚注的可点击反馈（正文上标 ↔ 文末定义 互跳，见 footnote.ts）
+ *
+ * 上标是 atom 节点、定义编号 dt 是 toDOM 渲染出来的装饰，两者默认都
+ * 看不出能点，这里统一给「主题色 + 指针 + hover 下划线」，与链接的
+ * 视觉语言一致。同上面一样保持未分层 + .milkdown .editor 前缀。
+ * ------------------------------------------------------------ */
+.milkdown .editor sup[data-type="footnote_reference"] {
+  color: var(--mt-color-primary);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.milkdown .editor sup[data-type="footnote_reference"]:hover {
+  text-decoration: underline;
+}
+/* 覆盖上面 dt 的 color: var(--mt-text)：编号可点，跳回正文引用 */
+.milkdown .editor dl[data-type="footnote_definition"] dt {
+  cursor: pointer;
+  color: var(--mt-color-primary);
+}
+.milkdown .editor dl[data-type="footnote_definition"] dt:hover {
+  text-decoration: underline;
+}
+
 /* ============================================================
  * 目录（TOC）结构规则——必须未分层
  *

@@ -38,9 +38,34 @@ function cleanTableBrPlaceholders(line: string): string {
   return leading + "|" + cleaned.join("|") + "|" + trailing;
 }
 
-/** 清理 Markdown 文本里表格空单元格的 `<br />` 占位（序列化输出的统一后处理） */
-export function cleanMarkdownTableBr(md: string): string {
-  return md.split("\n").map(cleanTableBrPlaceholders).join("\n");
+/**
+ * 清理脚注定义行里「空段落」产生的 `<br />` 占位：`[^1]: <br />` → `[^1]:`
+ *
+ * 刚插入还没填内容的脚注 = 定义节点 + 一个空段落，而 paragraph 的 toMarkdown
+ * 遇到空段落会输出 `<br />`（见 preset-commonmark 的 shouldPreserveEmptyLine），
+ * 源码里于是出现 `[^1]: <br />`。这个占位没有任何语义：重新打开时它不会被
+ * 还原成"空脚注"，只会变成脚注正文里的一个换行，纯属噪声。
+ *
+ * 只摘「定义行里只剩这一个占位」的情况。用户在脚注正文中写的 `<br />`
+ * （如 `[^1]: 上<br />下`）行内还有其他内容，不会被正则命中。
+ * 同理不处理缩进续行里单独的 `<br />`：那可能是用户真实的空行分段。
+ */
+function cleanFootnoteBrPlaceholder(line: string): string {
+  // label 允许非数字（[^note]）；<br /> 的写法有 <br/>、<br>、<br > 等变体
+  return line.replace(/^(\s*\[\^[^\]\s]+\]:)[ \t]*<br\s*\/?>[ \t]*$/i, "$1");
+}
+
+/**
+ * 序列化输出的统一后处理：清掉 `<br />` 占位。
+ * 两类来源都在这里处理，保证保存 / 脏检查 / 导出三条路走同一口径：
+ *   1. 表格空单元格（GFM 空单元格本就是合法语法）；
+ *   2. 空脚注定义（`[^1]:` 后面多出一个 `<br />`）。
+ */
+export function cleanMarkdownBr(md: string): string {
+  return md
+    .split("\n")
+    .map((line) => cleanFootnoteBrPlaceholder(cleanTableBrPlaceholders(line)))
+    .join("\n");
 }
 
 /**

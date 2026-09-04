@@ -102,12 +102,23 @@ export const tocSchema = $nodeSchema(TOC_NAME, () => ({
 export const tocInputRule = $inputRule((ctx) => {
   const tocNodeType = tocSchema.type(ctx);
   return new InputRule(/^\[toc\]$/, (state, _match, start, end) => {
-    const tr = state.tr.delete(start, end).replaceWith(
-      start,
-      start,
-      tocNodeType.create(),
-    );
-    return tr;
+    const toc = tocNodeType.create();
+    let tr = state.tr.delete(start, end).replaceWith(start, start, toc);
+    // 解析后光标默认落在 toc 之前（被删文字的选区映射到插入点 start），
+    // 但输入 [toc] 后用户期望继续在「目录之后」打字，故显式把光标送到 toc 之后。
+    let after = start + toc.nodeSize;
+    // 若 toc 成为文档末尾（之后无文本块），其后不是合法光标位，PM 会吸附到
+    // 前一块末尾（toc 上一行）。补一个空段落承接，让光标真正落在 toc 之后。
+    const doc = tr.doc;
+    const last = doc.lastChild;
+    if (after >= doc.content.size && last && !last.isTextblock) {
+      const para = state.schema.nodes.paragraph.createAndFill();
+      if (para) {
+        tr = tr.insert(doc.content.size, para);
+        after = tr.doc.content.size - para.nodeSize + 1;
+      }
+    }
+    return tr.setSelection(TextSelection.near(tr.doc.resolve(after)));
   });
 });
 

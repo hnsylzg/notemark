@@ -24,6 +24,7 @@
 import type { Editor } from "@milkdown/kit/core";
 import { editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/prose/view";
+import { TextSelection } from "@milkdown/prose/state";
 import { getImageBaseDir } from "./image-view";
 
 /** 图片存放的子目录名（相对当前文档所在目录） */
@@ -33,18 +34,50 @@ const ASSETS_DIR = "assets";
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 /**
+ * 插入一张图片节点，返回它【之后】的文档位置（建不出节点时原样返回 at）。
+ *
+ * moveCaret 为真时光标跟着走到图片之后 —— image 是行内叶子节点，图后通常
+ * 还有文字或是段落末尾，TextSelection.near 能落到可输入位置。少了这一步，
+ * 插完图光标仍停在插入前的地方（选区还选着原来那段文字），用户接着打字会
+ * 把字写到图片【前面】去。
+ *
+ * 拖放场景刻意不移动光标（moveCaret = false）：图片落在鼠标松手处，而用户
+ * 可能正在文档别处打字，把光标抢过去会打断输入。
+ */
+function insertImageNode(
+  view: EditorView,
+  at: number,
+  src: string,
+  moveCaret: boolean
+): number {
+  const node = view.state.schema.nodes.image?.createAndFill({ src, alt: "" });
+  if (!node) return at;
+  const pos = Math.min(at, view.state.doc.content.size);
+  const tr = view.state.tr.insert(pos, node);
+  const after = pos + node.nodeSize;
+  if (moveCaret) {
+    tr.setSelection(TextSelection.near(tr.doc.resolve(after), 1));
+    tr.scrollIntoView();
+  }
+  view.dispatch(tr);
+  return after;
+}
+
+/**
  * 导入一批图片文件的统一入口。
  * @param anchorPos 插入起点：粘贴传光标位置，拖放传落点坐标换算出的位置
+ * @param moveCaret 插完是否把光标移到图片之后（粘贴要，拖放不要）
  */
 export function importImages(
   view: EditorView,
   files: File[],
-  anchorPos: number
+  anchorPos: number,
+  moveCaret = false
 ): void {
   // 非 Tauri（纯浏览器调试）写不了磁盘，直接内嵌 base64。
   // 必须排在「要求先保存」之前：浏览器里根本没有保存目录。
   if (!isTauri) {
-    void insertImageFiles(view, files, null, anchorPos);
+    void insertImageFiles(view, files, null, anchorPos, moveCaret);
     return;
   }
   const baseDir = getImageBaseDir();
@@ -54,7 +87,7 @@ export function importImages(
     );
     return;
   }
-  void insertImageFiles(view, files, baseDir, anchorPos);
+  void insertImageFiles(view, files, baseDir, anchorPos, moveCaret);
 }
 
 /**
@@ -65,19 +98,23 @@ async function insertImageFiles(
   view: EditorView,
   files: File[],
   baseDir: string | null,
-  anchorPos: number
+  anchorPos: number,
+  moveCaret: boolean
 ): Promise<void> {
   // 写文件期间用户可能继续输入，anchorPos 只能作为起点
   let pos = Math.min(anchorPos, view.state.doc.content.size);
+  let inserted = 0;
   for (const file of files) {
     const src = await saveImageFile(file, baseDir);
     if (!src) continue;
-    const node = view.state.schema.nodes.image?.createAndFill({ src, alt: "" });
-    if (!node) continue;
-    const at = Math.min(pos, view.state.doc.content.size);
-    view.dispatch(view.state.tr.insert(at, node));
-    pos = at + node.nodeSize;
+    const after = insertImageNode(view, pos, src, moveCaret);
+    if (after === pos) continue; // 建不出图片节点，位置不变
+    inserted += 1;
+    pos = after;
   }
+  // 选择器对话框 / 系统拖放都会让编辑器失焦，插完要把焦点交还给它，
+  // 否则光标虽然对了，键盘输入仍不在编辑器里
+  if (moveCaret && inserted > 0) view.focus();
 }
 
 /**
@@ -87,7 +124,8 @@ async function insertImageFiles(
 export function importImagePaths(
   editor: Editor,
   paths: string[],
-  anchorPos: number
+  anchorPos: number,
+  moveCaret = false
 ): void {
   const baseDir = getImageBaseDir();
   if (!baseDir) {
@@ -98,7 +136,7 @@ export function importImagePaths(
   }
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
-    void insertImagePaths(view, paths, baseDir, anchorPos);
+    void insertImagePaths(view, paths, baseDir, anchorPos, moveCaret);
   });
 }
 
@@ -107,18 +145,21 @@ async function insertImagePaths(
   view: EditorView,
   paths: string[],
   baseDir: string,
-  anchorPos: number
+  anchorPos: number,
+  moveCaret: boolean
 ): Promise<void> {
   let pos = Math.min(anchorPos, view.state.doc.content.size);
+  let inserted = 0;
   for (const path of paths) {
     const src = await saveImageFromPath(path, baseDir);
     if (!src) continue;
-    const node = view.state.schema.nodes.image?.createAndFill({ src, alt: "" });
-    if (!node) continue;
-    const at = Math.min(pos, view.state.doc.content.size);
-    view.dispatch(view.state.tr.insert(at, node));
-    pos = at + node.nodeSize;
+    const after = insertImageNode(view, pos, src, moveCaret);
+    if (after === pos) continue;
+    inserted += 1;
+    pos = after;
   }
+  // 同 insertImageFiles：右键插图要过系统文件对话框，插完必须把焦点还回来
+  if (moveCaret && inserted > 0) view.focus();
 }
 
 /** 读取磁盘上的图片并复制进 assets；失败返回 null（已提示用户） */

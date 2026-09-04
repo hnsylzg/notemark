@@ -21,7 +21,8 @@ export const imagePastePlugin = $prose(
           if (files.length === 0) return false; // 非图片粘贴，走默认流程
           event.preventDefault();
           // 保存是异步的，不能让 handlePaste 变成 async（PM 要求同步返回）
-          importImages(view, files, view.state.selection.from);
+          // 光标就在插入点：插完让光标跟着走到图片之后，接着打字在图后继续
+          importImages(view, files, view.state.selection.from, true);
           return true;
         },
       },

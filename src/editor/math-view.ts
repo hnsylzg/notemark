@@ -13,7 +13,7 @@
 import { $node, $view, $inputRule } from "@milkdown/utils";
 import { InputRule } from "@milkdown/prose/inputrules";
 import { TextSelection } from "@milkdown/prose/state";
-import type { NodeViewConstructor } from "@milkdown/prose/view";
+import type { EditorView, NodeViewConstructor } from "@milkdown/prose/view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { mathInlineSchema } from "@milkdown/plugin-math";
@@ -328,6 +328,50 @@ export const mathInlineView = $view(mathInlineSchema.node, () => {
   };
   return nodeView;
 });
+
+/**
+ * 在光标处插入一个空行内公式（math_inline），插完立即进入编辑。
+ *
+ * 入口在右键菜单（format-menu.ts）——行内公式要落在正文光标处，而斜杠菜单
+ * 只在段落开头触发，句末想插公式根本弹不出菜单，所以不放斜杠菜单。
+ *
+ * 插完自动进编辑，与「元数据 / HTML 块」的处理一致：空公式只是个
+ * "点击输入公式"的占位，不自动进编辑就得让用户再点一下。
+ * 拿不到节点 DOM（视图刚更新、位置已失效）时静默跳过，手动点一下同样能编辑。
+ */
+export function insertInlineMath(view: EditorView): boolean {
+  const type = view.state.schema.nodes["math_inline"];
+  if (!type) {
+    // eslint-disable-next-line no-console
+    console.warn("[math-view] schema 中找不到 math_inline 节点");
+    return false;
+  }
+  const { state } = view;
+  // 插在【选区末尾】：选中一段文字再插公式时，保留被选中的文字，不吞掉它
+  const at = TextSelection.near(state.doc.resolve(state.selection.to)).from;
+  const $at = state.doc.resolve(at);
+  // 行内公式是行内节点：代码块这类只允许纯文本的位置放不下
+  if (!$at.parent.canReplaceWith($at.index(), $at.index(), type)) return false;
+
+  const node = type.create(null);
+  const tr = state.tr.insert(at, node);
+  // 光标停在公式之后，方便接着写正文
+  tr.setSelection(TextSelection.create(tr.doc, at + node.nodeSize));
+  tr.scrollIntoView();
+  view.dispatch(tr);
+  view.focus();
+
+  requestAnimationFrame(() => {
+    try {
+      // nodeDOM 需要节点的起始位置（插入点即节点起点）
+      const dom = view.nodeDOM(at) as HTMLElement | null;
+      dom?.click?.();
+    } catch {
+      /* 视图已销毁或位置失效：不自动进编辑，手动点击仍可编辑 */
+    }
+  });
+  return true;
+}
 
 export const mathBlockPlugins = [
   mathBlockSchema,
