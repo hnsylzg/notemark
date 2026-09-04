@@ -130,6 +130,18 @@
   border-radius: 3px;
 }
 
+:where(.milkdown .editor) sup {
+  vertical-align: super;
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+:where(.milkdown .editor) sub {
+  vertical-align: sub;
+  font-size: 0.75em;
+  line-height: 0;
+}
+
 :where(.milkdown .editor) hr {
   border: none;
   border-top: 1px solid var(--mt-color-border);

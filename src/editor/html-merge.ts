@@ -14,6 +14,19 @@ import type { MilkdownPlugin } from "@milkdown/ctx";
 import type { MarkdownNode, RemarkPluginRaw } from "@milkdown/transformer";
 import { $remark } from "@milkdown/kit/utils";
 
+/**
+ * 递归取节点原文：text/html 直接读 value；strong/emphasis/link 等无 value
+ * 的节点聚合其子节点。合并 HTML 开闭标签之间的片段时用它拼接，避免
+ * `<b>加粗 *斜体*</b>` 这类「HTML 内嵌 markdown 标记」的文本在合并中丢失。
+ */
+function nodeRawText(node: MarkdownNode): string {
+  if (node.value != null) return String(node.value);
+  if (Array.isArray(node.children)) {
+    return node.children.map((c) => nodeRawText(c)).join("");
+  }
+  return "";
+}
+
 /** 匹配开始标签：<tag ...>（排除 </...> 结束标签与 <br/> 自闭标签） */
 const OPEN_TAG_RE = /^<([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?>$/;
 
@@ -50,21 +63,31 @@ function mergeInlineHtml(children: MarkdownNode[]): MarkdownNode[] {
       merged.push(node);
       continue;
     }
-    const inner = children
-      .slice(i + 1, closeIdx)
-      .map((child) => String(child.value ?? ""))
-      .join("");
+    const inner = children.slice(i + 1, closeIdx).map(nodeRawText).join("");
     merged.push({ type: "html", value: `${node.value}${inner}${closeTag}` });
     i = closeIdx;
   }
   return merged;
 }
 
+/** children 为行内内容（phrasing）的容器：在此层合并被拆散的 HTML 标签。
+ * paragraph 之外，heading 与行内标记（strong/emphasis/delete/link）的 children
+ * 同样可能含 `<sup>2</sup>` 这类拆散片段——只合并 paragraph 时它们会渲染成
+ * 空的 <sup>/<sub> 壳，文本在标签外、上下标样式不生效。 */
+const PHRASING_CONTAINERS = new Set([
+  "paragraph",
+  "heading",
+  "strong",
+  "emphasis",
+  "delete",
+  "link",
+]);
+
 const htmlMergeTransform: RemarkPluginRaw<never[]> = () => (tree) => {
   const visit = (node: MarkdownNode): void => {
     if (!Array.isArray(node.children)) return;
     for (const child of node.children) visit(child);
-    if (node.type === "paragraph") {
+    if (PHRASING_CONTAINERS.has(node.type)) {
       node.children = mergeInlineHtml(node.children);
     }
   };

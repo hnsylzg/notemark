@@ -11,7 +11,11 @@
  */
 import type { MilkdownPlugin } from "@milkdown/ctx";
 import { commonmark, inlineCodeSchema } from "@milkdown/kit/preset/commonmark";
-import { gfm } from "@milkdown/kit/preset/gfm";
+import {
+  gfm,
+  remarkGFMPlugin,
+  strikethroughInputRule as gfmStrikethroughInputRule,
+} from "@milkdown/kit/preset/gfm";
 import { history } from "@milkdown/kit/plugin/history";
 // clipboard：粘贴纯文本时用 markdown parser 解析，从而把粘贴的
 // markdown 表格 / ```mermaid / $$ 公式等转换为对应节点（默认未注册，
@@ -28,6 +32,7 @@ import { diagramView } from "./diagram-view";
 import { mathBlockPlugins, mathInlineView } from "./math-view";
 import { alertPlugins } from "./alert";
 import { highlightPlugins } from "./highlight";
+import { scriptPlugins } from "./script";
 import { htmlView } from "./html-view";
 import { htmlMergePlugins } from "./html-merge";
 import { htmlBlockPlugins } from "./html-block";
@@ -53,6 +58,23 @@ import { imageBlockPlugin } from "./image-block";
 import "@milkdown/prose/gapcursor/style/gapcursor.css";
 
 const gapcursorPlugin = $prose(() => gapCursor());
+
+/**
+ * preset-gfm 的 remark-gfm 默认 singleTilde: true（单个 ~ 也算删除线），
+ * 且它的 strikethroughInputRule 也认单波浪——二者会抢占「~下标~」语法。
+ * 这里从 gfm 集合中剔除它们，改由 script.ts 提供：
+ *  - gfmRemark：remark-gfm + { singleTilde: false }（删除线只认 ~~）；
+ *  - strikethroughInputRule：只匹配 ~~ 的删除线输入规则。
+ * 注意 preset-gfm 的 plugins 是嵌套数组经 flat 摊平，remark-gfm 会以
+ * options（$Ctx 插件）与 plugin 两个独立元素出现在 gfm 数组中，
+ * 需用身份引用分别剔除，不能按数组剔除。
+ */
+const gfmPlugins = gfm.filter(
+  (p) =>
+    p !== remarkGFMPlugin.options &&
+    p !== remarkGFMPlugin.plugin &&
+    p !== gfmStrikethroughInputRule
+);
 
 /**
  * 行内代码改为「包含型」（inclusive: true）。
@@ -92,8 +114,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...commonmark,
     // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖
     ...inlineCodeInclusiveSchema,
-    // 删除线（~ / ~~）保持 @milkdown/preset-gfm 的默认规则，不做任何改动
-    ...gfm,
+    // 表格 / 任务列表 / 脚注 / 删除线等 GFM 支持（remark-gfm 与删除线输入
+    // 规则已替换为只认 ~~ 的严格版，单波浪 ~ 让给下标，见 script.ts）
+    ...gfmPlugins,
     ...history,
     // 只取 @milkdown/plugin-math 的 inline 部分（remark-math + katex 配置 + 行内公式 schema/输入规则），
     // block 公式完全由本项目自定义的 mathBlockPlugins 接管，避免官方 schema.toDOM 自带 KaTeX 导致的双重渲染。
@@ -120,6 +143,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     clipboard,
     ...alertPlugins,
     ...highlightPlugins,
+    // 上标 ^x^ / 下标 ~x~：拆分 text 的 scriptRemark 须排在高亮等同样拆分
+    // text 的 remark 之后（==a^b^== 才能先成高亮再拆上标）
+    ...scriptPlugins,
     htmlView,
     imageView,
     ...htmlMergePlugins,

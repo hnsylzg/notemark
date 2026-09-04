@@ -305,7 +305,8 @@ function applySerializationStyle(
   if (bullet === appliedStyle.bullet && rule === appliedStyle.rule) return;
   const remark = unified()
     .use(remarkParse)
-    .use(remarkGfm)
+    // 与编辑器解析链保持一致的 strict 删除线（~ 让给下标，删除线只认 ~~）
+    .use(remarkGfm, { singleTilde: false })
     .use(remarkFrontmatter, FRONTMATTER_OPTIONS)
     .use(remarkMath)
     .use(remarkStringify, {
@@ -546,7 +547,15 @@ interface InlineSpan {
 const MD_TEXT_LEAF_TYPES = new Set(["text", "inlineCode"]);
 
 /** 包裹文本的行内标记类型：其 position 含语法标记本身（如 **bold** 的 `**`） */
-const MD_MARK_TYPES = new Set(["strong", "emphasis", "link", "delete"]);
+const MD_MARK_TYPES = new Set([
+  "strong",
+  "emphasis",
+  "link",
+  "delete",
+  // ^上标^ / ~下标~ 的 ^ ~ 也要算进外框，反向映射时才能把标记还原回去
+  "superscript",
+  "subscript",
+]);
 
 /** mdast 文本叶子 + 其语法外框（含语法标记的范围，供选区边界吸附使用） */
 interface MdTextLeaf {
@@ -1312,6 +1321,13 @@ export function createEditor(
         text: customTextHandler,
         highlight: (node, _parent, state, info) =>
           `==${state.containerPhrasing(node, info)}==`,
+        // 上标 ^x^ / 下标 ~x~（script.ts）：序列化回自定义语法。
+        // 下标 handler 输出 ~...~，能被编辑器自己解析成下标的前提是
+        // remark-gfm 以 singleTilde: false 运行（plugins.ts / script.ts 已配置）。
+        superscript: (node, _parent, state, info) =>
+          `^${state.containerPhrasing(node, info)}^`,
+        subscript: (node, _parent, state, info) =>
+          `~${state.containerPhrasing(node, info)}~`,
         list: customListHandler,
         strong: customStrongHandler,
         emphasis: customEmphasisHandler,
