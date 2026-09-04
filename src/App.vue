@@ -1935,10 +1935,27 @@ function onDocumentClick(e: MouseEvent) {
   );
 }
 
-/** 用系统默认程序打开链接；支持 http(s)/mailto 与本地相对路径（./xxx.md 等） */
+/** 用系统默认程序打开本地文件路径（Tauri）；出错时弹出提示 */
+async function openLocalFile(absPath: string, rawHref: string): Promise<void> {
+  try {
+    const { openPath } = await import("@tauri-apps/plugin-opener");
+    await openPath(absPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[NoteMark] open local link failed:", err);
+    alert(`无法打开 ${rawHref}：${msg}`);
+  }
+}
+
+/** 用系统默认程序打开链接；支持 http(s)/mailto 与本地路径（相对 ./xxx.md 或绝对 C:\xxx、/xxx，均可不带 file:// 协议） */
 async function openExternalLink(href: string): Promise<void> {
   if (!href || href.startsWith("#")) return;
-  // 带协议的链接：仅支持 http(s)/mailto，其余协议（tel:/javascript:/data: 等）忽略
+  // Windows 绝对路径（C:\xxx、C:/xxx）：直接按本地文件打开
+  if (/^[a-zA-Z]:[\\/]/.test(href)) {
+    if (isTauri) await openLocalFile(href, href);
+    return;
+  }
+  // 带协议的链接：仅支持 http(s)/mailto，其余协议（file:/tel:/javascript:/data: 等）忽略
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
     if (!/^(https?:|mailto:)/i.test(href)) return;
     try {
@@ -1955,7 +1972,7 @@ async function openExternalLink(href: string): Promise<void> {
     }
     return;
   }
-  // 本地相对路径（./xxx.md、../xxx.md、xxx.md）：基于当前文档所在目录解析后打开
+  // 无协议的本地路径：相对路径基于当前文档所在目录解析后打开
   if (isTauri) {
     const baseDir = currentPath.value
       ? currentPath.value.replace(/[\\/][^\\/]*$/, "")
@@ -1964,14 +1981,12 @@ async function openExternalLink(href: string): Promise<void> {
       console.warn("[NoteMark] 当前文档未保存，无法解析相对链接:", href);
       return;
     }
-    try {
-      const { openPath } = await import("@tauri-apps/plugin-opener");
-      await openPath(resolveLocalPath(baseDir, href));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[NoteMark] open local link failed:", err);
-      alert(`无法打开 ${href}：${msg}`);
+    // Unix/macOS 绝对路径（/xxx）：不参与相对拼接，直接打开
+    if (href.startsWith("/") && !/^[a-zA-Z]:/.test(baseDir)) {
+      await openLocalFile(href, href);
+      return;
     }
+    await openLocalFile(resolveLocalPath(baseDir, href), href);
   } else {
     // 浏览器环境（vite dev）：交给浏览器按相对地址打开
     windowOpenNewTab(href);
