@@ -261,12 +261,12 @@
   font-size: 1.7em;
   font-weight: 800;
 }
-.milkdown h2::before { content: 'H2'; }
+.milkdown .editor>h2::before { content: 'H2'; }
 .milkdown h3 {
   font-size: 1.4em;
   font-weight: 800;
 }
-.milkdown h3::before { content: 'H3'; }
+.milkdown .editor>h3::before { content: 'H3'; }
 .milkdown h4,
 .milkdown h5,
 .milkdown h6 {
@@ -279,12 +279,12 @@
 .milkdown h5 {
   color: var(--mt-color-primary);
 }
-.milkdown h4::before { content: 'H4'; }
-.milkdown h5::before { content: 'H5'; }
+.milkdown .editor>h4::before { content: 'H4'; }
+.milkdown .editor>h5::before { content: 'H5'; }
 .milkdown h6 {
   color: var(--mt-color-primary);
 }
-.milkdown h6::before { content: 'H6'; }
+.milkdown .editor>h6::before { content: 'H6'; }
 
 /* ═══════════════════════════════════════════════════════════════
  * 4. 段落与行内文本
