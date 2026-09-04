@@ -9,12 +9,17 @@
  */
 import { $view, type $Node } from "@milkdown/kit/utils";
 import { htmlSchema } from "@milkdown/kit/preset/commonmark";
+import { resolveImageSrc } from "./image-view";
 
 /** 允许渲染的 HTML 标签白名单 */
 const SAFE_HTML_TAGS = new Set([
   "a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "data", "del",
   "dfn", "em", "i", "iframe", "ins", "kbd", "mark", "q", "rp", "rt", "ruby", "s",
   "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var", "wbr",
+  // img 单独放行：行内 HTML 图片（<img src="...">）应真实显示。
+  // 此前白名单没有 img，行内 <img> 会被降级成空文本节点 → 图片整个消失。
+  // src 的协议过滤与相对路径解析见 ensureImgSrc。
+  "img",
 ]);
 
 /** iframe 允许的外部 src：仅 http(s) 绝对地址（拒绝 javascript:/data:/file: 等） */
@@ -66,6 +71,10 @@ export function sanitizeHtml(html: string): string {
       const href = el.getAttribute("href") ?? "";
       if (!/^(https?:|mailto:|#|\.{0,2}\/)/i.test(href)) el.removeAttribute("href");
     }
+    // 行内 HTML 图片：真实显示（协议过滤 + 相对路径基于文件目录解析）
+    if (tag === "img") {
+      ensureImgSrc(el);
+    }
     // iframe：仅允许 http(s) 外部来源；移除可能被跨窗口脚本利用的属性
     if (tag === "iframe") {
       const src = el.getAttribute("src") ?? "";
@@ -100,6 +109,26 @@ export function sanitizeHtml(html: string): string {
   return template.innerHTML;
 }
 
+/**
+ * 处理 img 标签的 src：
+ * - 带协议但不是安全来源（javascript:、data:text 等）→ 移除 src，防注入；
+ * - 相对路径 → 基于当前打开文件目录解析（与 ![]() 图片同一规则），
+ *   并存原始 src 到 data-md-src，便于 setImageBaseDir 变化后刷新；
+ * - 绝对 http(s) / data:image / blob → 原样保留。
+ */
+function ensureImgSrc(el: Element): void {
+  const src = el.getAttribute("src") ?? "";
+  if (!src) return;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src)) {
+    if (!/^(https?:|data:image\/|blob:)/i.test(src)) el.removeAttribute("src");
+  } else {
+    // Element 类型没有 dataset（只有 HTMLElement 有），这里必然来自
+    // DOMParser 解析的 HTML 文档，断言为 HTMLElement 即可。
+    (el as HTMLElement).dataset.mdSrc = src;
+    el.setAttribute("src", resolveImageSrc(src));
+  }
+}
+
 /** 块级 HTML 允许的常见标签（行内 + 块级 / 结构标签） */
 const SAFE_BLOCK_TAGS = new Set([
   "a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "data", "del", "dfn",
@@ -115,7 +144,7 @@ const SAFE_BLOCK_TAGS = new Set([
 /** 块级 HTML 允许保留的属性（其余危险属性一律移除） */
 const SAFE_BLOCK_ATTRS = new Set([
   "class", "id", "title", "width", "height", "alt", "colspan", "rowspan",
-  "target", "rel", "style", "loading",
+  "target", "rel", "src", "style", "loading",
 ]);
 
 /**
@@ -189,8 +218,7 @@ export function sanitizeHtmlBlock(html: string): string {
       if (!/^(https?:|mailto:|#|\.{0,2}\/)/i.test(href)) el.removeAttribute("href");
     }
     if (tag === "img") {
-      const src = el.getAttribute("src") ?? "";
-      if (!/^(https?:|data:image\/)/i.test(src)) el.removeAttribute("src");
+      ensureImgSrc(el);
     }
   }
   return template.innerHTML;
