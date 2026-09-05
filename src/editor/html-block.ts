@@ -15,7 +15,7 @@
  */
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import type { MilkdownPlugin } from "@milkdown/ctx";
-import type { MarkdownNode, RemarkPluginRaw } from "@milkdown/transformer";
+import type { RemarkPluginRaw } from "@milkdown/transformer";
 import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import { sanitizeHtmlBlock } from "./html-view";
 import { exitToNextLine } from "./block-exit";
@@ -278,8 +278,8 @@ const htmlBlockRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
 
 export const htmlBlockRemark = $remark("notemark-html-block", () => htmlBlockRemarkTransform);
 
-export const htmlBlockPlugins = [
+export const htmlBlockPlugins: MilkdownPlugin[] = [
   ...htmlBlockSchema,
   htmlBlockView,
-  htmlBlockRemark,
+  ...htmlBlockRemark,
 ];
