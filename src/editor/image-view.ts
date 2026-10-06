@@ -170,6 +170,11 @@ export const imageView = $view(
       const raw = String(attrs.src ?? "");
       // 保存原始 src，供基准目录变化后重新解析
       img.dataset.mdSrc = raw;
+      // 不带 Referer 请求：多数图床（实测 B站 i0.hdslb.com）只放行「空
+      // Referer 或自家域名」，而编辑器页面的 Referer 是 http://localhost:5173/
+      // （打包后为 tauri://localhost/），会被判防盗链返回 403、图片裂图。
+      // 必须在赋值 src 之前设置才生效。
+      img.referrerPolicy = "no-referrer";
       img.src = resolveImageSrc(raw);
       img.alt = String(attrs.alt ?? "");
       if (attrs.title) img.title = String(attrs.title);

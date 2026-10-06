@@ -8,8 +8,8 @@
  * 各类富内容的处理方式：
  * - 代码块：保留文本与等宽字体、灰底，不保留语法高亮配色
  * - 图片：按文件头（magic bytes）识别真实格式，png/jpg/gif/bmp 直接内嵌，
- *   svg 与 webp 先栅格化成 png；远程图需要真能 fetch 到字节（被跨域策略
- *   挡住时降级为占位）；大图等比缩到内容区宽（顶到页边距），小图保持原尺寸
+ *   svg 与 webp / avif 先栅格化成 png；远程图需要真能 fetch 到字节（被跨域
+ *   策略挡住时降级为占位）；大图等比缩到内容区宽（顶到页边距），小图保持原尺寸
  * - 公式（行内/块级）：KaTeX → MathML → OMML，作为 Word 原生公式注入
  *   （可在 Word 里继续编辑，与 Typora 导出一致）；转换失败时降级为
  *   栅格化图片，再失败则退化为源码文本
@@ -59,8 +59,8 @@ type TextRunOptions = IRunOptions;
 
 /** 可内嵌的位图类型；svg 先栅格化，不在此列 */
 type RasterType = "png" | "jpg" | "gif" | "bmp";
-/** 图片原始格式（含需转换的 svg、需转 png 后内嵌的 webp） */
-type ImageType = RasterType | "svg" | "webp";
+/** 图片原始格式（含需转换的 svg、需转 png 后内嵌的 webp / avif） */
+type ImageType = RasterType | "svg" | "webp" | "avif";
 
 /** 标题层级映射（1~6） */
 const HEADING_LEVELS = [
@@ -351,7 +351,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     // 时若落到 default 分支「递归子节点」，原子节点没有子节点 → 内容直接丢失。
     case "htmlBlock": {
       const value = String((node.attrs ?? {}).value ?? "");
-      return htmlBlockToParagraphs(value);
+      return await htmlBlockToParagraphs(value);
     }
 
     default: {
@@ -403,29 +403,45 @@ function htmlMarkOptions(m: HtmlMark): TextRunOptions {
   };
 }
 
-/** 行内内容 → docx 内联元素（处理文本、<br>、行内样式标签、<a> 外链） */
-function htmlInlineChildren(node: Node, m: HtmlMark): InlineChild[] {
+/**
+ * 行内内容 → docx 内联元素（处理文本、<br>、行内样式标签、<a> 外链、<img> 图片）。
+ *
+ * 为什么是 async：内嵌图片要先取字节再解码（embedImage 异步），而 <img> 既可能
+ * 出现在行内 HTML 也可能出现在块级 HTML，所以整条 HTML → docx 链路都得是异步，
+ * 调用方逐层 await。
+ * 注意用 for...of 而不是 forEach —— forEach 回调里的 await 不会被等待，
+ * 会导致图片还没嵌入就返回。
+ */
+async function htmlInlineChildren(node: Node, m: HtmlMark): Promise<InlineChild[]> {
   const out: InlineChild[] = [];
-  node.childNodes.forEach((child) => {
+  for (const child of Array.from(node.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) {
       // 源码里的换行与缩进压成单个空格（与浏览器渲染一致）
       const text = (child.textContent ?? "").replace(/\s+/g, " ");
-      if (!text.trim()) return;
+      if (!text.trim()) continue;
       out.push(new TextRun({ text, ...htmlMarkOptions(m) }));
-      return;
+      continue;
     }
-    if (child.nodeType !== Node.ELEMENT_NODE) return;
+    if (child.nodeType !== Node.ELEMENT_NODE) continue;
     const el = child as Element;
     const tag = el.tagName.toUpperCase();
     if (tag === "BR") {
       out.push(new TextRun({ text: "", break: 1, ...htmlMarkOptions(m) }));
-      return;
+      continue;
     }
-    if (tag === "IMG") return; // 图片由 image 节点承载，这里忽略
+    // 手写 <img src="...">：内嵌真实图片。此前这里直接跳过，理由是「图片由
+    // image 节点承载」——那只覆盖 markdown 的 ![]()，手写 <img> 并不是 image
+    // 节点，会被整张丢掉（Word 里只剩文字）。
+    if (tag === "IMG") {
+      const src = el.getAttribute("src") ?? "";
+      const embedded = src ? await embedImage(src) : null;
+      if (embedded) out.push(embedded);
+      continue;
+    }
     // 行内位置出现块级元素：仍把其文本收进来（是否分段由上层决定）
     if (tag === "CENTER" || HTML_BLOCK_TAGS.has(tag)) {
-      out.push(...htmlInlineChildren(el, m));
-      return;
+      out.push(...(await htmlInlineChildren(el, m)));
+      continue;
     }
     const next: HtmlMark = { ...m };
     if (tag === "B" || tag === "STRONG") next.b = true;
@@ -436,17 +452,17 @@ function htmlInlineChildren(node: Node, m: HtmlMark): InlineChild[] {
     if (tag === "A") {
       const href = el.getAttribute("href");
       if (href) {
-        const inner = htmlInlineChildren(el, next).filter(
+        const inner = (await htmlInlineChildren(el, next)).filter(
           (c): c is TextRun => c instanceof TextRun
         );
         if (inner.length) {
           out.push(new ExternalHyperlink({ link: href, children: inner }));
-          return;
+          continue;
         }
       }
     }
-    out.push(...htmlInlineChildren(el, next));
-  });
+    out.push(...(await htmlInlineChildren(el, next)));
+  }
   return out;
 }
 
@@ -460,12 +476,12 @@ function htmlInlineChildren(node: Node, m: HtmlMark): InlineChild[] {
  *
  * 支持：块级标签分段、<br> 软换行、b/strong/i/em/u/s/del/code、<a> 外链、<center> 居中。
  */
-function htmlBlockToParagraphs(html: string): Paragraph[] {
+async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
   if (!html || !html.trim()) return [];
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const out: Paragraph[] = [];
 
-  const walk = (parent: Node, align: HtmlAlign) => {
+  const walk = async (parent: Node, align: HtmlAlign): Promise<void> => {
     let pending: InlineChild[] = [];
     const flush = () => {
       if (pending.length > 0) {
@@ -473,33 +489,45 @@ function htmlBlockToParagraphs(html: string): Paragraph[] {
         pending = [];
       }
     };
-    parent.childNodes.forEach((child) => {
+    for (const child of Array.from(parent.childNodes)) {
       if (child.nodeType === Node.TEXT_NODE) {
         const text = (child.textContent ?? "").replace(/\s+/g, " ").trim();
         if (text) pending.push(new TextRun({ text }));
-        return;
+        continue;
       }
-      if (child.nodeType !== Node.ELEMENT_NODE) return;
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
       const el = child as Element;
       const tag = el.tagName.toUpperCase();
       // <center>：内部段落整体居中（Word 里用段落对齐实现）
       if (tag === "CENTER") {
         flush();
-        walk(el, AlignmentType.CENTER);
-        return;
+        await walk(el, AlignmentType.CENTER);
+        continue;
       }
       if (HTML_BLOCK_TAGS.has(tag)) {
         flush();
-        walk(el, align);
+        await walk(el, align);
         flush();
-        return;
+        continue;
       }
-      pending.push(...htmlInlineChildren(el, {}));
-    });
+      // 单独成行的 <img>：图片在 Word 里独立成段。这里必须处理元素「自身」——
+      // walk 的其余分支都是递归子节点，而 <img> 没有子节点，若走
+      // htmlInlineChildren(el) 只会拿到空数组、图片丢失。
+      if (tag === "IMG") {
+        flush();
+        const src = el.getAttribute("src") ?? "";
+        const embedded = src ? await embedImage(src) : null;
+        if (embedded) {
+          out.push(new Paragraph({ alignment: align, children: [embedded] }));
+        }
+        continue;
+      }
+      pending.push(...(await htmlInlineChildren(el, {})));
+    }
     flush();
   };
 
-  walk(parsed.body, undefined);
+  await walk(parsed.body, undefined);
   return out;
 }
 
@@ -507,10 +535,10 @@ function htmlBlockToParagraphs(html: string): Paragraph[] {
  * HTML 片段 → docx 内联元素（行内 html 节点用）。
  * 块级 HTML 请走 htmlBlockToParagraphs；这里只取行内内容（文本 + 行内样式）。
  */
-function htmlFragmentToInline(html: string): InlineChild[] {
+async function htmlFragmentToInline(html: string): Promise<InlineChild[]> {
   if (!html || !html.trim()) return [];
   const parsed = new DOMParser().parseFromString(html, "text/html");
-  return htmlInlineChildren(parsed.body, {});
+  return await htmlInlineChildren(parsed.body, {});
 }
 
 /**
@@ -652,7 +680,7 @@ async function convertInline(parent: PMNode, ctx: ExportContext): Promise<Inline
       // 实测 <center>…</center> 独立成行时若被内置行内 schema 抢先匹配，
       // 会被包进 paragraph 里变成这种节点，正是「Word 里字不见」的另一条路径。
       case "html": {
-        out.push(...htmlFragmentToInline(String((child.attrs ?? {}).value ?? "")));
+        out.push(...(await htmlFragmentToInline(String((child.attrs ?? {}).value ?? ""))));
         break;
       }
       default:
@@ -909,7 +937,13 @@ async function loadImageBytes(
     // 图片因此丢失。resolveImageSrc 与编辑器渲染（image-view）、PDF 内联
     // 走同一套逻辑：拼上当前文档所在目录再 convertFileSrc，得到 webview
     // 可加载的 asset URL。data/blob/http(s) 会原样返回，不受影响。
-    const res = await fetch(resolveImageSrc(src));
+    //
+    // referrerPolicy: "no-referrer" —— fetch 默认会带 Referer（dev 为
+    // http://localhost:5173/、打包后为 tauri://localhost/），而多数图床
+    // （实测 B站 i0.hdslb.com）只放行「空 Referer 或自家域名」，带应用来源
+    // 的请求会被判防盗链返回 403。<img> 加载本来就不带 Referer，所以编辑器
+    // 里能显示、Word 导出却取不到字节，正是这个差异造成的。
+    const res = await fetch(resolveImageSrc(src), { referrerPolicy: "no-referrer" });
     if (!res.ok) {
       console.warn("[NoteMark] image fetch not ok:", src, res.status);
       return null;
@@ -961,7 +995,7 @@ function fitToPage(w: number, h: number): { width: number; height: number } {
   return { width, height: Math.max(1, height) };
 }
 
-/** 内嵌图片到 docx：位图直接内嵌，svg / webp 先栅格化为 png，失败返回 null */
+/** 内嵌图片到 docx：位图直接内嵌，svg / webp / avif 先栅格化为 png，失败返回 null */
 async function embedImage(src: string): Promise<ImageRun | null> {
   if (!src) return null;
   const loaded = await loadImageBytes(src);
@@ -980,9 +1014,9 @@ async function embedImage(src: string): Promise<ImageRun | null> {
     });
   }
 
-  // webp 是远程图床最常见的格式，但 docx 库不支持内嵌，先交给浏览器解码
+  // webp / avif 在现代图床上很常见，但 docx 库不支持内嵌，先交给浏览器解码
   // 再转成 png（与 svg 栅格化同一个思路）。
-  if (type === "webp") {
+  if (type === "webp" || type === "avif") {
     const png = await rasterToPng(data, mime);
     if (!png) return null;
     // rasterToPng 输出的是原图像素尺寸，必须过一遍页面约束，否则大图会撑出页面
@@ -1336,6 +1370,16 @@ function sniffImageType(data: Uint8Array): { type: ImageType; mime: string } | n
   ) {
     return { type: "webp", mime: "image/webp" };
   }
+  // AVIF：ISOBMFF 容器 —— 偏移 4 处是 box type "ftyp"，紧接的 major brand 是
+  // "avif"（静态）或 "avis"（序列）。只认这两个 brand，避免把 HEIC/HEIF 的
+  // heic、mif1 等误判成 avif（它们浏览器多半也解不了，判 null 更诚实）。
+  if (
+    b.length >= 12 &&
+    b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70
+  ) {
+    const brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
+    if (brand === "avif" || brand === "avis") return { type: "avif", mime: "image/avif" };
+  }
   // SVG 是文本，以 <?xml 或 <svg 开头
   const head = new TextDecoder().decode(b.slice(0, 256)).trimStart();
   if (head.startsWith("<svg") || head.startsWith("<?xml")) {
@@ -1385,7 +1429,7 @@ function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob | null> {
 }
 
 /**
- * 把浏览器能解码、但 docx 不支持内嵌的格式（主要是 webp）转成 png。
+ * 把浏览器能解码、但 docx 不支持内嵌的格式（webp / avif 等）转成 png。
  * 思路与 svg 栅格化一致：交给浏览器解码后画到 canvas，再导出 png 字节。
  */
 async function rasterToPng(

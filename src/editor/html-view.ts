@@ -118,11 +118,18 @@ export function sanitizeHtml(html: string): string {
  * - 带协议但不是安全来源（javascript:、data:text 等）→ 移除 src，防注入；
  * - 相对路径 → 基于当前打开文件目录解析（与 ![]() 图片同一规则），
  *   并存原始 src 到 data-md-src，便于 setImageBaseDir 变化后刷新；
- * - 绝对 http(s) / data:image / blob → 原样保留。
+ * - 绝对 http(s) / data:image / blob → 原样保留；
+ * - 统一设置 referrerPolicy="no-referrer"，避免图床防盗链（见下方注释）。
  */
 function ensureImgSrc(el: Element): void {
   const src = el.getAttribute("src") ?? "";
   if (!src) return;
+  // 不带 Referer 请求：与 image-view 里 ![]() 图片的规则保持一致。多数图床
+  // （实测 B站 i0.hdslb.com）只放行「空 Referer 或自家域名」，而应用页面的
+  // Referer 是 http://localhost:5173/（打包后 tauri://localhost/），会被判
+  // 防盗链返回 403 —— 这类 <img> 就会显示不出来（fetch 侧同样问题见
+  // docxExporter / exporter）。
+  (el as HTMLImageElement).referrerPolicy = "no-referrer";
   if (/^[a-z][a-z0-9+.-]*:/i.test(src)) {
     if (!/^(https?:|data:image\/|blob:)/i.test(src)) el.removeAttribute("src");
   } else {
@@ -155,6 +162,10 @@ const SAFE_BLOCK_ATTRS = new Set([
   "target", "rel", "src", "style", "loading",
   // span：<col span="2"> / <colgroup span="2"> 跨列必备，放行以保留列结构
   "span",
+  // referrerpolicy：ensureImgSrc 会给 <img> 设 no-referrer 绕图床防盗链。
+  // 必须放行 —— 块级 HTML 是以字符串存进节点 attrs 的，下次渲染要重新
+  // sanitize，属性若被剥掉，图片就又带上 Referer 而被图床 403。
+  "referrerpolicy",
 ]);
 
 /**

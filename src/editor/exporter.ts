@@ -383,7 +383,9 @@ export async function inlineImages(html: string): Promise<string> {
       const src = img.getAttribute("src") ?? "";
       if (!src || src.startsWith("data:")) return;
       try {
-        const res = await fetch(src);
+        // 不带 Referer 请求：图床（如 B站）会对带应用来源 Referer 的跨域
+        // 请求返回 403，而 <img> 加载本来就不带 Referer，故这里对齐一致
+        const res = await fetch(src, { referrerPolicy: "no-referrer" });
         if (!res.ok) return;
         img.setAttribute("src", await blobToDataUrl(await res.blob()));
       } catch (err) {

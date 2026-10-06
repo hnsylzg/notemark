@@ -232,6 +232,10 @@ function extOf(mime: string): string {
   if (mime === "image/webp") return "webp";
   if (mime === "image/bmp") return "bmp";
   if (mime === "image/svg+xml") return "svg";
+  // AVIF 必须显式映射：否则会落到下面的 png 兜底，文件被存成 .png 但内容
+  // 仍是 AVIF 字节，扩展名与实际格式不符（导出按文件头识别不受影响，但
+  // 加载时可能拿到错误的 content-type，进而显示异常）。
+  if (mime === "image/avif") return "avif";
   return "png";
 }
 
