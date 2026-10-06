@@ -7,8 +7,9 @@
  *
  * 各类富内容的处理方式：
  * - 代码块：保留文本与等宽字体、灰底，不保留语法高亮配色
- * - 图片：优先内嵌真实位图（png/jpg/gif/bmp）；data URL 按 MIME 识别，
- *   svg 先栅格化成 png 再内嵌；无法读取时降级为文件名占位
+ * - 图片：按文件头（magic bytes）识别真实格式，png/jpg/gif/bmp 直接内嵌，
+ *   svg 与 webp 先栅格化成 png；远程图需要真能 fetch 到字节（被跨域策略
+ *   挡住时降级为占位）；大图等比缩到内容区宽（顶到页边距），小图保持原尺寸
  * - 公式（行内/块级）：KaTeX → MathML → OMML，作为 Word 原生公式注入
  *   （可在 Word 里继续编辑，与 Typora 导出一致）；转换失败时降级为
  *   栅格化图片，再失败则退化为源码文本
@@ -25,6 +26,7 @@ import JSZip from "jszip";
 import katex from "katex";
 import { mml2omml } from "mathml2omml";
 import { katexExportCss } from "./katex-export-css";
+import { resolveImageSrc } from "./image-view";
 import {
   AlignmentType,
   BorderStyle,
@@ -57,8 +59,8 @@ type TextRunOptions = IRunOptions;
 
 /** 可内嵌的位图类型；svg 先栅格化，不在此列 */
 type RasterType = "png" | "jpg" | "gif" | "bmp";
-/** 图片原始格式（含需转换的 svg） */
-type ImageType = RasterType | "svg";
+/** 图片原始格式（含需转换的 svg、需转 png 后内嵌的 webp） */
+type ImageType = RasterType | "svg" | "webp";
 
 /** 标题层级映射（1~6） */
 const HEADING_LEVELS = [
@@ -78,14 +80,17 @@ const PAGE_MARGIN = 1440;
 const PAGE_CONTENT_W = PAGE_W - 2 * PAGE_MARGIN;
 const PAGE_CONTENT_H = PAGE_H - 2 * PAGE_MARGIN;
 
-/** 图片最大宽度（像素，普通位图图片） */
-const MAX_IMAGE_WIDTH = 480;
-
 /**
  * Mermaid 图表宽度（像素）：尽量铺满内容区，仅留少量安全边距避免浮点误差溢出。
  * 内容区 9026 twips ≈ 601px，减 12px 安全边距 → 589px（约 5.6"，左右留白更小）。
  */
 const MERMAID_WIDTH_PX = Math.floor((PAGE_CONTENT_W / 1440) * 96) - 12; // ≈ 589
+
+/**
+ * 图片最大宽度（像素）：与图表一致，取「内容区宽 - 12px 安全边距」≈ 589px。
+ * 大图等比缩到这个宽度，正好顶到页边距；小图保持原尺寸，不放大（避免模糊）。
+ */
+const MAX_IMAGE_WIDTH = MERMAID_WIDTH_PX;
 
 /**
  * 插图最大高度占「内容区高度」的比例：1.0 = 占满整页，0.5 = 半页。
@@ -899,20 +904,64 @@ async function loadImageBytes(
     return { type, data: bytes, mime };
   }
   try {
-    const res = await fetch(src);
-    if (!res.ok) return null;
-    const mime = (res.headers.get("content-type") || "").split(";")[0].toLowerCase();
-    const type = mimeToType(mime) ?? mimeFromExt(src);
-    if (!type) return null;
-    const buf = await res.arrayBuffer();
-    return { type, data: new Uint8Array(buf), mime };
+    // 相对路径必须先解析：image 节点的 attrs.src 存的是「原始相对路径」
+    // （assets/xxx.png），直接 fetch 会按 WebView 页面 origin 解析 → 404，
+    // 图片因此丢失。resolveImageSrc 与编辑器渲染（image-view）、PDF 内联
+    // 走同一套逻辑：拼上当前文档所在目录再 convertFileSrc，得到 webview
+    // 可加载的 asset URL。data/blob/http(s) 会原样返回，不受影响。
+    const res = await fetch(resolveImageSrc(src));
+    if (!res.ok) {
+      console.warn("[NoteMark] image fetch not ok:", src, res.status);
+      return null;
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.length === 0) {
+      console.warn("[NoteMark] image empty:", src);
+      return null;
+    }
+    // 以真实字节判格式，而不是 content-type 或 URL 扩展名：远程图片常出现
+    // content-type 不准（图床返回 octet-stream），或跨域/防盗链时返回的其实
+    // 是 HTML 错误页。此前盲信扩展名，会把无效字节塞进 ImageRun，在 Word 里
+    // 表现为「空白图片」；以文件头为准，无效内容会被识别出来并降级为占位。
+    const sniffed = sniffImageType(buf);
+    if (!sniffed) {
+      console.warn(
+        "[NoteMark] image is not a supported format:",
+        src,
+        "| content-type:", res.headers.get("content-type"),
+        "| head:", Array.from(buf.slice(0, 8))
+      );
+      return null;
+    }
+    return { type: sniffed.type, data: buf, mime: sniffed.mime };
   } catch (err) {
     console.warn("[NoteMark] load image failed:", src, err);
     return null;
   }
 }
 
-/** 内嵌图片到 docx：位图直接内嵌，svg 先栅格化为 png，失败返回 null */
+/**
+ * 按页面内容区等比缩放（contain）：超过上限的图缩到刚好放得下，没超出的
+ * 保持原尺寸 —— 小图不放大，避免变模糊。
+ *
+ * 上限取自页面常量：内容区宽 9026 twips ≈ 601px，宽度上限 MAX_IMAGE_WIDTH
+ * （= MERMAID_WIDTH_PX ≈ 589px，正好顶到页边距）；高度上限 MAX_FIGURE_HEIGHT_PX
+ * （半页），保证竖图 / 长图不会超出一页。只缩不放：小图保持原尺寸，避免放大
+ * 后模糊。所有内嵌路径都必须过这一层，否则大图会撑出页面。
+ */
+function fitToPage(w: number, h: number): { width: number; height: number } {
+  if (!w || !h) return { width: MAX_IMAGE_WIDTH, height: 320 };
+  let width = Math.min(w, MAX_IMAGE_WIDTH);
+  let height = Math.round((h * width) / w);
+  // 竖图 / 长图再按高度回缩，保证不超出单页内容区
+  if (height > MAX_FIGURE_HEIGHT_PX) {
+    height = MAX_FIGURE_HEIGHT_PX;
+    width = Math.max(1, Math.round((MAX_FIGURE_HEIGHT_PX * w) / h));
+  }
+  return { width, height: Math.max(1, height) };
+}
+
+/** 内嵌图片到 docx：位图直接内嵌，svg / webp 先栅格化为 png，失败返回 null */
 async function embedImage(src: string): Promise<ImageRun | null> {
   if (!src) return null;
   const loaded = await loadImageBytes(src);
@@ -931,18 +980,26 @@ async function embedImage(src: string): Promise<ImageRun | null> {
     });
   }
 
-  const size = await imageSizeFromBytes(data, mime);
-  let width = size?.w ? Math.min(size.w, MAX_IMAGE_WIDTH) : MAX_IMAGE_WIDTH;
-  let height = size?.w ? Math.round((size.h * width) / size.w) : 320;
-  // 竖图按高度回缩，保证不超出一页内容区
-  if (size?.h && height > MAX_FIGURE_HEIGHT_PX) {
-    height = MAX_FIGURE_HEIGHT_PX;
-    width = Math.max(1, Math.round((MAX_FIGURE_HEIGHT_PX * size.w) / size.h));
+  // webp 是远程图床最常见的格式，但 docx 库不支持内嵌，先交给浏览器解码
+  // 再转成 png（与 svg 栅格化同一个思路）。
+  if (type === "webp") {
+    const png = await rasterToPng(data, mime);
+    if (!png) return null;
+    // rasterToPng 输出的是原图像素尺寸，必须过一遍页面约束，否则大图会撑出页面
+    const { width, height } = fitToPage(png.width, png.height);
+    return new ImageRun({
+      type: "png",
+      data: png.data,
+      transformation: { width, height },
+    });
   }
+
+  const size = await imageSizeFromBytes(data, mime);
+  const { width, height } = fitToPage(size?.w ?? 0, size?.h ?? 0);
   return new ImageRun({
     type,
     data,
-    transformation: { width, height: height || 320 },
+    transformation: { width, height },
   });
 }
 
@@ -1243,25 +1300,48 @@ function mimeToType(mime: string): ImageType | null {
   }
 }
 
-/** 按扩展名推断图片类型（fetch 拿不到 content-type 时的兜底） */
-function mimeFromExt(src: string): ImageType | null {
-  const clean = src.split("?")[0].split("#")[0];
-  const ext = clean.split(".").pop()?.toLowerCase() ?? "";
-  switch (ext) {
-    case "png":
-      return "png";
-    case "jpg":
-    case "jpeg":
-      return "jpg";
-    case "gif":
-      return "gif";
-    case "bmp":
-      return "bmp";
-    case "svg":
-      return "svg";
-    default:
-      return null;
+/**
+ * 按文件头（magic bytes）判断真实图片格式。
+ *
+ * 为什么不靠 content-type / URL 扩展名：
+ * - 图床常返回 application/octet-stream 之类的非标准 content-type；
+ * - 跨域或防盗链时返回的其实是 HTML 错误页 / 1x1 图，字节根本不是图片，
+ *   而 URL 往往还带着 .png 扩展名 —— 照扩展名判定就会把无效字节塞进
+ *   ImageRun，在 Word 里表现为「空白图片」。
+ * 以文件头为准，无效内容会被识别出来并降级为占位，而不是产出空白图。
+ */
+function sniffImageType(data: Uint8Array): { type: ImageType; mime: string } | null {
+  const b = data;
+  // PNG：89 50 4E 47
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    return { type: "png", mime: "image/png" };
   }
+  // JPEG：FF D8 FF
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) {
+    return { type: "jpg", mime: "image/jpeg" };
+  }
+  // GIF：GIF8
+  if (b.length >= 4 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) {
+    return { type: "gif", mime: "image/gif" };
+  }
+  // BMP：BM
+  if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4d) {
+    return { type: "bmp", mime: "image/bmp" };
+  }
+  // WEBP：RIFF????WEBP
+  if (
+    b.length >= 12 &&
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+  ) {
+    return { type: "webp", mime: "image/webp" };
+  }
+  // SVG 是文本，以 <?xml 或 <svg 开头
+  const head = new TextDecoder().decode(b.slice(0, 256)).trimStart();
+  if (head.startsWith("<svg") || head.startsWith("<?xml")) {
+    return { type: "svg", mime: "image/svg+xml" };
+  }
+  return null;
 }
 
 /** base64 -> 字节 */
@@ -1302,6 +1382,36 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 /** canvas -> PNG Blob */
 function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
+}
+
+/**
+ * 把浏览器能解码、但 docx 不支持内嵌的格式（主要是 webp）转成 png。
+ * 思路与 svg 栅格化一致：交给浏览器解码后画到 canvas，再导出 png 字节。
+ */
+async function rasterToPng(
+  data: Uint8Array,
+  mime: string
+): Promise<{ data: Uint8Array; width: number; height: number } | null> {
+  const url = URL.createObjectURL(new Blob([data as unknown as BlobPart], { type: mime }));
+  try {
+    const img = await loadImage(url);
+    const width = img.naturalWidth || MAX_IMAGE_WIDTH;
+    const height = img.naturalHeight || 320;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const c = canvas.getContext("2d");
+    if (!c) return null;
+    c.drawImage(img, 0, 0, width, height);
+    const blob = await canvasToPng(canvas);
+    if (!blob) return null;
+    return { data: new Uint8Array(await blob.arrayBuffer()), width, height };
+  } catch (err) {
+    console.warn("[NoteMark] raster->png failed:", err);
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /** 转义正则特殊字符 */
