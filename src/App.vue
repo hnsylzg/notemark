@@ -1960,7 +1960,7 @@ async function importTheme() {
 
 /** 点击主题菜单外部区域时收起菜单 */
 function onDocumentClick(e: MouseEvent) {
-  // 编辑器内点击超链接：交给系统浏览器打开
+  // 编辑器内普通点击进入链接编辑；Ctrl/Cmd + 点击才交给系统打开。
   const target = e.target as Element | null;
   if (!target?.closest?.(".mt-toolbar")) {
     exportMenuOpen.value = false;
@@ -1969,7 +1969,7 @@ function onDocumentClick(e: MouseEvent) {
     saveMenuOpen.value = false;
   }
   const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
-  if (!anchor) return;
+  if (!anchor || !(e.ctrlKey || e.metaKey)) return;
   const href = anchor.getAttribute("href") ?? "";
   // 锚点链接（#xxx）在编辑器内没有跳转目标，忽略
   if (!href || href.startsWith("#")) return;
