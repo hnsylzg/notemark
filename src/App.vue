@@ -129,16 +129,6 @@ const rawContent = ref<string>(INITIAL_CONTENT);
  * 打开 / 保存 / 退出源码模式后重置。
  */
 let visualEdited = false;
-/**
- * 「待应用」的源码草稿 / 磁盘原文。
- * markdownUpdated 回调是异步触发的（退出源码模式的 setMarkdown、
- * 打开文件的 setMarkdown 之后数百毫秒才回调），此时 sourceMode 已切换、
- * visualEdited 也已被重置，无法从状态区分「这次回调来自哪里」。
- * 因此在退出源码模式 / 打开文件时记录 pendingApply，
- * 下一次 markdownUpdated 命中它即视为「应用了草稿/原文」：
- * 重建 rawContent 基线、不置 visualEdited，从而保留用户的紧凑排版。
- */
-let pendingApply: string | null = null;
 /** 最近打开的文件列表（最近使用的排在最前，持久化在 store 中） */
 const recentFiles = ref<RecentFile[]>([]);
 /** 每个窗口独立保存恢复草稿，避免多窗口互相覆盖 */
@@ -383,14 +373,16 @@ function updateTitle(name: string) {
   }
 }
 
-/** 编辑器内容变化回调（listenerCtx.markdownUpdated） */
-function onEditorChange(markdown: string) {
-  if (pendingApply !== null) {
-    // 退出源码模式 setMarkdown(草稿) / 打开文件 setMarkdown(原文) 触发的
-    // 异步回调：以草稿/原文重建基线，保留用户排版，不算可视化编辑。
-    rawContent.value = pendingApply;
-    pendingApply = null;
-  } else if (!sourceMode.value) {
+/** 编辑器真实文档变更回调（事务级监听） */
+function onEditorChange(markdown: string, markSourceActive = false) {
+  if (markSourceActive) {
+    // 点击行内组件会临时插入 **、[]()、反引号等源码标记。
+    // 这只是编辑会话的视觉状态，等会话关闭后再按最终文档计算脏标记。
+    scheduleHeadingRefresh();
+    if (findOpen.value && !sourceMode.value) syncFindState();
+    return;
+  }
+  if (!sourceMode.value) {
     // 可视化模式下的真实用户编辑：之后进入源码只能展示序列化结果。
     visualEdited = true;
   }
@@ -487,7 +479,6 @@ async function maybeRestoreRecoveryDraft(): Promise<void> {
   updateTitle(draft.name || "untitled");
   rawContent.value = draft.content;
   visualEdited = false;
-  pendingApply = draft.content;
   await setMarkdown(editorInstance, draft.content);
   await nextTick();
 
@@ -567,15 +558,17 @@ function exitSourceMode() {
   // 返回可视化后对齐到同一位置，做到视线不动
   const caretY = el && el.value.length > 0 ? measureTextareaCaretY(el, el.selectionStart) : null;
   // 用户编辑后的草稿成为新的原文基线（保留排版）。
-  // setMarkdown 触发的 markdownUpdated 是异步的，届时 sourceMode 已为 false，
-  // 无法靠 sourceMode 区分回调来源，因此用 pendingApply 标记：
-  // 下一次 markdownUpdated 命中它即视为「应用了草稿」，重建基线而不置 visualEdited。
   rawContent.value = sourceDraft.value;
   visualEdited = false;
-  pendingApply = sourceDraft.value;
   setMarkdown(editor, sourceDraft.value);
   sourceMode.value = false;
   nextTick(() => {
+    isDirty.value = getMarkdown(editor) !== savedContent.value;
+    if (isDirty.value) {
+      scheduleRecoveryDraft();
+    } else if (recoveryArmed && savedContent.value !== null) {
+      void clearRecoveryDraftState();
+    }
     if (from != null && sourceDraft.value) {
       if (to != null && to !== from) {
         setSelectionByMarkdownOffsets(editor, sourceDraft.value, from, to, caretY);
@@ -937,9 +930,6 @@ async function loadFileIntoEditor(
   // 避免序列化在标题后等处强制补空行。
   rawContent.value = content;
   visualEdited = false;
-  // setMarkdown 触发的 markdownUpdated 是异步回调，届时 sourceMode 可能已变，
-  // 用 pendingApply 标记让该回调命中「应用了原文」分支，不置 visualEdited。
-  pendingApply = content;
   // 静默重载（外部改动 / 保存后回灌）传 keepCaret，保留用户光标位置；
   // 打开文件等首次载入不传，由调用方决定光标（如 focusEditorStart）。
   await setMarkdown(editorInstance, content, { keepCaret: opts?.keepCaret });
@@ -1224,11 +1214,9 @@ async function handleNew() {
   currentPath.value = fresh.path;
   setImageBaseDir(fresh.path);
   updateTitle(fresh.name);
-  // 新文档的原文基线为空；setMarkdown("") 会触发 markdownUpdated，
-  // 在 nextTick 后再重置 visualEdited（异步回调由 pendingApply 命中处理）。
+  // 新文档的原文基线为空，渲染完成后重建序列化基线。
   rawContent.value = "";
   visualEdited = false;
-  pendingApply = "";
   // 与打开文件一致：等渲染完成后用序列化结果作为脏检查基准
   await nextTick();
   visualEdited = false;
@@ -1316,14 +1304,7 @@ async function handleGoParent() {
 /** 从侧边栏打开文件（有未保存修改时先询问，与「打开」保持一致） */
 async function handleSidebarOpenFile(path: string) {
   if (!isTauri || !editorInstance) return;
-  if (needsSave.value) {
-    const action = await askSaveConfirm("当前文档有未保存的修改，是否先保存？");
-    if (action === "cancel") return;
-    if (action === "save") {
-      const saved = await handleSave();
-      if (!saved) return;
-    }
-  }
+  if (!(await confirmDiscardIfDirty())) return;
   try {
     await grantPathAccess(path);
     const content = await readMarkdownFile(path);
@@ -1334,7 +1315,6 @@ async function handleSidebarOpenFile(path: string) {
     // 与 loadFileIntoEditor 一致：记录原文基线，保留用户排版
     rawContent.value = content;
     visualEdited = false;
-    pendingApply = content;
     await setMarkdown(editorInstance, content);
     updateTitle(name);
     await nextTick();
@@ -2206,11 +2186,6 @@ onMounted(() => {
             // 原文基线对齐初始内容（为空文档，无序列化差异问题）
             rawContent.value = INITIAL_CONTENT;
             visualEdited = false;
-            // 必须初始化为 null：pendingApply 靠 !== null 判断，若初始化为
-            // 初始内容（空串也算非 null），首次真实编辑会被误判成「应用草稿」，
-            // 导致 rawContent 被重置为空、visualEdited 不置位，
-            // 表现为「编辑后切到源码看到空白」
-            pendingApply = null;
             // 初始文档也可能含标题（示例内容/上次加载），补一次大纲收集
             refreshHeadings();
           }

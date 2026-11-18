@@ -119,9 +119,6 @@ const customEmphasisHandler: Handle = (node, parent, state, info) => {
   state.attentionEncodeSurroundingInfo = undefined;
   return result;
 };
-// listenerCtx：注册内容变化监听，用于追踪"未保存修改"状态。
-// 该 SliceType 由 listener 插件提供，必须在 .use(listener) 注册后生效。
-import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 // Milkdown v7 的 Markdown 读写通过两个内部上下文实现：
 // - serializerCtx: 把 ProseMirror Node 序列化为 Markdown 字符串
 // - parserCtx:     把 Markdown 字符串解析为 ProseMirror Node
@@ -169,10 +166,16 @@ import { Fragment, Slice } from "@milkdown/kit/prose/model";
 import type { EditorView } from "@milkdown/kit/prose/view";
 /** editor.action 回调注入的上下文类型（由 Editor API 推导，不依赖具体导出名） */
 type EditorCtx = Parameters<Parameters<Editor["action"]>[0]>[0];
-import { TextSelection } from "@milkdown/kit/prose/state";
+import {
+  Plugin,
+  TextSelection,
+  type EditorState,
+} from "@milkdown/kit/prose/state";
+import { $prose } from "@milkdown/utils";
 import "@milkdown/kit/prose/view/style/prosemirror.css";
 
 import { getEditorPlugins } from "./plugins";
+import { markSourceKey } from "./mark-source";
 
 /** 当前编辑器文档导出为 Markdown 文本 */
 export function getMarkdown(editor: Editor): string {
@@ -374,6 +377,10 @@ export function setMarkdown(
         );
       }
     }
+    // Loading a document is not a user edit. Keeping it out of history also
+    // prevents the debounced change tracker from marking a freshly opened
+    // file dirty after the initial baseline has already been established.
+    tr.setMeta("addToHistory", false);
     view.dispatch(tr);
   });
 }
@@ -455,14 +462,11 @@ function normalizeParsedDoc(doc: PMNode, schema: Schema): PMNode {
 /**
  * 当前编辑器文档是否仍等于「markdown 基线」解析出的文档（同步判断，无防抖）。
  *
- * 背景：milkdown 的 listener 插件对 updated 事件做了 200ms 防抖
- * （@milkdown/plugin-listener 内部 debounce(handler, 200)），App.vue 的
- * visualEdited / pendingApply 都只能由这个防抖回调置位/消费。于是存在两个
- * 真实竞态窗口：
+ * 背景：编辑器文档变更监听采用 200ms 防抖，App.vue 的
+ * visualEdited 只能由这个防抖回调置位。于是存在真实竞态窗口：
  * 1. 用户刚打完字就切源码（< 200ms）→ visualEdited 仍未置位；
- * 2. 用户打开文件 / 退出源码后立刻输入（< 200ms）→ 输入被误当作 pendingApply
- *    的「加载回调」消费，visualEdited 永不置位，rawContent 还被重置为旧值。
- * 两种情况下 getVisualContent() 都返回旧的 rawContent —— 刚输入的文字在源码
+ * 2. 用户退出源码后立刻输入（< 200ms）→ visualEdited 仍未置位。
+ * 两种情况下 getVisualContent() 都可能返回旧的 rawContent —— 刚输入的文字在源码
  * 草稿中凭空消失，再切回 WYSIWYG 即被真正删除。
  *
  * 这里以「当前文档是否偏离 rawContent 基线」为同步判据，与 setMarkdown 走
@@ -1564,10 +1568,60 @@ export function focusEditorStart(editor: Editor): void {
 export function createEditor(
   root: HTMLElement,
   defaultValue: string = "",
-  onChange?: (markdown: string) => void
+  onChange?: (markdown: string, markSourceActive: boolean) => void
 ): Editor {
+  let activeCtx: EditorCtx | null = null;
+  let pendingChangeState: EditorState | null = null;
+  let changeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const changeTracker = $prose(
+    () =>
+      new Plugin({
+        state: {
+          init: () => null,
+          apply(tr, _value, _oldState, newState) {
+            if (!tr.docChanged) return null;
+            if (tr.getMeta("addToHistory") === false) {
+              // A new document supersedes any pending change callback from
+              // the previous document.
+              if (changeTimer !== null) clearTimeout(changeTimer);
+              changeTimer = null;
+              pendingChangeState = null;
+              return null;
+            }
+            pendingChangeState = newState;
+            if (changeTimer !== null) clearTimeout(changeTimer);
+            changeTimer = setTimeout(() => {
+              changeTimer = null;
+              const state = pendingChangeState;
+              pendingChangeState = null;
+              if (!activeCtx || !state || !onChange) return;
+              try {
+                onChange(
+                  cleanMarkdownBr(activeCtx.get(serializerCtx)(state.doc)),
+                  markSourceKey.getState(state) !== null
+                );
+              } catch {
+                /* Skip malformed serialization without affecting editing. */
+              }
+            }, 200);
+            return null;
+          },
+        },
+        view: () => ({
+          destroy: () => {
+            if (changeTimer !== null) clearTimeout(changeTimer);
+            changeTimer = null;
+            pendingChangeState = null;
+            activeCtx = null;
+          },
+        }),
+      })
+  );
+
   const editor = Editor.make()
     .config((ctx) => {
+      activeCtx = ctx;
       // 挂载根节点
       ctx.set("root", root);
       // 默认值：空文档（使用 defaultValueCtx，而非字符串 key）
@@ -1638,28 +1692,10 @@ export function createEditor(
         ...ctx.get(listItemBlockConfig.key),
         renderLabel: renderListItemLabel,
       });
-      // 内容变化监听：供外层做"未保存修改"追踪
-      if (onChange) {
-        // 不用 markdownUpdated：listener 插件在 SerializerReady 时把 serializer
-        // 缓存成闭包常量，之后所有回调都用这份旧 serializer 序列化；而本项目
-        // 打开文件时会按原文风格重建 serializerCtx（applySerializationStyle），
-        // 重建后 markdownUpdated 仍用旧风格序列化 → 与 getMarkdown / normalize
-        // Markdown（当前 serializerCtx）口径不一致 → 打开 + 列表等非默认风格
-        // 的文件会被误报"未保存修改"（打开即脏）。
-        // 改用 updated(doc) 事件：回调内每次取当前 serializerCtx 序列化，
-        // 与 getMarkdown 走同一清理逻辑，口径统一。
-        ctx.get(listenerCtx).updated((ctx, doc) => {
-          try {
-            onChange(cleanMarkdownBr(ctx.get(serializerCtx)(doc)));
-          } catch {
-            /* 极端结构序列化失败时跳过本次回调，避免脏检查被拖垮 */
-          }
-        });
-      }
     })
-    // 注册所有插件（commonmark/gfm/history/math/diagram/code-block/listener）
+    // 注册所有插件（commonmark/gfm/history/math/diagram/code-block）
     .use(getEditorPlugins())
-    .use(listener);
+    .use(changeTracker);
 
   return editor;
 }
