@@ -1697,8 +1697,8 @@ export function installSurroundFocusGuard(): void {
       // 点中可编辑区内部：正常交给 ProseMirror 处理
       if (pm.contains(target)) return;
 
-      // 浮层（斜杠菜单 / 表格菜单 / 提示 / 链接框）：放行，否则点不到菜单项
-      if (target.closest(".mt-slash-menu, .mt-table-menu, .mt-slash-hint, .mt-slash-linkbox")) {
+      // 浮层（表格菜单 / 提示 / 链接与表格输入框）：放行，否则点不到菜单项
+      if (target.closest(".mt-table-menu, .mt-slash-hint, .mt-slash-linkbox")) {
         return;
       }
 

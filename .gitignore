@@ -32,6 +32,9 @@ src-tauri/gen/android/
 **/*.rs.bk
 
 # ---------- 本项目临时产物 ----------
+.backups/
+.codex-backups/
+.tmp-caret-profile/
 .playwright-cli/
 tmp-edge-profile/
 tmp-*.js

@@ -15,11 +15,17 @@
  *   不会导致模块加载报错。
  * - 只读单层目录：递归扫描大目录会明显卡顿，且侧边栏以「就近文件」为主，
  *   需要更深的层级时用户可继续点进子目录。
- * - 依赖的 Tauri 权限均已具备：fs:allow-read-dir、fs:allow-read-file、
- *   fs:allow-read-text-file、dialog:default、store:default。
+ * - 文件读取使用动态授权的最小 Tauri fs 权限，应用状态由 Rust SQLite 服务持久化。
  */
 
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  grantPathAccess,
+  revealAuthorizedPath,
+  writeBytesAtomic,
+} from "./fileAccess";
+import { decodeTextBytes } from "./textEncoding";
+import { stateDelete, stateGet, stateSet } from "./stateStore";
 
 /** 是否处于 Tauri 环境（纯浏览器 vite dev 下不调用 Tauri API） */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -43,18 +49,10 @@ export interface WorkspaceListing {
   files: WorkspaceItem[];
 }
 
-/** store 文件名（与 themeManager 共用同一个 settings.json） */
-const STORE_FILE = "settings.json";
 /** 当前工作目录的持久化 key */
 const WORKSPACE_DIR_KEY = "workspaceDir";
 /** 侧边栏展开状态的持久化 key */
 const SIDEBAR_OPEN_KEY = "sidebarOpen";
-
-/** 加载持久化 store；非 Tauri 环境会抛错，由调用方 catch */
-async function getStore() {
-  const { load } = await import("@tauri-apps/plugin-store");
-  return load(STORE_FILE);
-}
 
 /**
  * 弹出目录选择对话框。
@@ -68,7 +66,9 @@ export async function pickFolder(): Promise<string | null> {
       multiple: false,
       title: "选择要浏览的文件夹",
     });
-    return typeof selected === "string" ? selected : null;
+    if (typeof selected !== "string") return null;
+    await grantPathAccess(selected);
+    return selected;
   } catch (err) {
     console.warn("[NoteMark] pick folder failed:", err);
     return null;
@@ -86,6 +86,7 @@ export async function listWorkspace(
   try {
     const { readDir } = await import("@tauri-apps/plugin-fs");
     const { join } = await import("@tauri-apps/api/path");
+    await grantPathAccess(dir);
     const entries = await readDir(dir);
     const dirs: WorkspaceItem[] = [];
     const files: WorkspaceItem[] = [];
@@ -117,15 +118,9 @@ export async function listWorkspace(
 export async function readMarkdownFile(path: string): Promise<string> {
   const { readFile, readTextFile } = await import("@tauri-apps/plugin-fs");
   try {
+    await grantPathAccess(path);
     const bytes = await readFile(path);
-    if (bytes.length === 0) return "";
-    const utf8 = new TextDecoder("utf-8").decode(bytes).replace(/^\uFEFF/, "");
-    if (!utf8.includes("\uFFFD")) return utf8;
-    try {
-      return new TextDecoder("gbk").decode(bytes);
-    } catch {
-      return utf8; // 运行环境不支持 gbk 时回退 UTF-8 结果
-    }
+    return decodeTextBytes(bytes);
   } catch (err) {
     // readFile 不可用时回退到 readTextFile（权限更早就已具备）
     console.warn("[NoteMark] readFile unavailable, fallback to readTextFile:", err);
@@ -150,8 +145,7 @@ export function parentDir(dir: string): string | null {
 export async function loadWorkspaceDir(): Promise<string | null> {
   if (!isTauri) return null;
   try {
-    const store = await getStore();
-    const value = await store.get<string>(WORKSPACE_DIR_KEY);
+    const value = await stateGet<string>(WORKSPACE_DIR_KEY);
     return typeof value === "string" && value ? value : null;
   } catch (err) {
     console.warn("[NoteMark] load workspace dir failed:", err);
@@ -163,9 +157,7 @@ export async function loadWorkspaceDir(): Promise<string | null> {
 export async function clearWorkspaceDir(): Promise<void> {
   if (!isTauri) return;
   try {
-    const store = await getStore();
-    await store.delete(WORKSPACE_DIR_KEY);
-    await store.save();
+    await stateDelete(WORKSPACE_DIR_KEY);
   } catch (err) {
     console.warn("[NoteMark] clear workspace dir failed:", err);
   }
@@ -175,9 +167,7 @@ export async function clearWorkspaceDir(): Promise<void> {
 export async function saveWorkspaceDir(dir: string): Promise<void> {
   if (!isTauri) return;
   try {
-    const store = await getStore();
-    await store.set(WORKSPACE_DIR_KEY, dir);
-    await store.save();
+    await stateSet(WORKSPACE_DIR_KEY, dir);
   } catch (err) {
     console.warn("[NoteMark] save workspace dir failed:", err);
   }
@@ -187,8 +177,7 @@ export async function saveWorkspaceDir(dir: string): Promise<void> {
 export async function loadSidebarOpen(): Promise<boolean | null> {
   if (!isTauri) return null;
   try {
-    const store = await getStore();
-    const value = await store.get<boolean>(SIDEBAR_OPEN_KEY);
+    const value = await stateGet<boolean>(SIDEBAR_OPEN_KEY);
     return typeof value === "boolean" ? value : null;
   } catch (err) {
     console.warn("[NoteMark] load sidebar state failed:", err);
@@ -200,9 +189,7 @@ export async function loadSidebarOpen(): Promise<boolean | null> {
 export async function saveSidebarOpen(open: boolean): Promise<void> {
   if (!isTauri) return;
   try {
-    const store = await getStore();
-    await store.set(SIDEBAR_OPEN_KEY, open);
-    await store.save();
+    await stateSet(SIDEBAR_OPEN_KEY, open);
   } catch (err) {
     console.warn("[NoteMark] save sidebar state failed:", err);
   }
@@ -225,8 +212,7 @@ export interface RecentFile {
 export async function loadRecentFiles(): Promise<RecentFile[]> {
   if (!isTauri) return [];
   try {
-    const store = await getStore();
-    const value = await store.get<RecentFile[]>(RECENT_FILES_KEY);
+    const value = await stateGet<RecentFile[]>(RECENT_FILES_KEY);
     if (!Array.isArray(value)) return [];
     // 过滤掉结构损坏的条目，避免渲染时报错
     return value.filter(
@@ -272,9 +258,7 @@ export async function clearRecentFiles(): Promise<void> {
 async function saveRecentFiles(list: RecentFile[]): Promise<void> {
   if (!isTauri) return;
   try {
-    const store = await getStore();
-    await store.set(RECENT_FILES_KEY, list);
-    await store.save();
+    await stateSet(RECENT_FILES_KEY, list);
   } catch (err) {
     console.warn("[NoteMark] save recent files failed:", err);
   }
@@ -325,8 +309,7 @@ export async function pathExists(path: string): Promise<boolean> {
 
 /** 在系统文件管理器中定位并选中该路径 */
 export async function revealInFileManager(path: string): Promise<void> {
-  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-  await revealItemInDir(path);
+  await revealAuthorizedPath(path);
 }
 
 /** 新建文本文件（默认写入空内容） */
@@ -334,8 +317,7 @@ export async function createTextFile(
   path: string,
   content = ""
 ): Promise<void> {
-  const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-  await writeTextFile(path, content);
+  await writeBytesAtomic(path, new TextEncoder().encode(content));
 }
 
 /** 拼接目录与文件名（跨平台分隔符） */

@@ -9,7 +9,7 @@
  * 组件只负责展示与事件派发，数据获取（目录扫描、文件读取、大纲收集）
  * 全部由 App.vue 通过 props 传入，便于后续替换为其它数据源。
  */
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import type {
   BlankAction,
   DirAction,
@@ -17,6 +17,10 @@ import type {
   WorkspaceItem,
 } from "@/editor/workspace";
 import type { HeadingItem } from "@/editor/index";
+import {
+  clampFloatingLayer,
+  inheritEditorTheme,
+} from "@/editor/floating-layer";
 
 const props = defineProps<{
   /** 是否展开（false 时宽度收拢为 0） */
@@ -69,13 +73,22 @@ type MenuTarget =
 
 /** 菜单状态；为 null 时隐藏 */
 const menu = ref<{ x: number; y: number; target: MenuTarget } | null>(null);
+const menuEl = ref<HTMLElement | null>(null);
 
 /** 打开右键菜单（坐标基于视口，菜单用 fixed 定位） */
 function openMenu(e: MouseEvent, target: MenuTarget) {
-  // 夹紧到视口内，避免菜单被窗口边缘截断
-  const x = Math.max(4, Math.min(e.clientX, window.innerWidth - 184));
-  const y = Math.max(4, Math.min(e.clientY, window.innerHeight - 196));
-  menu.value = { x, y, target };
+  menu.value = { x: e.clientX, y: e.clientY, target };
+  void nextTick(() => {
+    const el = menuEl.value;
+    if (!el || !menu.value) return;
+    inheritEditorTheme(el);
+    const { left, top } = clampFloatingLayer(el, e.clientX, e.clientY);
+    menu.value = {
+      ...menu.value,
+      x: left,
+      y: top,
+    };
+  });
 }
 
 /** 关闭右键菜单 */
@@ -256,36 +269,76 @@ function isActive(path: string): boolean {
     </div>
 
     <!-- 右键菜单（fixed 定位，坐标已在打开时夹紧到视口内） -->
-    <div
-      v-if="menu"
-      class="mt-ctxmenu"
-      :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
-      role="menu"
-      @contextmenu.prevent
-    >
+    <Teleport to="body">
+      <div
+        v-if="menu"
+        ref="menuEl"
+        class="mt-context-menu mt-context-menu--compact"
+        :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
+        role="menu"
+        @mousedown.stop
+        @contextmenu.prevent
+      >
       <template v-if="menu.target.kind === 'file'">
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('open')">打开</button>
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('copyPath')">复制路径</button>
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('reveal')">在文件管理器中显示</button>
-        <div class="mt-ctxmenu__sep" role="separator"></div>
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('rename')">重命名…</button>
-        <button
-          class="mt-ctxmenu__item mt-ctxmenu__item--danger"
-          role="menuitem"
-          @click="act('delete')"
-        >删除</button>
+        <div class="mt-context-menu__group">
+          <div class="mt-context-menu__group-title">打开</div>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('open')">
+            <span class="mt-context-menu__icon">↵</span>
+            <span class="mt-context-menu__label">打开</span>
+            <span class="mt-context-menu__shortcut">Enter</span>
+          </button>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('copyPath')">
+            <span class="mt-context-menu__icon">⧉</span>
+            <span class="mt-context-menu__label">复制路径</span>
+          </button>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('reveal')">
+            <span class="mt-context-menu__icon">⌖</span>
+            <span class="mt-context-menu__label">在文件管理器中显示</span>
+          </button>
+        </div>
+        <div class="mt-context-menu__sep" role="separator"></div>
+        <div class="mt-context-menu__group">
+          <div class="mt-context-menu__group-title">文件操作</div>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('rename')">
+            <span class="mt-context-menu__icon">✎</span>
+            <span class="mt-context-menu__label">重命名…</span>
+          </button>
+          <button
+            class="mt-context-menu__item mt-context-menu__item--danger"
+            role="menuitem"
+            @click="act('delete')"
+          >
+            <span class="mt-context-menu__icon">×</span>
+            <span class="mt-context-menu__label">移入回收站</span>
+          </button>
+        </div>
       </template>
 
       <template v-else-if="menu.target.kind === 'dir'">
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('reveal')">在文件管理器中显示</button>
+        <div class="mt-context-menu__group">
+          <div class="mt-context-menu__group-title">目录</div>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('reveal')">
+            <span class="mt-context-menu__icon">⌖</span>
+            <span class="mt-context-menu__label">在文件管理器中显示</span>
+          </button>
+        </div>
       </template>
 
       <template v-else>
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('newFile')">新建 Markdown 文件</button>
-        <div class="mt-ctxmenu__sep" role="separator"></div>
-        <button class="mt-ctxmenu__item" role="menuitem" @click="act('refresh')">刷新</button>
+        <div class="mt-context-menu__group">
+          <div class="mt-context-menu__group-title">文件面板</div>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('newFile')">
+            <span class="mt-context-menu__icon">＋</span>
+            <span class="mt-context-menu__label">新建 Markdown 文件</span>
+          </button>
+          <button class="mt-context-menu__item" role="menuitem" @click="act('refresh')">
+            <span class="mt-context-menu__icon">↻</span>
+            <span class="mt-context-menu__label">刷新</span>
+          </button>
+        </div>
       </template>
-    </div>
+      </div>
+    </Teleport>
   </aside>
 </template>
 
@@ -480,51 +533,4 @@ function isActive(path: string): boolean {
   color: var(--mt-muted, #888);
 }
 
-/* 右键菜单：fixed 定位，坐标由打开事件夹紧到视口内 */
-.mt-ctxmenu {
-  position: fixed;
-  z-index: 200;
-  min-width: 168px;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--mt-bg, #ffffff);
-  border: 1px solid var(--mt-border, #e0e0e0);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-}
-
-.mt-ctxmenu__item {
-  text-align: left;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  padding: 6px 10px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--mt-fg, #333);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.mt-ctxmenu__item:hover {
-  background: var(--mt-hover, #f0f0f0);
-}
-
-/* 破坏性操作（删除）：文字与悬停底均用危险色系 */
-.mt-ctxmenu__item--danger {
-  color: var(--mt-danger, #d33);
-}
-
-.mt-ctxmenu__item--danger:hover {
-  background: var(--mt-danger-soft, #fdecea);
-  color: var(--mt-danger, #d33);
-}
-
-.mt-ctxmenu__sep {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--mt-border, #e0e0e0);
-}
 </style>

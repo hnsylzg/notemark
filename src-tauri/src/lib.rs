@@ -1,3 +1,4 @@
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -5,8 +6,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::Manager;
+use tauri::{PhysicalPosition, PhysicalSize};
+use tauri_plugin_fs::FsExt;
+use tauri_plugin_opener::OpenerExt;
+
+mod persistence;
 
 /// 每个窗口待打开的 Markdown 文件（窗口 label -> 绝对路径）。
 ///
@@ -43,8 +48,7 @@ fn pick_md_path(args: &[String]) -> Option<String> {
     .skip(1)
     .find(|a| {
       let lower = a.to_lowercase();
-      (lower.ends_with(".md") || lower.ends_with(".markdown"))
-        && std::path::Path::new(a).is_file()
+      (lower.ends_with(".md") || lower.ends_with(".markdown")) && std::path::Path::new(a).is_file()
     })
     .cloned()
 }
@@ -52,7 +56,7 @@ fn pick_md_path(args: &[String]) -> Option<String> {
 /// 由文件路径派生稳定的窗口 label。
 ///
 /// 同一文件重复双击时聚焦已有窗口，而不是开出两个内容相同的窗口；
-/// 顺带让 window-state 能复用该窗口的位置记忆（该插件按 label 存状态）。
+/// 同一文件复用同一 label，SQLite 窗口状态也按 label 恢复。
 fn window_label_for(path: &str) -> String {
   let mut hasher = DefaultHasher::new();
   path.to_lowercase().hash(&mut hasher);
@@ -74,6 +78,314 @@ fn register_open_doc(path: String, label: String, state: tauri::State<OpenDocs>)
   if let Ok(mut docs) = state.0.lock() {
     docs.insert(path.to_lowercase(), label);
   }
+}
+
+/// Explicitly grant access to a path selected outside a native file dialog.
+///
+/// Tauri dialogs add selected paths to both the plugin fs scope and the asset
+/// protocol scope automatically. Drag/drop, command-line files, persisted
+/// workspaces and recovery drafts need the same treatment. Opening a document
+/// also grants its parent directory so Markdown-relative images and `assets/`
+/// imports remain usable without granting the entire filesystem.
+fn grant_path_access_impl(app: &tauri::AppHandle, path: &std::path::Path) -> Result<(), String> {
+  if path.as_os_str().is_empty() {
+    return Err("路径不能为空".to_string());
+  }
+
+  let fs_scope = app.fs_scope();
+  let asset_scope = app.asset_protocol_scope();
+  if path.is_dir() {
+    fs_scope
+      .allow_directory(path, true)
+      .map_err(|e| e.to_string())?;
+    asset_scope
+      .allow_directory(path, true)
+      .map_err(|e| e.to_string())?;
+    return Ok(());
+  }
+
+  fs_scope.allow_file(path).map_err(|e| e.to_string())?;
+  asset_scope.allow_file(path).map_err(|e| e.to_string())?;
+  if let Some(parent) = path.parent() {
+    fs_scope
+      .allow_directory(parent, true)
+      .map_err(|e| e.to_string())?;
+    asset_scope
+      .allow_directory(parent, true)
+      .map_err(|e| e.to_string())?;
+  }
+  Ok(())
+}
+
+fn remember_authorized_path(app: &tauri::AppHandle, path: &std::path::Path) {
+  if let Err(error) = app
+    .state::<persistence::PersistenceDb>()
+    .remember_authorized_path(path)
+  {
+    log::warn!("[NoteMark] remember authorized path failed: {error}");
+  }
+}
+
+fn restore_authorized_paths(app: &tauri::AppHandle) {
+  match app.state::<persistence::PersistenceDb>().authorized_paths() {
+    Ok(paths) => {
+      for path in paths {
+        let target = std::path::Path::new(&path);
+        if target.exists() {
+          let _ = grant_path_access_impl(app, target);
+        }
+      }
+    }
+    Err(error) => log::warn!("[NoteMark] restore authorized paths failed: {error}"),
+  }
+}
+
+#[tauri::command]
+fn grant_path_access(
+  app: tauri::AppHandle,
+  path: String,
+  include_parent: bool,
+) -> Result<(), String> {
+  let target = std::path::Path::new(&path);
+  if !is_path_allowed(&app, target) {
+    return Err("路径尚未获得用户授权".to_string());
+  }
+  if include_parent {
+    grant_path_access_impl(&app, target)?;
+    remember_authorized_path(&app, target);
+    return Ok(());
+  }
+  let fs_scope = app.fs_scope();
+  let asset_scope = app.asset_protocol_scope();
+  fs_scope.allow_file(target).map_err(|e| e.to_string())?;
+  asset_scope.allow_file(target).map_err(|e| e.to_string())?;
+  remember_authorized_path(&app, target);
+  Ok(())
+}
+
+fn is_path_allowed(app: &tauri::AppHandle, path: &std::path::Path) -> bool {
+  let scope = app.fs_scope();
+  if scope.is_allowed(path) {
+    return true;
+  }
+  path
+    .canonicalize()
+    .map(|resolved| scope.is_allowed(resolved))
+    .unwrap_or(false)
+}
+
+fn capture_window_state(window: &tauri::Window) -> Option<persistence::WindowState> {
+  if window.is_minimized().unwrap_or(false) {
+    return None;
+  }
+  let position = window.outer_position().ok()?;
+  let size = window.inner_size().ok()?;
+  Some(persistence::WindowState {
+    x: position.x,
+    y: position.y,
+    width: size.width,
+    height: size.height,
+    maximized: window.is_maximized().unwrap_or(false),
+  })
+}
+
+fn save_window_state(window: &tauri::Window) {
+  let Some(state) = capture_window_state(window) else {
+    return;
+  };
+  if let Err(error) = window
+    .app_handle()
+    .state::<persistence::PersistenceDb>()
+    .window_state_set(window.label(), state)
+  {
+    log::warn!("[NoteMark] save window state failed: {error}");
+  }
+}
+
+fn restore_window_state(window: &tauri::WebviewWindow) {
+  let state = match window
+    .app_handle()
+    .state::<persistence::PersistenceDb>()
+    .window_state_get(window.label())
+  {
+    Ok(Some(state)) => state,
+    Ok(None) => return,
+    Err(error) => {
+      log::warn!("[NoteMark] load window state failed: {error}");
+      return;
+    }
+  };
+  let width = state.width.max(480);
+  let height = state.height.max(360);
+  let _ = window.set_size(PhysicalSize::new(width, height));
+
+  let monitors = window.available_monitors().unwrap_or_default();
+  let visible = monitors.iter().any(|monitor| {
+    let position = monitor.position();
+    let size = monitor.size();
+    state.x < position.x + size.width as i32
+      && state.x + width as i32 > position.x
+      && state.y < position.y + size.height as i32
+      && state.y + height as i32 > position.y
+  });
+  if visible {
+    let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+  } else {
+    let _ = window.center();
+  }
+  if state.maximized {
+    let _ = window.maximize();
+  }
+}
+
+/// Open a validated local path with the system default application.
+/// The opener plugin is deliberately not granted path access from the WebView.
+#[tauri::command]
+fn open_authorized_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let target = std::path::Path::new(&path);
+  if !is_path_allowed(&app, target) {
+    return Err("路径不在当前文档授权范围内".to_string());
+  }
+  app
+    .opener()
+    .open_path(&path, None::<&str>)
+    .map_err(|e| e.to_string())
+}
+
+/// Reveal a validated local path in the system file manager.
+#[tauri::command]
+fn reveal_authorized_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let target = std::path::Path::new(&path);
+  if !is_path_allowed(&app, target) {
+    return Err("路径不在当前文档授权范围内".to_string());
+  }
+  app
+    .opener()
+    .reveal_item_in_dir(target)
+    .map_err(|e| e.to_string())
+}
+
+/// Persist editor text without ever truncating the destination in place.
+///
+/// The previous version is copied to a sibling `.notemark-bak` file, the new
+/// content is flushed to a sibling temporary file, then the temporary file is
+/// atomically moved over the destination. Windows uses MoveFileExW so the
+/// replacement also flushes metadata (`MOVEFILE_WRITE_THROUGH`).
+#[tauri::command]
+fn atomic_write_text(app: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
+  let target = PathBuf::from(&path);
+  if !target.is_absolute() {
+    return Err("保存路径必须是绝对路径".to_string());
+  }
+  if !is_path_allowed(&app, &target) {
+    return Err("保存路径不在当前文档授权范围内".to_string());
+  }
+  write_file_atomically(&target, content.as_bytes(), true)
+}
+
+#[tauri::command]
+fn atomic_write_file(
+  app: tauri::AppHandle,
+  path: String,
+  data: Vec<u8>,
+  backup: Option<bool>,
+) -> Result<(), String> {
+  let target = PathBuf::from(&path);
+  if !target.is_absolute() {
+    return Err("保存路径必须是绝对路径".to_string());
+  }
+  if !is_path_allowed(&app, &target) {
+    return Err("保存路径不在当前文档授权范围内".to_string());
+  }
+  write_file_atomically(&target, &data, backup.unwrap_or(false))
+}
+
+fn write_file_atomically(
+  target: &std::path::Path,
+  content: &[u8],
+  create_backup: bool,
+) -> Result<(), String> {
+  let parent = target
+    .parent()
+    .ok_or_else(|| "无法取得保存目录".to_string())?;
+  std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  let file_name = target
+    .file_name()
+    .ok_or_else(|| "无法取得文件名".to_string())?
+    .to_string_lossy();
+  let nonce = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_nanos())
+    .unwrap_or(0);
+  let temp_path = parent.join(format!(
+    ".{file_name}.notemark-{}-{nonce}.tmp",
+    std::process::id()
+  ));
+
+  if create_backup && target.is_file() {
+    let backup_path = parent.join(format!(".{file_name}.notemark-bak"));
+    std::fs::copy(target, &backup_path)
+      .map_err(|e| format!("无法创建上一版备份 {}: {e}", backup_path.to_string_lossy()))?;
+  }
+
+  let write_result = (|| -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+      .write(true)
+      .create_new(true)
+      .open(&temp_path)
+      .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    file.write_all(content).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    replace_file_atomically(&temp_path, target)
+  })();
+
+  if write_result.is_err() {
+    let _ = std::fs::remove_file(&temp_path);
+  }
+  write_result
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(
+  source: &std::path::Path,
+  target: &std::path::Path,
+) -> Result<(), String> {
+  use std::os::windows::ffi::OsStrExt;
+  use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+  };
+
+  let source_wide: Vec<u16> = source
+    .as_os_str()
+    .encode_wide()
+    .chain(std::iter::once(0))
+    .collect();
+  let target_wide: Vec<u16> = target
+    .as_os_str()
+    .encode_wide()
+    .chain(std::iter::once(0))
+    .collect();
+  let ok = unsafe {
+    MoveFileExW(
+      source_wide.as_ptr(),
+      target_wide.as_ptr(),
+      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+    )
+  };
+  if ok == 0 {
+    Err(std::io::Error::last_os_error().to_string())
+  } else {
+    Ok(())
+  }
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(
+  source: &std::path::Path,
+  target: &std::path::Path,
+) -> Result<(), String> {
+  std::fs::rename(source, target).map_err(|e| e.to_string())
 }
 
 /// 设置当前窗口标题。
@@ -102,6 +414,9 @@ fn watch_doc(
   use tauri::Emitter;
 
   let file = PathBuf::from(&path);
+  if !is_path_allowed(window.app_handle(), &file) {
+    return Err("监听路径不在当前文档授权范围内".to_string());
+  }
   let dir = file
     .parent()
     .filter(|p| !p.as_os_str().is_empty())
@@ -143,7 +458,9 @@ fn watch_doc(
         EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {}
         _ => return,
       }
-      let Ok(mut last) = debounce_cb.lock() else { return };
+      let Ok(mut last) = debounce_cb.lock() else {
+        return;
+      };
       if last.elapsed() < Duration::from_millis(300) {
         return;
       }
@@ -204,20 +521,17 @@ fn open_in_new_window(app: &tauri::AppHandle, label: &str, path: &str) {
   let title = "NoteMark".to_string();
 
   // visible(false)：与主窗口一致，由前端 revealWindow 在首帧渲染后显示，避免白窗闪烁
-  if let Err(e) = tauri::WebviewWindowBuilder::new(
-    app,
-    label,
-    tauri::WebviewUrl::App("index.html".into()),
-  )
-  .title(title)
-  .inner_size(1000.0, 720.0)
-  .min_inner_size(480.0, 360.0)
-  .resizable(true)
-  .center()
-  .visible(false)
-  .build()
+  match tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+    .title(title)
+    .inner_size(1000.0, 720.0)
+    .min_inner_size(480.0, 360.0)
+    .resizable(true)
+    .center()
+    .visible(false)
+    .build()
   {
-    log::warn!("[NoteMark] open window for {path} failed: {e}");
+    Ok(window) => restore_window_state(&window),
+    Err(e) => log::warn!("[NoteMark] open window for {path} failed: {e}"),
   }
 }
 
@@ -228,20 +542,17 @@ fn open_in_new_window(app: &tauri::AppHandle, label: &str, path: &str) {
 fn open_blank_window(app: &tauri::AppHandle) {
   let seq = BLANK_WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
   let label = format!("blank-{seq}");
-  if let Err(e) = tauri::WebviewWindowBuilder::new(
-    app,
-    label,
-    tauri::WebviewUrl::App("index.html".into()),
-  )
-  .title("NoteMark")
-  .inner_size(1000.0, 720.0)
-  .min_inner_size(480.0, 360.0)
-  .resizable(true)
-  .center()
-  .visible(false)
-  .build()
+  match tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+    .title("NoteMark")
+    .inner_size(1000.0, 720.0)
+    .min_inner_size(480.0, 360.0)
+    .resizable(true)
+    .center()
+    .visible(false)
+    .build()
   {
-    log::warn!("[NoteMark] open blank window failed: {e}");
+    Ok(window) => restore_window_state(&window),
+    Err(e) => log::warn!("[NoteMark] open blank window failed: {e}"),
   }
 }
 
@@ -268,6 +579,7 @@ pub fn run() {
     .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
       let handle = app.clone();
       if let Some(path) = pick_md_path(&argv) {
+        let _ = grant_path_access_impl(app, std::path::Path::new(&path));
         let label = window_label_for(&path);
         if let Ok(mut pending) = app.state::<PendingFiles>().0.lock() {
           pending.insert(label.clone(), path.clone());
@@ -291,6 +603,8 @@ pub fn run() {
       }
     }))
     .setup(move |app| {
+      let persistence = persistence::PersistenceDb::open(app.handle())?;
+      app.manage(persistence);
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()
@@ -300,20 +614,30 @@ pub fn run() {
       }
       // 冷启动带文件时挂到主窗口，前端 ready 后取走
       if let Some(path) = startup_file {
+        let _ = grant_path_access_impl(app.handle(), std::path::Path::new(&path));
         if let Ok(mut pending) = app.state::<PendingFiles>().0.lock() {
           pending.insert(MAIN_LABEL.to_string(), path);
         }
       }
+      restore_authorized_paths(app.handle());
+      if let Some(main_window) = app.get_webview_window(MAIN_LABEL) {
+        restore_window_state(&main_window);
+      }
+      let themes_dir = app.path().app_data_dir()?.join("themes");
+      std::fs::create_dir_all(&themes_dir)?;
+      let _ = grant_path_access_impl(app.handle(), &themes_dir);
       Ok(())
     })
     .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_opener::init())
-    .plugin(tauri_plugin_store::Builder::new().build())
-    .plugin(tauri_plugin_window_state::Builder::default().build())
     .on_window_event(|window, event| {
       use tauri::DragDropEvent;
       use tauri::Emitter;
+      if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+        save_window_state(window);
+      }
       // 窗口关闭时从 OpenDocs 移除其登记项，避免留下指向已销毁窗口的失效条目
       // （否则重复双击同一文件会命中失效 label，又落到「再开一个窗口」的分支）。
       if matches!(event, tauri::WindowEvent::Destroyed) {
@@ -336,32 +660,39 @@ pub fn run() {
       // 看不到「会插到哪」。原生 Over 随鼠标移动持续触发，转发过去后前端
       // 实时画插入位置指示线（图片）或全窗提示（文档）。
       if let tauri::WindowEvent::DragDrop(drag_event) = event {
-        let emit_paths = |event_name: &str,
-                          paths: &[String],
-                          position: &tauri::PhysicalPosition<f64>| {
-          let payload = serde_json::json!({
-            "paths": paths,
-            "x": position.x,
-            "y": position.y,
-          });
-          if let Err(e) = window.emit(event_name, payload) {
-            log::warn!("[NoteMark] emit {event_name} failed: {e}");
-          }
-        };
+        let emit_paths =
+          |event_name: &str, paths: &[String], position: &tauri::PhysicalPosition<f64>| {
+            let payload = serde_json::json!({
+              "paths": paths,
+              "x": position.x,
+              "y": position.y,
+            });
+            if let Err(e) = window.emit(event_name, payload) {
+              log::warn!("[NoteMark] emit {event_name} failed: {e}");
+            }
+          };
         match drag_event {
           // Enter 带文件路径，进入窗口瞬间转发一次（前端用它记住拖的是什么）；
           // 之后的 Over 只带坐标，路径以 Enter 的为准。
           DragDropEvent::Enter { paths, position } => {
-            let paths: Vec<String> =
-              paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let paths: Vec<String> = paths
+              .iter()
+              .map(|p| p.to_string_lossy().to_string())
+              .collect();
             emit_paths("file-drag-over", &paths, position);
           }
           DragDropEvent::Over { position } => {
             emit_paths("file-drag-over", &[], position);
           }
           DragDropEvent::Drop { paths, position } => {
-            let paths: Vec<String> =
-              paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let app = window.app_handle();
+            for path in paths.iter() {
+              let _ = grant_path_access_impl(app, path);
+            }
+            let paths: Vec<String> = paths
+              .iter()
+              .map(|p| p.to_string_lossy().to_string())
+              .collect();
             emit_paths("file-drop", &paths, position);
           }
           DragDropEvent::Leave => {
@@ -376,6 +707,17 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       trash_delete,
       export_pdf,
+      grant_path_access,
+      atomic_write_text,
+      atomic_write_file,
+      persistence::state_get,
+      persistence::state_set,
+      persistence::state_delete,
+      persistence::recovery_get,
+      persistence::recovery_set,
+      persistence::recovery_delete,
+      open_authorized_path,
+      reveal_authorized_path,
       take_window_file,
       register_open_doc,
       set_window_title,
@@ -392,7 +734,11 @@ pub fn run() {
 /// trash crate 分别使用 Windows 的 SHFileOperationW、macOS 的 NSWorkspace、
 /// Linux 的 XDG trash 规范实现。
 #[tauri::command]
-fn trash_delete(path: String) -> Result<(), String> {
+fn trash_delete(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let target = std::path::Path::new(&path);
+  if !is_path_allowed(&app, target) {
+    return Err("删除路径不在当前文档授权范围内".to_string());
+  }
   trash::delete(&path).map_err(|e| e.to_string())
 }
 
@@ -406,7 +752,38 @@ fn trash_delete(path: String) -> Result<(), String> {
 /// 而触发前端的打印对话框。每次调用使用独立 user-data-dir，避免重复 / 并发
 /// 导出时默认 profile 锁竞争导致偶发失败。
 #[tauri::command]
-fn export_pdf(html_path: String, pdf_path: String) -> Result<(), String> {
+fn export_pdf(app: tauri::AppHandle, html: String, pdf_path: String) -> Result<(), String> {
+  let pdf_target = std::path::Path::new(&pdf_path);
+  if !is_path_allowed(&app, pdf_target) {
+    return Err("PDF 导出路径不在当前授权范围内".to_string());
+  }
+  let html_path = std::env::temp_dir().join(format!(
+    "notemark-export-{}-{}.html",
+    std::process::id(),
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_nanos())
+      .unwrap_or(0)
+  ));
+  let temp_pdf = std::env::temp_dir().join(format!(
+    "notemark-export-{}-{}.pdf",
+    std::process::id(),
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_nanos())
+      .unwrap_or(0)
+  ));
+  std::fs::write(&html_path, html).map_err(|e| e.to_string())?;
+  let html_path = html_path.to_string_lossy().to_string();
+  let temp_pdf_string = temp_pdf.to_string_lossy().to_string();
+  let result = export_pdf_file(&html_path, &temp_pdf_string)
+    .and_then(|_| replace_file_atomically(&temp_pdf, pdf_target));
+  let _ = std::fs::remove_file(&html_path);
+  let _ = std::fs::remove_file(&temp_pdf);
+  result
+}
+
+fn export_pdf_file(html_path: &str, pdf_path: &str) -> Result<(), String> {
   let browser = find_browser().ok_or_else(|| "未找到 Edge 或 Chrome 浏览器".to_string())?;
   // file:/// 需要正斜杠路径
   let url = format!("file:///{}", html_path.replace('\\', "/"));
@@ -445,7 +822,7 @@ fn export_pdf(html_path: String, pdf_path: String) -> Result<(), String> {
     match output {
       Ok(out) if out.status.success() => {
         // 浏览器已退出，但 PDF 可能尚未刷盘：轮询最多 3 秒，确认文件存在且非空
-        if wait_for_pdf(&pdf_path, std::time::Duration::from_secs(3)) {
+        if wait_for_pdf(pdf_path, std::time::Duration::from_secs(3)) {
           let _ = std::fs::remove_dir_all(&user_data_dir);
           return Ok(());
         }
@@ -503,4 +880,73 @@ fn find_browser() -> Option<String> {
     .iter()
     .map(|p| p.to_string())
     .find(|p| std::path::Path::new(p).exists())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn unique_temp_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+      "notemark-{name}-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+    ))
+  }
+
+  #[test]
+  fn atomic_write_creates_and_replaces_with_backup() {
+    let dir = unique_temp_dir("atomic-write");
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("note.md");
+
+    write_file_atomically(&target, b"first", true).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
+
+    write_file_atomically(&target, b"second", true).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
+    assert_eq!(
+      std::fs::read_to_string(dir.join(".note.md.notemark-bak")).unwrap(),
+      "first"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn atomic_export_write_does_not_create_document_backup() {
+    let dir = unique_temp_dir("atomic-export");
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("export.html");
+
+    write_file_atomically(&target, b"v1", false).unwrap();
+    write_file_atomically(&target, b"v2", false).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+    assert!(!dir.join(".export.html.notemark-bak").exists());
+
+    let _ = std::fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn pick_md_path_ignores_flags_and_missing_files() {
+    let dir = unique_temp_dir("pick-md");
+    std::fs::create_dir_all(&dir).unwrap();
+    let note = dir.join("note.md");
+    std::fs::write(&note, "# Note").unwrap();
+    let args = vec![
+      "notemark.exe".to_string(),
+      "--flag".to_string(),
+      dir.join("missing.md").to_string_lossy().to_string(),
+      note.to_string_lossy().to_string(),
+    ];
+
+    assert_eq!(
+      pick_md_path(&args),
+      Some(note.to_string_lossy().to_string())
+    );
+    let _ = std::fs::remove_dir_all(dir);
+  }
 }

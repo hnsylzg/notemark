@@ -8,14 +8,16 @@
  *
  * 依赖（Tauri v2 前端插件）：
  * - @tauri-apps/plugin-dialog  -> open / save
- * - @tauri-apps/plugin-fs     -> readTextFile / writeTextFile
+ * - @tauri-apps/plugin-fs     -> readFile
  *
  * 这些 API 在非 Tauri 环境（纯 vite dev 浏览器）下会抛错，
  * 调用方应自行 try/catch 并向用户提示。
  */
 
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { readFile } from "@tauri-apps/plugin-fs";
+import { writeTextFileAtomic } from "./fileAccess";
+import { decodeTextBytes } from "./textEncoding";
 
 /** 可被打开/另存的文本扩展名 */
 const TEXT_FILTERS = [
@@ -47,7 +49,7 @@ export async function openFile(): Promise<OpenedFile | null> {
   // open() 在 multiple:false 时返回 string | null
   if (typeof selected !== "string") return null;
 
-  const content = await readTextFile(selected);
+  const content = decodeTextBytes(await readFile(selected));
   const name = selected.split(/[\\/]/).pop() || selected;
 
   return { path: selected, name, content };
@@ -84,7 +86,7 @@ export async function saveFile(
 ): Promise<SaveResult | null> {
   // 已有路径且未强制弹框：直接覆盖保存
   if (currentPath && !opts?.forceDialog) {
-    await writeTextFile(currentPath, content);
+    await writeTextFileAtomic(currentPath, content);
     const name = currentPath.split(/[\\/]/).pop() || currentPath;
     return { path: currentPath, name };
   }
@@ -98,7 +100,7 @@ export async function saveFile(
 
   if (!target) return null; // 用户取消
 
-  await writeTextFile(target, content);
+  await writeTextFileAtomic(target, content);
   const name = target.split(/[\\/]/).pop() || target;
   return { path: target, name };
 }

@@ -221,14 +221,14 @@
   font-size: 1.125em;
 }
 .milkdown h4 {
-  font-size: 1em;
+  font-size: 1.0625em;
 }
 .milkdown h5 {
-  font-size: 0.875em;
+  font-size: 1em;
   color: var(--mt-color-fg-soft);
 }
 .milkdown h6 {
-  font-size: 0.8125em;
+  font-size: 1em;
   color: var(--mt-color-fg-muted);
 }
 
@@ -311,12 +311,8 @@
 /* ═══════════════════════════════════════════════════════════════
  * 7. 任务列表（SVG 复选框）
  *    勾选框为 SVG 图标（点击自动切换 checked），布局骨架由内置
- *    base.css 提供；已勾选行整行置灰 + 删除线。
+ *    base.css 提供；勾选状态不改变正文颜色和文本装饰。
  * ═══════════════════════════════════════════════════════════════ */
-.milkdown .milkdown-list-item-block > .list-item:has(> .label-wrapper > .label.checked) > .children {
-  color: var(--mt-color-fg-muted);
-  text-decoration: line-through;
-}
 
 /* ═══════════════════════════════════════════════════════════════
  * 8. 引用块
@@ -388,7 +384,7 @@
   font-size: 0.88em;
   background: var(--mt-color-primary-soft);
   color: var(--mt-color-primary);
-  padding: 0.15em 0.4em;
+  padding: 0.15em 0.2em;
   border-radius: 4px;
   border: 1px solid var(--mt-code-border);
 }

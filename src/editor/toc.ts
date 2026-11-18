@@ -17,11 +17,41 @@ import type { MarkdownNode, RemarkPluginRaw } from "@milkdown/transformer";
 import { $nodeSchema, $remark, $view, $inputRule } from "@milkdown/kit/utils";
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import { InputRule } from "@milkdown/kit/prose/inputrules";
-import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
-import { TextSelection } from "@milkdown/kit/prose/state";
+import { GapCursor } from "@milkdown/kit/prose/gapcursor";
+import {
+  Plugin,
+  PluginKey,
+  Selection,
+  TextSelection,
+  type EditorState,
+  type Transaction,
+} from "@milkdown/kit/prose/state";
 import { $prose } from "@milkdown/kit/utils";
 
 const TOC_NAME = "toc";
+
+/** 查找 TOC 后已有的可编辑位置；找不到时返回 null，不修改文档。 */
+export function findSelectionAfterToc(
+  state: EditorState,
+  pos: number,
+  nodeSize: number
+): Selection | null {
+  return Selection.findFrom(state.doc.resolve(pos + nodeSize), 1, true);
+}
+
+function focusAfterToc(
+  view: import("@milkdown/kit/prose/view").EditorView,
+  pos: number,
+  nodeSize: number
+): void {
+  const selection = findSelectionAfterToc(view.state, pos, nodeSize);
+  if (selection) {
+    view.dispatch(
+      view.state.tr.setSelection(selection).scrollIntoView()
+    );
+  }
+  view.focus();
+}
 
 /** 给 heading 生成 slug（与 remark-slug 规则一致：小写、空格转 -、去除标点） */
 function slugify(text: string): string {
@@ -75,7 +105,9 @@ export const tocRemark = $remark("notemark-toc", () => tocRemarkTransform);
 export const tocSchema = $nodeSchema(TOC_NAME, () => ({
   group: "block",
   atom: true,
-  selectable: false,
+  // gapCursor 官方 handleClick 会在节点可选择时放弃创建 GapCursor。
+  // TOC 仍通过 NodeView 把普通点击重定向到目录后的段落。
+  selectable: true,
   draggable: false,
   isolating: true,
   attrs: {},
@@ -98,27 +130,46 @@ export const tocSchema = $nodeSchema(TOC_NAME, () => ({
   },
 }));
 
-/** 输入 [toc] 即时插入 toc 节点 */
-export const tocInputRule = $inputRule((ctx) => {
-  const tocNodeType = tocSchema.type(ctx);
-  return new InputRule(/^\[toc\]$/, (state, _match, start, end) => {
-    const toc = tocNodeType.create();
-    let tr = state.tr.delete(start, end).replaceWith(start, start, toc);
-    // 解析后光标默认落在 toc 之前（被删文字的选区映射到插入点 start），
-    // 但输入 [toc] 后用户期望继续在「目录之后」打字，故显式把光标送到 toc 之后。
-    let after = start + toc.nodeSize;
-    // 若 toc 成为文档末尾（之后无文本块），其后不是合法光标位，PM 会吸附到
-    // 前一块末尾（toc 上一行）。补一个空段落承接，让光标真正落在 toc 之后。
-    const doc = tr.doc;
-    const last = doc.lastChild;
-    if (after >= doc.content.size && last && !last.isTextblock) {
-      const para = state.schema.nodes.paragraph.createAndFill();
-      if (para) {
-        tr = tr.insert(doc.content.size, para);
-        after = tr.doc.content.size - para.nodeSize + 1;
-      }
+/**
+ * 输入 [toc] 后替换整个文本块。
+ *
+ * 不能在原段落内部插入块级 toc：ProseMirror 会自动拆出一个空段落，
+ * 表现为目录上方多出一行。
+ */
+export function createTocInputTransaction(
+  state: EditorState,
+  start: number
+): Transaction | null {
+  const toc = state.schema.nodes[TOC_NAME]?.create();
+  if (!toc) return null;
+
+  const $start = state.doc.resolve(start);
+  let depth = $start.depth;
+  while (depth > 0 && !$start.node(depth).isTextblock) {
+    depth -= 1;
+  }
+  if (depth === 0) return null;
+
+  const blockStart = $start.before(depth);
+  const blockEnd = $start.after(depth);
+  let tr = state.tr.replaceWith(blockStart, blockEnd, toc);
+  let after = blockStart + toc.nodeSize;
+
+  const next = tr.doc.resolve(after).nodeAfter;
+  if (!next) {
+    const paragraph = state.schema.nodes.paragraph?.createAndFill();
+    if (paragraph) {
+      tr = tr.insert(after, paragraph);
+      after += 1;
     }
-    return tr.setSelection(TextSelection.near(tr.doc.resolve(after)));
+  }
+  return tr.setSelection(TextSelection.near(tr.doc.resolve(after)));
+}
+
+/** 输入 [toc] 即时插入 toc 节点 */
+export const tocInputRule = $inputRule(() => {
+  return new InputRule(/^\[toc\]$/, (state, _match, start) => {
+    return createTocInputTransaction(state, start);
   });
 });
 
@@ -168,11 +219,6 @@ function renderTocInner(
   const headings = collectHeadings(view);
   dom.innerHTML = "";
 
-  const title = document.createElement("div");
-  title.className = "mt-toc-title";
-  title.textContent = "目录";
-  dom.appendChild(title);
-
   if (!headings.length) {
     const empty = document.createElement("div");
     empty.className = "mt-toc-empty";
@@ -206,19 +252,31 @@ function renderTocInner(
 }
 
 export const tocView = $view(tocSchema.node, () => {
-  const nodeView: NodeViewConstructor = (_node, view) => {
+  const nodeView: NodeViewConstructor = (node, view, getPos) => {
     const dom = document.createElement("div");
     dom.className = "mt-toc";
     dom.dataset.type = TOC_NAME;
 
     const render = () => {
-      const container = view.dom.querySelector(
-        `div[data-type="${TOC_NAME}"]`,
-      ) as HTMLElement | null;
-      if (container) renderToc(container, view);
+      renderToc(dom, view);
     };
-    // 首次渲染（DOM 已就绪）
-    setTimeout(render, 0);
+    // 必须在 NodeView 创建阶段同步生成内容。若延后到 setTimeout，
+    // ProseMirror 会先按 0 高度放置 DOM 光标，目录撑开后光标会留在上方。
+    render();
+
+    dom.addEventListener("mousedown", (event) => {
+      const target = event.target as Element | null;
+      // 目录项链接继续执行跳转。
+      if (target?.closest("a")) return;
+      // TOC 是原子块，点击标题或内边距时 GapCursor 会出现在目录上方。
+      // 统一把非链接点击落到目录后的可编辑段落。
+      event.preventDefault();
+      event.stopPropagation();
+      const pos = getPos();
+      if (typeof pos === "number") {
+        focusAfterToc(view, pos, node.nodeSize);
+      }
+    });
 
     // 文档变化（含标题增删/改名）后刷新目录：
     // $view 不提供全局 update 钩子，统一由下面的 $prose 插件（tocPlugin）监听刷新
@@ -261,10 +319,58 @@ export const tocPlugin = $prose(() =>
             `div[data-type="${TOC_NAME}"]`,
           );
           containers.forEach((c) => renderToc(c as HTMLElement, view));
+          // WebView2 可能在目录高度变化后继续绘制旧的原生光标。
+          // 目录已同步渲染，下一帧把当前 ProseMirror 选区重新写回 DOM。
+          const selection = view.state.selection;
+          requestAnimationFrame(() => {
+            if (
+              !view.isDestroyed &&
+              view.state.selection.eq(selection)
+            ) {
+              view.focus();
+            }
+          });
         },
       };
     },
   }),
+);
+
+export const tocGapGuardPlugin = $prose(() =>
+  new Plugin({
+    key: new PluginKey("notemark-toc-gap-guard"),
+    filterTransaction(tr) {
+      if (!tr.selectionSet || !(tr.selection instanceof GapCursor)) return true;
+      const after = tr.selection.$from.nodeAfter;
+      return after?.type.name !== TOC_NAME;
+    },
+    props: {
+      handleDOMEvents: {
+        mousedown(view, event) {
+          if (event.button !== 0) return false;
+          const target = event.target as Element | null;
+          if (target?.closest("a")) return false;
+
+          const hit = view.posAtCoords({
+            left: event.clientX,
+            top: event.clientY,
+          });
+          if (!hit) return false;
+
+          const doc = view.state.doc;
+          for (let pos = Math.max(0, hit.pos - 1); pos <= hit.pos; pos += 1) {
+            const toc = doc.nodeAt(pos);
+            if (toc?.type.name !== TOC_NAME) continue;
+            event.preventDefault();
+            event.stopPropagation();
+            focusAfterToc(view, pos, toc.nodeSize);
+            return true;
+          }
+          return false;
+        },
+      },
+    },
+  })
 );
 
 /** 注册给 getEditorPlugins() 的插件集合 */

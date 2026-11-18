@@ -12,9 +12,10 @@
  *   - 渲染失败时展示 .error 信息
  */
 import { $view } from "@milkdown/utils";
+import { loadMathJax } from "./mathjax";
 import { diagramSchema } from "@milkdown/plugin-diagram";
 import type { NodeViewConstructor } from "@milkdown/prose/view";
-import { exitToNextLine } from "./block-exit";
+import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
 
 type MermaidLike = {
   initialize(config: unknown): void;
@@ -170,6 +171,9 @@ export const diagramView = $view(diagramSchema.node, () => {
         .then(async (mermaid) => {
           if (current !== token) return;
           try {
+            // Mermaid 的 $$...$$ 标签也走 MathJax 兼容层，先确保引擎就绪。
+            await loadMathJax();
+            if (current !== token) return;
             mermaid.initialize(getMermaidConfig());
             const id = `diagram-${String(node.attrs.identity)}-${current}`;
             const { svg } = await mermaid.render(id, value);
@@ -200,25 +204,37 @@ export const diagramView = $view(diagramSchema.node, () => {
       textarea.className = "diagram-editor";
       textarea.value = node.attrs.value as string;
       textarea.spellcheck = false;
-      dom.replaceChildren(textarea);
-      // 实时自适应高度：每次输入都按当前行数调整（CSS min-height 兜底，过长时滚动）
-      const fitHeight = () => {
-        const n = textarea.value.split("\n").length;
-        textarea.style.height = `${Math.min(Math.max(n + 1, 8), 32) * 1.6}em`;
-      };
-      fitHeight();
-      textarea.addEventListener("input", fitHeight);
+      textarea.rows = 1;
+      const source = document.createElement("div");
+      source.className = "mt-block-source mt-block-source--diagram";
+      const open = document.createElement("span");
+      open.className = "mt-block-source-marker";
+      open.textContent = "```mermaid";
+      open.setAttribute("aria-hidden", "true");
+      const close = open.cloneNode(true) as HTMLSpanElement;
+      close.textContent = "```";
+      source.append(open, textarea, close);
+      dom.replaceChildren(source);
       textarea.focus();
       const len = textarea.value.length;
       textarea.setSelectionRange(len, len);
 
-      const finish = (commit: boolean) => {
-        if (!editing) return;
+      const finish = (commit: boolean, focusEditor = false): boolean => {
+        if (!editing) return false;
         editing = false;
         const next = commit ? textarea.value : (node.attrs.value as string);
-        if (next !== node.attrs.value) {
-          const pos = getPos();
-          if (typeof pos === "number") {
+        const pos = getPos();
+        if (typeof pos === "number") {
+          if (!next.trim()) {
+            deleteEmptyEditableBlock(
+              view,
+              pos,
+              node.nodeSize,
+              focusEditor
+            );
+            return true;
+          }
+          if (next !== node.attrs.value) {
             // setNodeMarkup 会整体替换 attrs，需合并原 attrs（保留 identity 等字段）
             view.dispatch(
               view.state.tr.setNodeMarkup(pos, undefined, {
@@ -226,10 +242,13 @@ export const diagramView = $view(diagramSchema.node, () => {
                 value: next,
               })
             );
-            return; // update() 会触发重渲染
+            if (focusEditor) view.focus();
+            return false;
           }
         }
         render();
+        if (focusEditor) view.focus();
+        return false;
       };
 
       // 隔离 ProseMirror：textarea 的键盘/鼠标事件若冒泡到 PM，
@@ -239,10 +258,10 @@ export const diagramView = $view(diagramSchema.node, () => {
         e.stopPropagation();
         if (e.key === "Escape") {
           e.preventDefault();
-          finish(false);
+          finish(false, true);
         } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
-          finish(true);
+          if (finish(true, true)) return;
           // 与表格 / 代码块一致：保存后光标跳到块后的下一行
           const curPos = getPos();
           if (typeof curPos === "number") {

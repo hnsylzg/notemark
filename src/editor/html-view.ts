@@ -29,12 +29,69 @@ const SAFE_HTML_TAGS = new Set([
 /** iframe 允许的外部 src：仅 http(s) 绝对地址（拒绝 javascript:/data:/file: 等） */
 const IFRAME_SRC_RE = /^https?:\/\//i;
 
+/**
+ * 少数可视化服务必须在 iframe 内访问自己的同源 Cookie / API。
+ * 只对明确受信任的站点追加 allow-same-origin，不能全局放开：
+ * 全局放开会让任意第三方嵌入页获得与源站一致的存储和网络权限。
+ */
+const IFRAME_SAME_ORIGIN_HOSTS = new Set([
+  "pythontutor.com",
+  "www.pythontutor.com",
+]);
+
 /** iframe 的 allow 属性中不允许出现的敏感权限（剥离，防止嵌入页滥用设备能力） */
 const IFRAME_DENIED_PERMISSIONS = new Set([
   "camera", "microphone", "geolocation", "payment", "usb", "midi", "serial",
   "nfc", "bluetooth", "clipboard-read", "xr-spatial-tracking",
   "screen-wake-lock", "display-capture", "publickey-credentials-get",
+  "top-navigation", "top-navigation-by-user-activation", "downloads",
 ]);
+
+/**
+ * Remote embeds are untrusted document content. Keep them in an opaque-origin
+ * sandbox and never allow top-level navigation, forms, downloads or device
+ * permissions. A user-provided `sandbox` attribute is intentionally replaced.
+ */
+function hardenIframe(el: Element): void {
+  let needsSameOrigin = false;
+  try {
+    const url = new URL(el.getAttribute("src") ?? "", window.location.href);
+    needsSameOrigin = IFRAME_SAME_ORIGIN_HOSTS.has(url.hostname.toLowerCase());
+  } catch {
+    // URL 已通过前面的 http(s) 校验；这里仅兜底畸形 URL。
+  }
+  el.setAttribute(
+    "sandbox",
+    `allow-scripts allow-presentation allow-popups allow-popups-to-escape-sandbox${
+      needsSameOrigin ? " allow-same-origin" : ""
+    }`
+  );
+  if (needsSameOrigin) el.setAttribute("data-md-embed-provider", "pythontutor");
+  el.setAttribute("referrerpolicy", "no-referrer");
+  el.removeAttribute("name");
+  const allow = el.getAttribute("allow") ?? "";
+  if (allow) {
+    const parts = allow
+      .split(";")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    el.setAttribute(
+      "allow",
+      parts
+        .filter((p) => !IFRAME_DENIED_PERMISSIONS.has(p.split(/\s+/)[0].toLowerCase()))
+        .join("; ")
+    );
+  }
+}
+
+/** Python Tutor 是纵向可视化面板，保留嵌入代码声明的固定高度。 */
+function applyIframeRequestedHeight(el: Element, wrap: HTMLElement): void {
+  if (el.getAttribute("data-md-embed-provider") !== "pythontutor") return;
+  const requested = Number.parseFloat(el.getAttribute("height") ?? "");
+  if (!Number.isFinite(requested)) return;
+  const height = Math.min(1200, Math.max(240, Math.round(requested)));
+  wrap.style.setProperty("--md-iframe-height", `${height}px`);
+}
 
 /** 白名单过滤 HTML：移除危险标签、事件属性、脚本相关属性 */
 export function sanitizeHtml(html: string): string {
@@ -86,20 +143,7 @@ export function sanitizeHtml(html: string): string {
         el.remove();
         continue;
       }
-      el.removeAttribute("name");
-      const allow = el.getAttribute("allow") ?? "";
-      if (allow) {
-        const parts = allow
-          .split(";")
-          .map((p) => p.trim())
-          .filter(Boolean);
-        el.setAttribute(
-          "allow",
-          parts
-            .filter((p) => !IFRAME_DENIED_PERMISSIONS.has(p.split(/\s+/)[0].toLowerCase()))
-            .join("; ")
-        );
-      }
+      hardenIframe(el);
       // 延迟加载 + 默认无边框交给 CSS 主题控制
       el.setAttribute("loading", "lazy");
       // 用包裹层承载 hover：pointer-events:none 的元素自身不产生 :hover 状态，
@@ -108,6 +152,7 @@ export function sanitizeHtml(html: string): string {
       wrap.className = "md-iframe-wrap";
       el.replaceWith(wrap);
       wrap.appendChild(el);
+      applyIframeRequestedHeight(el, wrap);
     }
   }
   return template.innerHTML;
@@ -196,25 +241,13 @@ export function sanitizeHtmlBlock(html: string): string {
         el.remove();
         continue;
       }
-      el.removeAttribute("name");
-      const allow = el.getAttribute("allow") ?? "";
-      if (allow) {
-        const parts = allow
-          .split(";")
-          .map((p) => p.trim())
-          .filter(Boolean);
-        el.setAttribute(
-          "allow",
-          parts
-            .filter((p) => !IFRAME_DENIED_PERMISSIONS.has(p.split(/\s+/)[0].toLowerCase()))
-            .join("; ")
-        );
-      }
+      hardenIframe(el);
       el.setAttribute("loading", "lazy");
       const wrap = document.createElement("div");
       wrap.className = "md-iframe-wrap";
       el.replaceWith(wrap);
       wrap.appendChild(el);
+      applyIframeRequestedHeight(el, wrap);
       continue;
     }
 

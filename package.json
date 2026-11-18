@@ -1,11 +1,14 @@
 {
   "name": "notemark",
   "private": true,
-  "version": "0.3.9",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "check": "npm run lint && npm run test && npm run build && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo test --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -18,28 +21,38 @@
     "@milkdown/components": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "@milkdown/plugin-diagram": "^7.7.0",
-    "@milkdown/plugin-math": "^7.5.9",
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-fs": "^2",
     "@tauri-apps/plugin-opener": "^2.5.4",
-    "@tauri-apps/plugin-store": "^2.4.4",
     "docx": "^9.7.1",
     "jszip": "^3.10.1",
-    "katex": "^0.16.22",
+    "lucide": "^1.74.0",
+    "mathjax": "4.1.3",
     "mathml2omml": "^0.5.0",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "vue": "^3.5.41"
+    "vue": "^3.5.45"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.13.3",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
+    "eslint": "^10.15.0",
+    "eslint-plugin-vue": "^10.12.1",
+    "jsdom": "^31.0.1",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2",
+    "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0",
     "vue-tsc": "^3.3.11"
+  },
+  "overrides": {
+    "dompurify": "3.4.18",
+    "minimatch": "11.0.8",
+    "source-map-js": "1.2.2"
   }
 }

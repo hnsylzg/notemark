@@ -72,6 +72,55 @@ export function exitToNextLine(
 }
 
 /**
+ * 删除退出编辑后仍为空的临时块。
+ *
+ * 若该块是父容器唯一子块，直接删除会让 `block+` 容器失效，因此替换成空段落；
+ * 父容器还有其它内容时直接删除。`focusEditor` 用于 Enter/Esc，失焦删除时保持
+ * 用户刚点击到的新位置，不抢焦点。
+ */
+export function deleteEmptyEditableBlock(
+  view: EditorView,
+  pos: number,
+  nodeSize: number,
+  focusEditor = false
+): boolean {
+  const { state } = view;
+  const end = pos + nodeSize;
+  if (pos < 0 || end > state.doc.content.size) return false;
+
+  const $pos = state.doc.resolve(pos);
+  const parent = $pos.parent;
+  const index = $pos.index();
+  if (!parent || index >= parent.childCount) return false;
+
+  const paragraph = state.schema.nodes.paragraph;
+  const replaceWithParagraph =
+    parent.childCount === 1 &&
+    paragraph != null &&
+    parent.canReplaceWith(index, index + 1, paragraph);
+
+  let tr = state.tr;
+  if (replaceWithParagraph) {
+    tr = tr.replaceWith(pos, end, paragraph.create());
+  } else {
+    tr = tr.delete(pos, end);
+  }
+
+  if (focusEditor) {
+    tr.setSelection(
+      TextSelection.near(
+        tr.doc.resolve(Math.min(pos, tr.doc.content.size)),
+        -1
+      )
+    ).scrollIntoView();
+  }
+
+  view.dispatch(tr);
+  if (focusEditor) view.focus();
+  return true;
+}
+
+/**
  * 插入块之后把光标放到块【后面】（insertAtom / insertHtmlBlock 用）。
  *
  * ★ 不能直接 `Selection.near(resolve(blockEnd))`：它向后找不到可落脚的文本

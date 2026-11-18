@@ -1,6 +1,6 @@
 [package]
 name = "notemark"
-version = "0.3.9"
+version = "0.4.0"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -24,14 +24,16 @@ log = "0.4"
 tauri = { version = "2.11.3", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-store = "2"
-# 记住并恢复窗口位置 / 大小（上次窗口尺寸）
-tauri-plugin-window-state = "2"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 # 删除文件到系统回收站（可恢复）；前端 fs 插件的 remove 只能直接删除
 trash = "5"
 # 单实例：双击关联文件时，把路径交给已运行的实例开新窗口，而不是再起一个进程
 tauri-plugin-single-instance = "2"
 # 文件变化监听（外部程序改动当前文档时通知前端）
 notify = "6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

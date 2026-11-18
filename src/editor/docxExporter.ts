@@ -10,12 +10,12 @@
  * - 图片：按文件头（magic bytes）识别真实格式，png/jpg/gif/bmp 直接内嵌，
  *   svg 与 webp / avif 先栅格化成 png；远程图需要真能 fetch 到字节（被跨域
  *   策略挡住时降级为占位）；大图等比缩到内容区宽（顶到页边距），小图保持原尺寸
- * - 公式（行内/块级）：KaTeX → MathML → OMML，作为 Word 原生公式注入
+ * - 公式（行内/块级）：MathJax → MathML → OMML，作为 Word 原生公式注入
  *   （可在 Word 里继续编辑，与 Typora 导出一致）；转换失败时降级为
  *   栅格化图片，再失败则退化为源码文本
  * - Mermaid 图表：mermaid 渲染成 SVG 后栅格化成 png 内嵌（Word 无对应物）
  * - 嵌套表格：内层内容以段落呈现（Word 单元格内嵌表格结构复杂）
- * - task list 的勾选框以 [x] / [ ] 文本标记
+ * - task list 的勾选框导出为 Word 2010+ 原生复选框内容控件
  *
  * OMML 注入说明：docx 库不支持公式，故对公式节点先放一个唯一占位
  * TextRun，生成 docx 后用 JSZip 改写 word/document.xml，把占位 run
@@ -23,9 +23,11 @@
  */
 
 import JSZip from "jszip";
-import katex from "katex";
-import { mml2omml } from "mathml2omml";
-import { katexExportCss } from "./katex-export-css";
+import { renderMathJaxSvg, texToMathMl } from "./mathjax";
+import {
+  mathMlRequiresRasterFallback,
+  mathMlToOmml,
+} from "./mathml-to-omml";
 import { resolveImageSrc } from "./image-view";
 import {
   AlignmentType,
@@ -34,21 +36,18 @@ import {
   ExternalHyperlink,
   HeadingLevel,
   ImageRun,
+  LineRuleType,
   Packer,
   Paragraph,
   Table,
   TableCell,
+  TableLayoutType,
   TableRow,
   TextRun,
   WidthType,
 } from "docx";
 import type { IRunOptions } from "docx";
 import type { Node as PMNode, Mark as PMMark } from "@milkdown/kit/prose/model";
-import type { Editor } from "@milkdown/kit/core";
-// editorViewCtx 在运行时由 @milkdown/kit/core 导出（d.ts 遗漏声明），见 index.ts 说明。
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore editorViewCtx 运行时可用（d.ts 未声明）
-import { editorViewCtx } from "@milkdown/kit/core";
 
 /** 段落级元素（Document 的 children） */
 type BlockChild = Paragraph | Table;
@@ -61,6 +60,76 @@ type TextRunOptions = IRunOptions;
 type RasterType = "png" | "jpg" | "gif" | "bmp";
 /** 图片原始格式（含需转换的 svg、需转 png 后内嵌的 webp / avif） */
 type ImageType = RasterType | "svg" | "webp" | "avif";
+
+/** Word 导出使用固定的跨平台字体组合；中文和西文分别声明。 */
+const BODY_FONTS = {
+  ascii: "Calibri",
+  hAnsi: "Calibri",
+  eastAsia: "等线",
+  cs: "Calibri",
+} as const;
+const CODE_FONTS = {
+  ascii: "Consolas",
+  hAnsi: "Consolas",
+  eastAsia: "等线",
+  cs: "Consolas",
+} as const;
+
+/** 正文 1.5 倍行距、段后 6pt。Word 中 line=240 表示单倍行距。 */
+const BODY_SPACING = {
+  before: 0,
+  after: 120,
+  line: 360,
+  lineRule: LineRuleType.AUTO,
+} as const;
+/** 代码块固定 16pt 行高，避免 1.5 倍行距把代码拉得过散。 */
+const CODE_SPACING = {
+  before: 120,
+  after: 120,
+  line: 320,
+  lineRule: LineRuleType.AUTO,
+} as const;
+/** OOXML twips per typographic point. */
+const TWIPS_PER_POINT = 20;
+/** OOXML border widths use eighths of a point. */
+const BORDER_UNITS_PER_POINT = 8;
+/** Code-block border spacing, in points. */
+const CODE_BLOCK_VERTICAL_SPACE_PT = 6;
+const CODE_BLOCK_HORIZONTAL_SPACE_PT = 9;
+const CODE_BLOCK_BORDER_SIZE = 2;
+/** Match border spacing plus the border's own stroke width. */
+const CODE_BLOCK_HORIZONTAL_INSET_TWIPS = Math.ceil(
+  (CODE_BLOCK_HORIZONTAL_SPACE_PT * TWIPS_PER_POINT +
+    (CODE_BLOCK_BORDER_SIZE / BORDER_UNITS_PER_POINT) * TWIPS_PER_POINT) /
+    TWIPS_PER_POINT
+) * TWIPS_PER_POINT;
+/** 与底纹同色的段落边框，用 border-space 形成代码块内边距。 */
+const CODE_BLOCK_BORDER = {
+  top: {
+    style: BorderStyle.SINGLE,
+    size: CODE_BLOCK_BORDER_SIZE,
+    color: "F5F5F5",
+    space: CODE_BLOCK_VERTICAL_SPACE_PT,
+  },
+  bottom: {
+    style: BorderStyle.SINGLE,
+    size: CODE_BLOCK_BORDER_SIZE,
+    color: "F5F5F5",
+    space: CODE_BLOCK_VERTICAL_SPACE_PT,
+  },
+  left: {
+    style: BorderStyle.SINGLE,
+    size: CODE_BLOCK_BORDER_SIZE,
+    color: "F5F5F5",
+    space: CODE_BLOCK_HORIZONTAL_SPACE_PT,
+  },
+  right: {
+    style: BorderStyle.SINGLE,
+    size: CODE_BLOCK_BORDER_SIZE,
+    color: "F5F5F5",
+    space: CODE_BLOCK_HORIZONTAL_SPACE_PT,
+  },
+} as const;
 
 /** 标题层级映射（1~6） */
 const HEADING_LEVELS = [
@@ -107,15 +176,26 @@ const MAX_FIGURE_HEIGHT_PX = Math.floor(
 
 /** Word 数学命名空间（OMML） */
 const OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+/** Word 2010 扩展命名空间（w14:checkbox） */
+const WORD14_NS = "http://schemas.microsoft.com/office/word/2010/wordml";
+/** Word 2013 扩展命名空间（w15:appearance） */
+const WORD15_NS = "http://schemas.microsoft.com/office/word/2012/wordml";
+/** VML horizontal-rule thickness. */
+const HORIZONTAL_RULE_HEIGHT = "0.5pt";
+/** Legacy VML namespace used by Word for inline vector lines. */
+const VML_NS = "urn:schemas-microsoft-com:vml";
+/** Office namespace for VML horizontal-rule attributes. */
+const OFFICE_NS = "urn:schemas-microsoft-com:office:office";
 
 /** 公式占位 run 的唯一令牌前缀（docx 注入时按此定位并替换） */
 const OMML_TOKEN_PREFIX = "OMMLPH";
 
 /** 目录占位段（整段 <w:p>）的唯一令牌前缀 */
 const TOC_TOKEN_PREFIX = "TOCPH";
-
-/** 目录条目（预扫描收集，用于预填 TOC 域结果，避免打开时弹「更新域」警告） */
-type TocEntry = { level: number; text: string; page: number };
+/** Word 复选框占位符的唯一令牌前缀 */
+const CHECKBOX_TOKEN_PREFIX = "CHKBOXPH";
+/** Horizontal-rule paragraph placeholder prefix. */
+const HORIZONTAL_RULE_TOKEN_PREFIX = "HRPH";
 
 /** 导出上下文：固定字号（docx half-points），与编辑器主题解耦 */
 type ExportContext = {
@@ -125,34 +205,41 @@ type ExportContext = {
   placeholders: { token: string; omml: string }[];
   /** 目录节点占位（token -> 整段 TOC 域 XML） */
   tocPlaceholders: { token: string; xml: string }[];
-  /** 预扫描得到的全部标题（顺序与文档一致），用于预填 TOC 结果 */
-  tocEntries: TocEntry[];
+  /** 任务列表复选框占位（token -> checked） */
+  checkboxPlaceholders: { token: string; checked: boolean; id: number }[];
+  /** Horizontal-rule paragraph placeholders. */
+  horizontalRulePlaceholders: { token: string }[];
   /** 编辑器可视 DOM（用于复用已渲染的 Mermaid SVG 等），不可用时为 null */
   viewDom: HTMLElement | null;
+  /** 本文档是否包含代码块（用于后处理 Source Code 样式） */
+  hasCodeBlock: boolean;
 };
+
+export interface DocxExportSource {
+  doc: PMNode;
+  viewDom: HTMLElement | null;
+}
 
 /**
  * 生成 .docx 文件的二进制内容。
  * @param editor 编辑器实例
  */
-export async function buildDocx(editor: Editor): Promise<Uint8Array> {
-  const doc = editor.action(
-    (ctx) => ctx.get(editorViewCtx).state.doc
-  ) as PMNode;
+export async function buildDocx(
+  source: DocxExportSource
+): Promise<Uint8Array> {
+  const { doc, viewDom } = source;
   // 编辑器可视 DOM：供导出复用已渲染好的 Mermaid SVG（与屏幕/PDF 所见一致）
-  const viewDom = editor.action(
-    (c) => c.get(editorViewCtx).dom
-  ) as HTMLElement | null;
   // 固定字号，对齐 Typora（pandoc 导出 Word：正文 12pt = 24 half-points，代码 10.5pt = 21 half-points）
   const ctx: ExportContext = {
     base: 24,
     code: 21,
     placeholders: [],
     tocPlaceholders: [],
-    tocEntries: [],
+    checkboxPlaceholders: [],
+    horizontalRulePlaceholders: [],
     viewDom: viewDom ?? null,
+    hasCodeBlock: false,
   };
-  collectToc(doc, ctx);
   const children = await convertBlocks(doc, ctx);
   // Word 文档至少要有一个段落，空文档补一个空段落
   if (children.length === 0) children.push(new Paragraph({ children: [] }));
@@ -160,9 +247,234 @@ export async function buildDocx(editor: Editor): Promise<Uint8Array> {
     styles: {
       default: {
         document: {
-          run: { size: ctx.base },
+          run: { size: ctx.base, font: BODY_FONTS },
+          paragraph: {
+            spacing: BODY_SPACING,
+          },
+        },
+        heading1: {
+          run: { size: 40, bold: true, font: BODY_FONTS },
+          paragraph: {
+            spacing: {
+              before: 360,
+              after: 160,
+              line: 300,
+              lineRule: LineRuleType.AUTO,
+            },
+            keepNext: true,
+            keepLines: true,
+          },
+        },
+        heading2: {
+          run: { size: 32, bold: true, font: BODY_FONTS },
+          paragraph: {
+            spacing: {
+              before: 280,
+              after: 120,
+              line: 300,
+              lineRule: LineRuleType.AUTO,
+            },
+            keepNext: true,
+            keepLines: true,
+          },
+        },
+        heading3: {
+          run: { size: 28, bold: true, font: BODY_FONTS },
+          paragraph: {
+            spacing: {
+              before: 200,
+              after: 80,
+              line: 312,
+              lineRule: LineRuleType.AUTO,
+            },
+            keepNext: true,
+            keepLines: true,
+          },
+        },
+        heading4: {
+          run: { size: 24, bold: true, font: BODY_FONTS },
+          paragraph: {
+            spacing: {
+              before: 160,
+              after: 80,
+              line: 312,
+              lineRule: LineRuleType.AUTO,
+            },
+            keepNext: true,
+            keepLines: true,
+          },
+        },
+        heading5: {
+          run: { size: 22, bold: true, font: BODY_FONTS },
+          paragraph: {
+            spacing: {
+              before: 120,
+              after: 80,
+              line: 312,
+              lineRule: LineRuleType.AUTO,
+            },
+            keepNext: true,
+            keepLines: true,
+          },
+        },
+        heading6: {
+          run: { size: 22, bold: true, font: BODY_FONTS },
+          paragraph: {
+            spacing: {
+              before: 120,
+              after: 80,
+              line: 312,
+              lineRule: LineRuleType.AUTO,
+            },
+            keepNext: true,
+            keepLines: true,
+          },
         },
       },
+      paragraphStyles: [
+        {
+          id: "TOC",
+          name: "TOC Heading",
+          basedOn: "Heading1",
+          next: "Normal",
+          uiPriority: 39,
+          unhideWhenUsed: true,
+          quickFormat: true,
+          run: {
+            bold: false,
+            font: BODY_FONTS,
+          },
+          paragraph: {
+            spacing: {
+              before: 240,
+              after: 120,
+              line: 300,
+              lineRule: LineRuleType.AUTO,
+            },
+            outlineLevel: 9,
+          },
+        },
+        {
+          id: "TOC1",
+          name: "toc 1",
+          basedOn: "Normal",
+          next: "Normal",
+          uiPriority: 39,
+          unhideWhenUsed: true,
+          quickFormat: true,
+          run: { font: BODY_FONTS, size: ctx.base },
+          paragraph: {
+            indent: { left: 0 },
+            spacing: {
+              before: 60,
+              after: 0,
+              line: 300,
+              lineRule: LineRuleType.AUTO,
+            },
+          },
+        },
+        {
+          id: "TOC2",
+          name: "toc 2",
+          basedOn: "Normal",
+          next: "Normal",
+          uiPriority: 39,
+          unhideWhenUsed: true,
+          quickFormat: true,
+          run: { font: BODY_FONTS, size: ctx.base },
+          paragraph: {
+            indent: { left: 220 },
+            spacing: {
+              before: 60,
+              after: 0,
+              line: 300,
+              lineRule: LineRuleType.AUTO,
+            },
+          },
+        },
+        {
+          id: "TOC3",
+          name: "toc 3",
+          basedOn: "Normal",
+          next: "Normal",
+          uiPriority: 39,
+          unhideWhenUsed: true,
+          quickFormat: true,
+          run: { font: BODY_FONTS, size: ctx.base },
+          paragraph: {
+            indent: { left: 440 },
+            spacing: {
+              before: 60,
+              after: 0,
+              line: 300,
+              lineRule: LineRuleType.AUTO,
+            },
+          },
+        },
+        {
+          id: "SourceCode",
+          name: "Source Code",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: {
+            font: CODE_FONTS,
+            size: ctx.code,
+          },
+          paragraph: {
+            indent: {
+              left: CODE_BLOCK_HORIZONTAL_INSET_TWIPS,
+              right: CODE_BLOCK_HORIZONTAL_INSET_TWIPS,
+            },
+            shading: { fill: "F5F5F5" },
+            border: CODE_BLOCK_BORDER,
+            spacing: CODE_SPACING,
+          },
+        },
+        {
+          id: "Blockquote",
+          name: "Blockquote",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: BODY_FONTS, size: ctx.base },
+          paragraph: {
+            indent: { left: 480 },
+            spacing: {
+              before: 0,
+              after: 0,
+              line: 240,
+              lineRule: LineRuleType.AUTO,
+            },
+            border: {
+              left: {
+                style: BorderStyle.SINGLE,
+                size: 12,
+                color: "BFBFBF",
+                space: 8,
+              },
+              top: {
+                style: BorderStyle.SINGLE,
+                size: 2,
+                color: "FFFFFF",
+                space: 6,
+              },
+              bottom: {
+                style: BorderStyle.SINGLE,
+                size: 2,
+                color: "FFFFFF",
+                space: 6,
+              },
+              right: {
+                style: BorderStyle.SINGLE,
+                size: 2,
+                color: "FFFFFF",
+                space: 9,
+              },
+            },
+          },
+        },
+      ],
     },
     sections: [
       {
@@ -178,9 +490,21 @@ export async function buildDocx(editor: Editor): Promise<Uint8Array> {
     ],
   });
   let buffer = await Packer.toArrayBuffer(document);
-  // 把公式占位 run 替换为 OMML、目录占位段替换为 TOC 域，并声明命名空间/更新域
-  if (ctx.placeholders.length || ctx.tocPlaceholders.length) {
-    buffer = await injectOmml(buffer, ctx.placeholders, ctx.tocPlaceholders);
+  // 把公式、目录和任务复选框占位替换为对应 OOXML，并声明所需命名空间。
+  if (
+    ctx.placeholders.length ||
+    ctx.tocPlaceholders.length ||
+    ctx.checkboxPlaceholders.length ||
+    ctx.horizontalRulePlaceholders.length ||
+    ctx.hasCodeBlock
+  ) {
+    buffer = await injectOoxml(
+      buffer,
+      ctx.placeholders,
+      ctx.tocPlaceholders,
+      ctx.checkboxPlaceholders,
+      ctx.horizontalRulePlaceholders
+    );
   }
   return new Uint8Array(buffer);
 }
@@ -202,7 +526,6 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       return [
         new Paragraph({
           heading: level,
-          spacing: { before: 200, after: 100 },
           children: await convertInline(node, ctx),
         }),
       ];
@@ -211,7 +534,6 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     case "paragraph":
       return [
         new Paragraph({
-          spacing: { after: 120 },
           // 段落里嵌着 <center> 的行内 HTML 时整段居中（此前只在 default 分支
           // 判定，而 paragraph 有独立分支，导致居中判定根本执行不到）
           alignment: paragraphAlignment(node),
@@ -221,23 +543,31 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
 
     case "blockquote": {
       const out: BlockChild[] = [];
+      let inline: InlineChild[] = [];
+      const flushParagraph = () => {
+        if (inline.length === 0) return;
+        out.push(
+          new Paragraph({
+            style: "Blockquote",
+            children: inline,
+          })
+        );
+        inline = [];
+      };
       for (let i = 0; i < node.childCount; i += 1) {
         const child = node.child(i);
         if (child.type.name === "paragraph") {
-          out.push(
-            new Paragraph({
-              indent: { left: 480 },
-              border: {
-                left: { style: BorderStyle.SINGLE, size: 12, color: "BFBFBF", space: 8 },
-              },
-              children: await convertInline(child, ctx),
-            })
-          );
+          const paragraph = await convertInline(child, ctx);
+          if (paragraph.length === 0) continue;
+          if (inline.length > 0) inline.push(new TextRun({ break: 1 }));
+          inline.push(...paragraph);
         } else {
           // 引用块内的列表/代码块等：递归处理（缩进样式不再叠加）
+          flushParagraph();
           out.push(...(await convertBlock(child, ctx)));
         }
       }
+      flushParagraph();
       return out;
     }
 
@@ -247,36 +577,69 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
 
     case "code_block":
     case "fence": {
+      ctx.hasCodeBlock = true;
       const lines = node.textContent.split("\n");
-      return lines.map(
-        (line) =>
-          new Paragraph({
-            shading: { fill: "F5F5F5" },
-            spacing: { before: 0, after: 0 },
-            children: [new TextRun({ text: line || " ", font: "Consolas", size: ctx.code })],
-          })
-      );
+      const children: TextRun[] = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        children.push(new TextRun({ text: lines[i] || " " }));
+        if (i < lines.length - 1) children.push(new TextRun({ break: 1 }));
+      }
+      return [
+        new Paragraph({
+          style: "SourceCode",
+          children,
+        }),
+      ];
     }
 
     case "table": {
       const rows: TableRow[] = [];
+      const columnCount = Math.max(1, node.firstChild?.childCount ?? 0);
+      const baseColumnWidth = Math.floor(PAGE_CONTENT_W / columnCount);
+      const columnWidths = Array.from(
+        { length: columnCount },
+        (_, index) =>
+          index === columnCount - 1
+            ? PAGE_CONTENT_W - baseColumnWidth * (columnCount - 1)
+            : baseColumnWidth
+      );
       for (let r = 0; r < node.childCount; r += 1) {
         const rowNode = node.child(r);
         const cells: TableCell[] = [];
         for (let c = 0; c < rowNode.childCount; c += 1) {
           const cellNode = rowNode.child(c);
-          const inner = await convertBlocks(cellNode, ctx);
-          // 单元格只接受段落；嵌套表格等内容降级为段落文本
-          const paragraphs = inner.filter((x): x is Paragraph => x instanceof Paragraph);
+          // GFM 表格的 cellContent 固定为 paragraph；水平对齐存在单元格
+          // attrs.alignment 上，但在 Word 中必须落到单元格段落的 w:jc。
+          const paragraphNode = cellNode.firstChild;
           cells.push(
             new TableCell({
-              children: paragraphs.length ? paragraphs : [new Paragraph({ children: [] })],
+              width: {
+                size: columnWidths[c] ?? baseColumnWidth,
+                type: WidthType.DXA,
+              },
+              children: [
+                new Paragraph({
+                  alignment: tableCellAlignment(cellNode),
+                  children:
+                    paragraphNode?.type.name === "paragraph"
+                      ? await convertInline(paragraphNode, ctx)
+                      : [],
+                }),
+              ],
             })
           );
         }
         rows.push(new TableRow({ children: cells }));
       }
-      return [new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } })];
+      return [
+        new Table({
+          rows,
+          width: { size: PAGE_CONTENT_W, type: WidthType.DXA },
+          columnWidths,
+          layout: TableLayoutType.FIXED,
+          indent: { size: 0, type: WidthType.DXA },
+        }),
+      ];
     }
 
     case "image": {
@@ -291,15 +654,11 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     }
 
     case "hr":
-    case "horizontal_rule":
-      return [
-        new Paragraph({
-          border: {
-            bottom: { style: BorderStyle.SINGLE, size: 6, color: "CCCCCC", space: 1 },
-          },
-          children: [],
-        }),
-      ];
+    case "horizontal_rule": {
+      const token = nextHorizontalRuleToken(ctx);
+      ctx.horizontalRulePlaceholders.push({ token });
+      return [new Paragraph({ children: [new TextRun({ text: token })] })];
+    }
 
     // 块级数学公式：先尝试转 Word 原生 OMML，失败再降级为栅格图片，再失败为源码
     case "math_block": {
@@ -342,7 +701,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     // （打开时由 Word 自动生成，或右键「更新域」；见 injectOmml）
     case "toc": {
       const token = nextTocToken(ctx);
-      ctx.tocPlaceholders.push({ token, xml: buildTocFieldXml(ctx.tocEntries) });
+      ctx.tocPlaceholders.push({ token, xml: buildTocFieldXml() });
       return [new Paragraph({ children: [new TextRun({ text: token })] })];
     }
 
@@ -399,7 +758,7 @@ function htmlMarkOptions(m: HtmlMark): TextRunOptions {
     italics: m.i || undefined,
     underline: m.u ? {} : undefined,
     strike: m.s || undefined,
-    font: m.code ? "Consolas" : undefined,
+    font: m.code ? CODE_FONTS : undefined,
   };
 }
 
@@ -561,6 +920,18 @@ function paragraphAlignment(node: PMNode): HtmlAlign {
   return centered ? AlignmentType.CENTER : undefined;
 }
 
+/** GFM 单元格水平对齐 → Word 段落对齐。 */
+function tableCellAlignment(node: PMNode): HtmlAlign {
+  switch (String((node.attrs ?? {}).alignment ?? "left")) {
+    case "center":
+      return AlignmentType.CENTER;
+    case "right":
+      return AlignmentType.RIGHT;
+    default:
+      return AlignmentType.LEFT;
+  }
+}
+
 /** 列表缩进单位（twips，0.25"）；嵌套层级按 depth 累加 */
 const LIST_INDENT = 360;
 
@@ -610,21 +981,38 @@ async function convertList(parent: PMNode, ctx: ExportContext, depth: number): P
     }
     const checked = (item.attrs ?? {}).checked;
     const isTask = checked === true || checked === false;
-    const marker = isTask
-      ? checked
-        ? "[x] "
-        : "[ ] "
-      : ordered
-        ? orderedMarker(i, depth)
-        : bulletMarker(depth);
+    const marker = ordered
+      ? orderedMarker(i, depth)
+      : bulletMarker(depth);
+    let hasMarker = false;
     for (let j = 0; j < item.childCount; j += 1) {
       const child = item.child(j);
       if (child.type.name === "paragraph") {
+        const leading: InlineChild[] = [];
+        if (!hasMarker) {
+          hasMarker = true;
+          if (isTask) {
+            const checkboxToken = nextCheckboxToken(ctx, checked);
+            leading.push(new TextRun({ text: checkboxToken }));
+            leading.push(new TextRun({ text: " " }));
+          } else {
+            leading.push(new TextRun({ text: marker, font: BODY_FONTS }));
+          }
+        }
         out.push(
           new Paragraph({
-            indent: { left: LIST_INDENT * (depth + 1), hanging: LIST_INDENT },
+            indent: {
+              left: LIST_INDENT * (depth + 1),
+              hanging: leading.length ? LIST_INDENT : 0,
+            },
+            spacing: {
+              before: 0,
+              after: 60,
+              line: 360,
+              lineRule: LineRuleType.AUTO,
+            },
             children: [
-              new TextRun({ text: marker, font: "Consolas" }),
+              ...leading,
               ...(await convertInline(child, ctx)),
             ],
           })
@@ -667,7 +1055,7 @@ async function convertInline(parent: PMNode, ctx: ExportContext): Promise<Inline
           out.push(img);
           break;
         }
-        out.push(new TextRun({ text: `$${tex}$`, font: "Consolas", color: "666666" }));
+        out.push(new TextRun({ text: `$${tex}$`, font: CODE_FONTS, color: "666666" }));
         break;
       }
       case "image": {
@@ -726,7 +1114,7 @@ function applyMarks(base: TextRunOptions, marks: readonly PMMark[]): TextRunOpti
         opts.underline = {};
         break;
       case "code":
-        opts.font = "Consolas";
+        opts.font = CODE_FONTS;
         opts.shading = { fill: "F2F2F2" };
         break;
       case "highlight":
@@ -745,19 +1133,13 @@ function applyMarks(base: TextRunOptions, marks: readonly PMMark[]): TextRunOpti
 
 /* ============ 公式：LaTeX -> OMML ============ */
 
-/** KaTeX 渲染 LaTeX 为 MathML，再转 OMML；失败返回 null */
+/** MathJax 渲染 LaTeX 为 MathML，再转 OMML；失败返回 null */
 async function latexToOmml(tex: string, displayMode: boolean): Promise<string | null> {
   try {
     if (!tex || !tex.trim()) return null;
-    let mathml = katex.renderToString(tex, {
-      displayMode,
-      output: "mathml",
-      throwOnError: false,
-    });
-    // 摘出 <math>…</math>，去掉 TeX 源码 annotation，避免无关告警
-    const m = mathml.match(/<math[\s\S]*<\/math>/);
-    if (m) mathml = m[0].replace(/<annotation[^>]*>[\s\S]*?<\/annotation>/g, "");
-    let omml = mml2omml(mathml);
+    const mathml = await texToMathMl(tex, displayMode);
+    if (mathMlRequiresRasterFallback(mathml)) return null;
+    let omml = mathMlToOmml(mathml);
     if (!omml || !omml.includes("<m:")) return null;
     if (displayMode) omml = `<m:oMathPara>${omml}</m:oMathPara>`;
     return omml;
@@ -767,15 +1149,13 @@ async function latexToOmml(tex: string, displayMode: boolean): Promise<string | 
   }
 }
 
-/** 公式降级为栅格图片（KaTeX HTML 经 foreignObject 栅格化） */
+/** 公式降级为栅格图片（MathJax SVG 栅格化） */
 async function formulaToImage(tex: string, displayMode: boolean): Promise<ImageRun | null> {
   try {
-    const html = katex.renderToString(tex, {
-      displayMode,
-      throwOnError: false,
-      output: "htmlAndMathml",
-    });
-    const png = await htmlToPng(html);
+    const container = await renderMathJaxSvg(tex, displayMode);
+    const svg = container.querySelector("svg")?.outerHTML;
+    if (!svg) return null;
+    const png = await svgToPng(svg);
     if (!png) return null;
     return new ImageRun({
       type: "png",
@@ -834,51 +1214,6 @@ async function svgToPng(
   } catch (err) {
     console.warn("[NoteMark] svg->png failed:", err);
     return null;
-  }
-}
-
-/** 把 KaTeX HTML 经 foreignObject 栅格化为 PNG（用于公式图片兜底） */
-async function htmlToPng(
-  html: string
-): Promise<{ data: Uint8Array; width: number; height: number } | null> {
-  let host: HTMLDivElement | null = null;
-  try {
-    host = document.createElement("div");
-    host.style.position = "fixed";
-    host.style.left = "-99999px";
-    host.style.top = "0";
-    host.style.padding = "2px";
-    host.style.background = "transparent";
-    host.style.color = "#000";
-    host.style.fontSize = "16px";
-    host.innerHTML = `<style>${katexExportCss}</style>${html}`;
-    document.body.appendChild(host);
-    const rect = host.getBoundingClientRect();
-    const w = Math.max(1, Math.ceil(rect.width));
-    const h = Math.max(1, Math.ceil(rect.height));
-    const scale = Math.min(3, Math.max(2, window.devicePixelRatio || 2));
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
-      `<foreignObject width="100%" height="100%">` +
-      `<div xmlns="http://www.w3.org/1999/xhtml" style="color:#000;background:transparent;">` +
-      `<style>${katexExportCss}</style>${html}</div>` +
-      `</foreignObject></svg>`;
-    const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    const img = await loadImage(url);
-    const canvas = document.createElement("canvas");
-    canvas.width = w * scale;
-    canvas.height = h * scale;
-    const c = canvas.getContext("2d");
-    if (!c) return null;
-    c.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const blob = await canvasToPng(canvas);
-    if (!blob) return null;
-    return { data: new Uint8Array(await blob.arrayBuffer()), width: w, height: h };
-  } catch (err) {
-    console.warn("[NoteMark] html->png failed:", err);
-    return null;
-  } finally {
-    host?.remove();
   }
 }
 
@@ -1118,15 +1453,15 @@ async function renderMermaid(code: string): Promise<string | null> {
   }
 }
 
-/* ============ OMML 注入（docx zip 改写） ============ */
+/* ============ 注入（docx zip 改写：公式 / 目录 / Word 复选框） ============ */
 
-/* ============ 注入（docx zip 改写：公式 OMML / 目录 TOC 域 / 自动更新域） ============ */
-
-/** 把公式占位 run 替换为 OMML、目录占位段替换为 TOC 域，并声明所需命名空间/更新域 */
-async function injectOmml(
+/** 把公式、目录和任务复选框占位替换为对应 OOXML，并声明所需命名空间。 */
+async function injectOoxml(
   buffer: ArrayBuffer,
   placeholders: { token: string; omml: string }[],
-  tocPlaceholders: { token: string; xml: string }[]
+  tocPlaceholders: { token: string; xml: string }[],
+  checkboxPlaceholders: { token: string; checked: boolean; id: number }[],
+  horizontalRulePlaceholders: { token: string }[]
 ): Promise<ArrayBuffer> {
   const zip = await JSZip.loadAsync(buffer);
   const file = zip.file("word/document.xml");
@@ -1151,29 +1486,68 @@ async function injectOmml(
     xml = xml.replace(re, toc);
   }
 
-  if (!/xmlns:m=/.test(xml)) {
+  // Word 任务复选框：占位 run -> 运行级内容控件。token 不得跨越 </w:r>，
+  // 避免把复选框后面的正文 run 一并替换掉。
+  for (const { token, checked, id } of checkboxPlaceholders) {
+    const re = new RegExp(
+      `<w:r\\b[^>]*>(?:(?!</w:r>).)*?${escapeRegExp(token)}.*?</w:r>`,
+      "s"
+    );
+    xml = xml.replace(re, buildWordCheckboxXml(checked, id));
+  }
+
+  // Pandoc-compatible VML horizontal rule. o:hr keeps Word's inline HR layout
+  // (so the paragraph mark follows it), while o:hrheight explicitly requests a
+  // thin 0.5 pt rule instead of the default thick/double appearance.
+  for (const { token } of horizontalRulePlaceholders) {
+    const re = new RegExp(
+      `<w:p\\b[^>]*>(?:(?!</w:p>).)*?${escapeRegExp(token)}.*?</w:p>`,
+      "s"
+    );
+    xml = xml.replace(re, buildHorizontalRuleXml());
+  }
+
+  if (placeholders.length && !/xmlns:m=/.test(xml)) {
     xml = xml.replace(/<w:document\b/, `<w:document xmlns:m="${OMML_NS}"`);
+  }
+  if (checkboxPlaceholders.length && !/xmlns:w14=/.test(xml)) {
+    xml = xml.replace(
+      /<w:document\b/,
+      `<w:document xmlns:w14="${WORD14_NS}"`
+    );
+  }
+  if (checkboxPlaceholders.length && !/xmlns:w15=/.test(xml)) {
+    xml = xml.replace(
+      /<w:document\b/,
+      `<w:document xmlns:w15="${WORD15_NS}"`
+    );
+  }
+  if (horizontalRulePlaceholders.length && !/xmlns:v=/.test(xml)) {
+    xml = xml.replace(/<w:document\b/, `<w:document xmlns:v="${VML_NS}"`);
+  }
+  if (horizontalRulePlaceholders.length && !/xmlns:o=/.test(xml)) {
+    xml = xml.replace(/<w:document\b/, `<w:document xmlns:o="${OFFICE_NS}"`);
   }
   zip.file("word/document.xml", xml);
 
-  // 不自动更新域（updateFields=false）：与 Word 自带目录完全一致——打开时不会弹出
-  // 「本文档包含的域可能引用其他文件」警告；目录结果已用标准 TOC N 样式烘焙进文件，
-  // 打开即正确显示，右键「更新域」/F9 可刷新为精确页码（此时 \h 超链接生效，可点击跳转）。
+  const stylesFile = zip.file("word/styles.xml");
+  if (stylesFile) {
+    const styles = await stylesFile.async("string");
+    zip.file(
+      "word/styles.xml",
+      centerBlockquoteText(
+        applyTocTabStops(centerSourceCodeText(styles))
+      )
+    );
+  }
+
+  // 不在打开时自动更新域，避免 Word 弹出刷新提示。目录仍是原生 TOC 域，
+  // 点击目录后由 Word 的目录内容控件提供刷新按钮。
   const settingsFile = zip.file("word/settings.xml");
   if (settingsFile) {
-    let settings = await settingsFile.async("string");
-    if (/updateFields/.test(settings)) {
-      // 强制确保为 false：无论库默认是否带该标记，都关闭自动更新域（避免打开警告）
-      settings = settings.replace(
-        /<w:updateFields\b[^>]*\/?>/g,
-        `<w:updateFields w:val="false"/>`
-      );
-    } else {
-      settings = settings.replace(
-        /(<w:settings\b[^>]*>)/,
-        `$1<w:updateFields w:val="false"/>`
-      );
-    }
+    const settings = disableDocumentFieldUpdates(
+      await settingsFile.async("string")
+    );
     zip.file("word/settings.xml", settings);
   }
 
@@ -1203,7 +1577,7 @@ function nextToken(ctx: ExportContext): string {
 function sourceParagraph(tex: string, ctx: ExportContext): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: tex, font: "Consolas", color: "666666", size: ctx.code }),
+      new TextRun({ text: tex, font: CODE_FONTS, color: "666666", size: ctx.code }),
     ],
   });
 }
@@ -1213,107 +1587,121 @@ function nextTocToken(ctx: ExportContext): string {
   return `${TOC_TOKEN_PREFIX}_${ctx.tocPlaceholders.length}_`;
 }
 
-/** 估算单个块级节点的渲染高度（twips），用于推算标题所在页 */
-function estimateNodeHeight(node: PMNode): number {
-  const name = node.type.name;
-  if (name === "heading") {
-    const lvl = Math.min(Math.max(Number(node.attrs.level) || 1, 1), 6);
-    const fontSizePt = [16, 14, 13, 12, 11, 11][lvl - 1] || 11;
-    const lines = Math.max(1, Math.ceil((node.textContent || "").length / 50));
-    return lines * Math.round(fontSizePt * 1.2 * 20) + 300;
-  }
-  if (node.isTextblock) {
-    const lines = Math.max(1, Math.ceil((node.textContent || "").length / 60));
-    return lines * 288 + 120;
-  }
-  if (name === "code_block" || name === "fence") {
-    const lines = Math.max(1, (node.textContent || "").split("\n").length);
-    return lines * 241;
-  }
-  if (name === "image") return 3000;
-  if (name === "diagram") return 4200;
-  if (name === "math_block") return 600;
-  if (name === "hr" || name === "horizontal_rule") return 120;
-  if (name === "table") return Math.max(1, node.childCount) * 400;
-  return 0;
+function nextHorizontalRuleToken(ctx: ExportContext): string {
+  return `${HORIZONTAL_RULE_TOKEN_PREFIX}_${ctx.horizontalRulePlaceholders.length}_`;
 }
 
-/** 预扫描整篇文档，收集标题（顺序与正文一致）并估算其所在页码，供预填 TOC 结果 */
-function collectToc(doc: PMNode, ctx: ExportContext): void {
-  let total = 0;
-  const walk = (node: PMNode) => {
-    const name = node.type.name;
-    if (name === "toc") return;
-    if (name === "heading") {
-      const page = Math.floor(total / PAGE_CONTENT_H) + 1;
-      const lvl = Math.min(Math.max(Number(node.attrs.level) || 1, 1), 6);
-      ctx.tocEntries.push({ level: lvl, text: (node.textContent || "").trim(), page });
-    }
-    total += estimateNodeHeight(node);
-    if (
-      name === "heading" ||
-      node.isTextblock ||
-      name === "code_block" ||
-      name === "fence" ||
-      name === "image" ||
-      name === "diagram" ||
-      name === "math_block" ||
-      name === "hr" ||
-      name === "horizontal_rule" ||
-      name === "table"
-    ) {
-      return; // 叶子块：不再递归
-    }
-    for (let i = 0; i < node.childCount; i += 1) walk(node.child(i));
-  };
-  walk(doc);
+export function buildHorizontalRuleXml(): string {
+  return `<w:p><w:r><w:pict><v:rect style="width:0;height:${HORIZONTAL_RULE_HEIGHT}" o:hralign="center" o:hrheight="${HORIZONTAL_RULE_HEIGHT}" o:hrstd="t" o:hr="t"/></w:pict></w:r></w:p>`;
 }
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+/** 登记一个 Word 复选框占位，并返回插入段落中的唯一 token。 */
+function nextCheckboxToken(ctx: ExportContext, checked: unknown): string {
+  const index = ctx.checkboxPlaceholders.length;
+  const token = `${CHECKBOX_TOKEN_PREFIX}_${index}_`;
+  ctx.checkboxPlaceholders.push({
+    token,
+    checked: checked === true,
+    id: -100000 - index,
+  });
+  return token;
+}
+
+/** 生成 Word 2010+ 原生复选框内容控件（运行级 w:sdt）。 */
+export function buildWordCheckboxXml(checked: boolean, id: number): string {
+  const glyph = checked ? "☒" : "☐";
+  return `<w:sdt><w:sdtPr><w:id w:val="${id}"/><w15:appearance w15:val="hidden"/><w14:checkbox><w14:checked w14:val="${
+    checked ? "1" : "0"
+  }"/><w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/></w14:checkbox></w:sdtPr><w:sdtEndPr/><w:sdtContent><w:r><w:rPr><w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic" w:hint="eastAsia"/></w:rPr><w:t>${glyph}</w:t></w:r></w:sdtContent></w:sdt>`;
 }
 
 /**
- * 构造 Word 原生 TOC 域（按标题大纲 1-6 级生成目录，含超链接）。
- * 与 Word 自带目录完全一致的做法：updateFields=false（打开不自动更新域，故不会弹出
- * 「本文档包含的域可能引用其他文件」警告），同时把目录结果用标准 TOC N 样式烘焙进文件，
- * 打开即正确显示；右键「更新域」/F9 可刷新为精确页码（此时超链接 \h 生效，可点击跳转）。
+ * 把 Source Code 段落中的字符在行盒内垂直居中。
+ *
+ * Consolas 的上升部和下降部不相等；仅设置相同的 border-space 时，Word 仍会
+ * 按字体基线把文字放偏。`w:textAlignment` 是 OOXML 标准属性，直接要求 Word
+ * 在行盒中居中整行字符，而不是靠非对称 padding 补偿。
+ */
+export function centerSourceCodeText(styles: string): string {
+  return styles.replace(
+    /(<w:style\b[^>]*w:styleId="SourceCode"[^>]*>[\s\S]*?<w:pPr>)([\s\S]*?)(<\/w:pPr>)/,
+    (_match, open: string, body: string, close: string) => {
+      if (/<w:textAlignment\b/.test(body)) return `${open}${body}${close}`;
+      return `${open}${body}<w:textAlignment w:val="center"/>${close}`;
+    }
+  );
+}
+
+/** 引用正文在行盒内垂直居中；行距和段后已独立归零。 */
+export function centerBlockquoteText(styles: string): string {
+  return styles.replace(
+    /(<w:style\b[^>]*w:styleId="Blockquote"[^>]*>[\s\S]*?<w:pPr>)([\s\S]*?)(<\/w:pPr>)/,
+    (_match, open: string, body: string, close: string) => {
+      if (/<w:textAlignment\b/.test(body)) return `${open}${body}${close}`;
+      return `${open}${body}<w:textAlignment w:val="center"/>${close}`;
+    }
+  );
+}
+
+/** 给 TOC1–TOC3 样式补 Word 目录所用的右侧点状制表位。 */
+export function applyTocTabStops(styles: string): string {
+  let next = styles;
+  for (let level = 1; level <= 3; level += 1) {
+    const re = new RegExp(
+      `(<w:style\\b[^>]*w:styleId="TOC${level}"[^>]*>[\\s\\S]*?<w:pPr>)([\\s\\S]*?)(</w:pPr>)`
+    );
+    next = next.replace(re, (_match, open: string, body: string, close: string) => {
+      if (/<w:tabs\b/.test(body)) return `${open}${body}${close}`;
+      return (
+        `${open}<w:tabs><w:tab w:val="right" w:pos="${PAGE_CONTENT_W}" ` +
+        `w:leader="dot"/></w:tabs>${body}${close}`
+      );
+    });
+  }
+  return next;
+}
+
+/**
+ * 构造 Word 原生 TOC 域（按标题样式 1-3 级生成目录，含超链接）。
+ * 导出时不扫描标题、不估算页码，也不写入缓存条目；文件中的目录域保持 Word
+ * 尚未刷新前的空状态，用户点击内容控件的刷新按钮或按 F9 后由 Word 生成。
  *
  * 注意：TOC 域结果含多段，字段必须跨多段——begin/separate 在首段、end 在末段，
  * 条目段落与字段段落平级（不能把 <w:p> 嵌套进 <w:p>，否则 Word 拒读）。
  */
-function buildTocFieldXml(entries: TocEntry[]): string {
-  const entryRuns = (e: TocEntry) => {
-    const pad = "  ".repeat(e.level - 1);
-    const text = escapeXml(`${pad}${e.text || "(无标题)"}`);
-    return (
-      `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>` +
-      `<w:r><w:tab/></w:r>` +
-      `<w:r><w:t>${e.page}</w:t></w:r>`
-    );
-  };
-  const pPr = (style: string) =>
-    `<w:pPr><w:pStyle w:val="${style}"/><w:tabs><w:tab w:val="right" w:pos="${PAGE_CONTENT_W}" w:leader="dot"/></w:tabs></w:pPr>`;
-  const headStyle = entries.length ? `TOC${entries[0].level}` : "TOC1";
-  const head =
-    `<w:p>${pPr(headStyle)}` +
+export function buildTocFieldXml(): string {
+  const title =
+    `<w:p><w:pPr><w:pStyle w:val="TOC"/></w:pPr>` +
+    `<w:r><w:t>目录</w:t></w:r></w:p>`;
+  const field =
+    `<w:p>` +
     `<w:r><w:fldChar w:fldCharType="begin"/></w:r>` +
-    `<w:r><w:instrText xml:space="preserve"> TOC \\o "1-6" \\h \\z \\u </w:instrText></w:r>` +
+    `<w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r>` +
     `<w:r><w:fldChar w:fldCharType="separate"/></w:r>` +
-    (entries.length
-      ? entryRuns(entries[0])
-      : `<w:r><w:t xml:space="preserve">（右键「更新域」生成目录）</w:t></w:r>`) +
+    `<w:r><w:fldChar w:fldCharType="end"/></w:r>` +
     `</w:p>`;
-  const middle = entries
-    .slice(1)
-    .map((e) => `<w:p>${pPr(`TOC${e.level}`)}${entryRuns(e)}</w:p>`)
-    .join("");
-  const tail = `<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`;
-  return head + middle + tail;
+  return (
+    `<w:sdt><w:sdtPr><w:docPartObj>` +
+    `<w:docPartGallery w:val="Table of Contents"/>` +
+    `<w:docPartUnique/>` +
+    `</w:docPartObj></w:sdtPr>` +
+    `<w:sdtContent>${title + field}</w:sdtContent>` +
+    `</w:sdt>`
+  );
+}
+
+/** 关闭 Word 打开文档时的自动域更新，避免弹出刷新提示。 */
+export function disableDocumentFieldUpdates(settings: string): string {
+  if (/updateFields/.test(settings)) {
+    return settings.replace(
+      /<w:updateFields\b[^>]*\/?>/g,
+      `<w:updateFields w:val="false"/>`
+    );
+  }
+  return settings.replace(
+    /(<w:settings\b[^>]*>)/,
+    `$1<w:updateFields w:val="false"/>`
+  );
 }
 
 /** MIME -> 图片类型（含需转换的 svg） */

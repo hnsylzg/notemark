@@ -18,13 +18,16 @@
  * - 不修改 src/editor/theme/index.css，用户主题完全独立，通过 CSS 层叠覆盖生效
  *   （自定义 <style> 追加在 <head> 末尾，优先级高于内置主题）
  * - 用户主题禁止 @import（安全与可控性），导入时校验并拒绝
- * - 持久化使用 @tauri-apps/plugin-store，仅保存“当前生效主题的文件路径”；
- *   动态 import，避免非 Tauri 环境（纯 vite dev 浏览器）加载失败
- * - 非 Tauri 环境下对话框 / 文件系统 / store 均不可用，导入仅临时生效
+ * - 持久化通过统一 stateStore 保存“当前生效主题的文件路径”；
+ *   桌面端写入 SQLite，浏览器预览写入 localStorage
+ * - 非 Tauri 环境使用浏览器文件选择，只有状态偏好写入 localStorage
  */
 
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
+import { decodeTextBytes } from "./textEncoding";
+import { openAuthorizedPath, writeBytesAtomic } from "./fileAccess";
+import { stateDelete, stateGet, stateSet } from "./stateStore";
 
 /** 是否处于 Tauri 环境（纯浏览器 vite dev 下不调用 Tauri API） */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -43,9 +46,7 @@ const CUSTOM_THEME_STYLE_ID = "custom-theme";
 const CUSTOM_THEME_DARK_STYLE_ID = "custom-theme-dark";
 /** 最近一次应用的自定义主题中暗色块内容；无则空串 */
 let customDarkCss = "";
-/** store 文件名（@tauri-apps/plugin-store 的持久化文件） */
-const STORE_FILE = "settings.json";
-/** store 中保存主题路径的 key */
+/** 应用状态库中保存主题路径的 key */
 const THEME_PATH_KEY = "customThemePath";
 /** 固定主题目录名（位于 appDataDir 之下） */
 const THEMES_DIR_NAME = "themes";
@@ -64,14 +65,7 @@ const THEMES_DIR_NAME = "themes";
 async function readThemeCss(path: string): Promise<string> {
   try {
     const bytes = await readFile(path);
-    if (bytes.length === 0) return "";
-    const utf8 = new TextDecoder("utf-8").decode(bytes).replace(/^\uFEFF/, "");
-    if (!utf8.includes("\uFFFD")) return utf8;
-    try {
-      return new TextDecoder("gbk").decode(bytes);
-    } catch {
-      return utf8; // 运行环境不支持 gbk 时回退为 UTF-8 解码结果
-    }
+    return decodeTextBytes(bytes);
   } catch (err) {
     // readFile（二进制）不可用时（例如 dev 进程未重启、
     // fs:allow-read-file 权限尚未编译进应用），回退到 readTextFile。
@@ -199,7 +193,7 @@ export function applyCustomTheme(css: string): void {
 /**
  * 恢复内置主题：移除自定义 <style> 标签，并清除持久化的主题路径。
  * 移除后编辑器回到内置 theme/index.css 的默认样式；
- * 只有同时清掉 store 里的 customThemePath，下次启动 loadCustomTheme()
+ * 只有同时清掉状态库里的 customThemePath，下次启动 loadCustomTheme()
  * 才不会又把上次导入的主题自动加载回来。
  */
 export async function resetToDefaultTheme(): Promise<void> {
@@ -209,26 +203,16 @@ export async function resetToDefaultTheme(): Promise<void> {
   activeThemePath = null;
   if (!isTauri) return;
   try {
-    const store = await getStore();
-    await store.delete(THEME_PATH_KEY);
-    await store.save();
+    await stateDelete(THEME_PATH_KEY);
   } catch (err) {
     console.warn("[NoteMark] clear theme path failed:", err);
   }
 }
 
-/** 加载持久化 store（@tauri-apps/plugin-store） */
-async function getStore() {
-  const { load } = await import("@tauri-apps/plugin-store");
-  return load(STORE_FILE);
-}
-
 /** 保存最近一次导入的主题路径（失败仅告警，不影响主流程） */
 async function saveThemePath(path: string): Promise<void> {
   try {
-    const store = await getStore();
-    await store.set(THEME_PATH_KEY, path);
-    await store.save();
+    await stateSet(THEME_PATH_KEY, path);
   } catch (err) {
     console.warn("[NoteMark] save theme path failed:", err);
   }
@@ -237,8 +221,7 @@ async function saveThemePath(path: string): Promise<void> {
 /** 读取上次保存的主题路径；无记录或读取失败返回 null */
 async function loadThemePath(): Promise<string | null> {
   try {
-    const store = await getStore();
-    const value = await store.get<string>(THEME_PATH_KEY);
+    const value = await stateGet<string>(THEME_PATH_KEY);
     return typeof value === "string" && value ? value : null;
   } catch (err) {
     console.warn("[NoteMark] load theme path failed:", err);
@@ -333,10 +316,9 @@ export async function importCustomTheme(): Promise<number> {
     // 复制到固定主题目录；源文件已在主题目录内（重复导入）时跳过复制
     let targetPath = file;
     if (dir && !isPathInside(dir, file)) {
-      const { writeFile } = await import("@tauri-apps/plugin-fs");
       const { join } = await import("@tauri-apps/api/path");
       targetPath = await join(dir, await uniqueThemeFileName(dir, file));
-      await writeFile(targetPath, new TextEncoder().encode(css));
+      await writeBytesAtomic(targetPath, new TextEncoder().encode(css));
     }
     lastTarget = targetPath;
   }
@@ -444,8 +426,7 @@ export async function openThemesDir(): Promise<string | null> {
   const dir = await ensureThemesDir();
   if (!dir) return null;
   try {
-    const { openPath } = await import("@tauri-apps/plugin-opener");
-    await openPath(dir);
+    await openAuthorizedPath(dir);
     return dir;
   } catch (err) {
     console.warn("[NoteMark] open themes dir failed:", err);
@@ -455,7 +436,7 @@ export async function openThemesDir(): Promise<string | null> {
 
 /* ============ 深色模式（应用级） ============ */
 
-/** store 中保存深色模式偏好的 key */
+/** 状态库中保存深色模式偏好的 key */
 const DARK_MODE_KEY = "darkMode";
 
 /**
@@ -480,8 +461,7 @@ export function isDarkMode(): boolean {
 export async function loadDarkModePreference(): Promise<boolean | null> {
   if (!isTauri) return null;
   try {
-    const store = await getStore();
-    const value = await store.get<boolean>(DARK_MODE_KEY);
+    const value = await stateGet<boolean>(DARK_MODE_KEY);
     return typeof value === "boolean" ? value : null;
   } catch (err) {
     console.warn("[NoteMark] load dark mode preference failed:", err);
@@ -493,9 +473,7 @@ export async function loadDarkModePreference(): Promise<boolean | null> {
 export async function saveDarkModePreference(dark: boolean): Promise<void> {
   if (!isTauri) return;
   try {
-    const store = await getStore();
-    await store.set(DARK_MODE_KEY, dark);
-    await store.save();
+    await stateSet(DARK_MODE_KEY, dark);
   } catch (err) {
     console.warn("[NoteMark] save dark mode preference failed:", err);
   }

@@ -1,0 +1,58 @@
+/*
+ * Shared floating UI for editor hints and input prompts.
+ * Used by footnote hints and link/table input prompts.
+ */
+
+/* 持续输入模式提示气泡：告知用户正处在「行内代码/行内公式输入中」及退出方式。
+   必须 pointer-events: none，否则会挡住光标区域的鼠标操作。 */
+.mt-slash-hint {
+  position: fixed;
+  z-index: 2147483646;
+  padding: 4px 10px;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 6px;
+  background: var(--mt-color-bg-elevated);
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
+  font-size: 12px;
+  font-family: var(--mt-font-ui, inherit);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 链接地址和表格尺寸输入框 */
+.mt-slash-linkbox {
+  position: fixed;
+  z-index: 2147483646;
+  padding: 8px;
+  border: 1px solid var(--mt-color-border-strong);
+  border-radius: var(--mt-radius, 8px);
+  background: var(--mt-color-bg-elevated);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  font-family: var(--mt-font-ui, inherit);
+}
+
+.mt-slash-linkbox__input {
+  width: 268px;
+  padding: 6px 8px;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 6px;
+  background: var(--mt-color-bg);
+  color: var(--mt-color-fg);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.mt-slash-linkbox__input:focus {
+  border-color: var(--mt-color-primary);
+}
+
+.mt-slash-linkbox__tip {
+  margin-top: 5px;
+  color: var(--mt-color-fg-muted, var(--mt-color-fg));
+  font-size: 11px;
+  opacity: 0.7;
+}
+

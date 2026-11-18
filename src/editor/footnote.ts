@@ -17,10 +17,17 @@
  * 预设没有做 label 同步插件（官方源码里的 TODO），因此编号不随增删自动
  * 重排——插入时按「全文最大编号 + 1」分配，天然不与已有脚注重复。
  */
-import { $prose } from "@milkdown/utils";
+import { $prose, $view } from "@milkdown/utils";
 import { Plugin, TextSelection } from "@milkdown/prose/state";
-import type { EditorView } from "@milkdown/prose/view";
+import type {
+  EditorView,
+  NodeViewConstructor,
+} from "@milkdown/prose/view";
 import type { Node as PMNode } from "@milkdown/prose/model";
+import {
+  footnoteDefinitionSchema,
+  footnoteReferenceSchema,
+} from "@milkdown/preset-gfm";
 
 /** preset-gfm 内置脚注节点在 ProseMirror schema 里的名字 */
 const REF = "footnote_reference";
@@ -31,6 +38,271 @@ interface FootnoteHit {
   pos: number;
   node: PMNode;
 }
+
+function parseFootnoteLabel(source: string, definition = false): string | null {
+  const match = (definition ? /^\[\^([^\]]+)\]:$/ : /^\[\^([^\]]+)\]$/)
+    .exec(source.trim());
+  return match?.[1]?.trim() || null;
+}
+
+function updateFootnoteLabels(
+  view: EditorView,
+  oldLabel: string,
+  newLabel: string
+): void {
+  if (!oldLabel || !newLabel || oldLabel === newLabel) return;
+  const targets: Array<{ pos: number; node: PMNode }> = [];
+  view.state.doc.descendants((node, pos) => {
+    if (
+      (node.type.name === REF || node.type.name === DEF) &&
+      String(node.attrs.label ?? "") === oldLabel
+    ) {
+      targets.push({ pos, node });
+    }
+    return true;
+  });
+  if (targets.length === 0) return;
+  let tr = view.state.tr;
+  for (const target of targets) {
+    tr = tr.setNodeMarkup(target.pos, undefined, {
+      ...target.node.attrs,
+      label: newLabel,
+    });
+  }
+  view.dispatch(tr);
+}
+
+export const createFootnoteDefinitionView: NodeViewConstructor = (
+  node,
+  view
+) => {
+  const dom = document.createElement("dl");
+  const dt = document.createElement("dt");
+  const dd = document.createElement("dd");
+  dom.append(dt, dd);
+  let editing = false;
+
+  const updateChrome = () => {
+    const label = String(node.attrs.label ?? "");
+    dom.dataset.type = DEF;
+    dom.dataset.label = label;
+    if (!editing) {
+      dt.textContent = label;
+      dt.contentEditable = "false";
+      dt.classList.remove("mt-footnote-source-editing");
+      delete dt.dataset.mtSource;
+    }
+  };
+  updateChrome();
+
+  const startEditing = () => {
+    if (editing) return;
+    editing = true;
+    dt.textContent = `[^${String(node.attrs.label ?? "")}]:`;
+    dt.contentEditable = "plaintext-only";
+    dt.dataset.mtSource = "true";
+    dt.classList.add("mt-footnote-source-editing");
+    document.addEventListener("mousedown", onOutsideMouseDown, true);
+    document.addEventListener("pointerdown", onOutsideMouseDown, true);
+    dt.focus();
+    const selection = dt.ownerDocument.getSelection();
+    const text = dt.firstChild;
+    if (selection && text?.nodeType === Node.TEXT_NODE) {
+      const range = dt.ownerDocument.createRange();
+      range.setStart(text, 2);
+      range.setEnd(
+        text,
+        Math.max(2, (text.textContent?.length ?? 0) - 2)
+      );
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  };
+
+  const onOutsideMouseDown = (event: MouseEvent) => {
+    if (!dt.contains(event.target as Node)) finishEditing(true);
+  };
+
+  const finishEditing = (commit: boolean) => {
+    if (!editing) return;
+    const previous = String(node.attrs.label ?? "");
+    const next = commit
+      ? parseFootnoteLabel(dt.textContent ?? "", true)
+      : previous;
+    editing = false;
+    updateChrome();
+    if (next && next !== previous) {
+      updateFootnoteLabels(view, previous, next);
+    }
+    document.removeEventListener("mousedown", onOutsideMouseDown, true);
+    document.removeEventListener("pointerdown", onOutsideMouseDown, true);
+  };
+
+  dt.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    if (editing) {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    startEditing();
+  });
+  dt.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  dt.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finishEditing(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finishEditing(false);
+    }
+  });
+  dt.addEventListener("blur", () => finishEditing(true));
+  dt.addEventListener("focusout", () => finishEditing(true));
+
+  return {
+    dom,
+    contentDOM: dd,
+    update(updatedNode) {
+      if (updatedNode.type !== node.type) return false;
+      node = updatedNode;
+      updateChrome();
+      return true;
+    },
+    ignoreMutation(mutation) {
+      return !dd.contains(mutation.target as Node);
+    },
+    destroy() {
+      editing = false;
+      document.removeEventListener("mousedown", onOutsideMouseDown, true);
+      document.removeEventListener("pointerdown", onOutsideMouseDown, true);
+    },
+  };
+};
+
+export const footnoteDefinitionView = $view(
+  footnoteDefinitionSchema.node,
+  () => createFootnoteDefinitionView
+);
+
+export const createFootnoteReferenceView: NodeViewConstructor = (
+  initialNode,
+  view
+) => {
+  let node = initialNode;
+  let editing = false;
+  const dom = document.createElement("sup");
+  dom.className = "mt-footnote-reference";
+
+  const render = () => {
+    const label = String(node.attrs.label ?? "");
+    dom.dataset.type = REF;
+    dom.dataset.label = label;
+    dom.title = "脚注";
+    if (!editing) {
+      dom.textContent = label;
+      dom.contentEditable = "false";
+      dom.classList.remove("mt-footnote-source-editing");
+    }
+  };
+  render();
+
+  const startEditing = () => {
+    if (editing) return;
+    editing = true;
+    dom.textContent = `[^${String(node.attrs.label ?? "")}]`;
+    dom.contentEditable = "plaintext-only";
+    dom.classList.add("mt-footnote-source-editing");
+    document.addEventListener("mousedown", onOutsideMouseDown, true);
+    document.addEventListener("pointerdown", onOutsideMouseDown, true);
+    dom.focus();
+    const selection = dom.ownerDocument.getSelection();
+    const text = dom.firstChild;
+    if (selection && text?.nodeType === Node.TEXT_NODE) {
+      const range = dom.ownerDocument.createRange();
+      range.setStart(text, 2);
+      range.setEnd(
+        text,
+        Math.max(2, (text.textContent?.length ?? 0) - 1)
+      );
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  };
+
+  const onOutsideMouseDown = (event: MouseEvent) => {
+    if (!dom.contains(event.target as Node)) finishEditing(true);
+  };
+
+  const finishEditing = (commit: boolean) => {
+    if (!editing) return;
+    const previous = String(node.attrs.label ?? "");
+    const next = commit ? parseFootnoteLabel(dom.textContent ?? "") : previous;
+    editing = false;
+    render();
+    if (next && next !== previous) {
+      updateFootnoteLabels(view, previous, next);
+    }
+    document.removeEventListener("mousedown", onOutsideMouseDown, true);
+    document.removeEventListener("pointerdown", onOutsideMouseDown, true);
+  };
+
+  dom.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    if (editing) {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    startEditing();
+  });
+  dom.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  dom.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finishEditing(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finishEditing(false);
+    }
+  });
+  dom.addEventListener("blur", () => finishEditing(true));
+  dom.addEventListener("focusout", () => finishEditing(true));
+
+  return {
+    dom,
+    update(updatedNode) {
+      if (updatedNode.type !== node.type) return false;
+      node = updatedNode;
+      render();
+      return true;
+    },
+    stopEvent(event) {
+      return editing && dom.contains(event.target as Node);
+    },
+    ignoreMutation: () => true,
+    destroy() {
+      editing = false;
+      document.removeEventListener("mousedown", onOutsideMouseDown, true);
+      document.removeEventListener("pointerdown", onOutsideMouseDown, true);
+    },
+  };
+};
+
+export const footnoteReferenceView = $view(
+  footnoteReferenceSchema.node,
+  () => createFootnoteReferenceView
+);
 
 /**
  * 下一个可用编号：全文已有脚注里最大的【数字】编号 + 1。
@@ -62,7 +334,7 @@ function findFootnote(doc: PMNode, typeName: string, label: string): FootnoteHit
     }
     return true;
   });
-  // TS 的控制流分析看不到回调里的赋值，这里显式收窄（同 slash-menu 的写法）
+  // TS 的控制流分析看不到回调里的赋值，这里显式收窄。
   return found as FootnoteHit | null;
 }
 
@@ -90,7 +362,7 @@ function firstTextPos(doc: PMNode, from: number, size: number): number | null {
  *
  * 为什么要它：插入脚注后光标会跳到文末，长文档里页面一滚，用户很容易
  * 不知道自己到了哪、要干什么。一句话说清「直接输入内容、点正文继续」。
- * 样式复用斜杠菜单的 mt-slash-hint，视觉保持一致。
+ * 样式复用现有浮层提示 mt-slash-hint，视觉保持一致。
  */
 function flashHint(view: EditorView, text: string): void {
   if (typeof document === "undefined") return;
@@ -134,7 +406,6 @@ export function insertFootnote(view: EditorView): boolean {
   const paraType = state.schema.nodes.paragraph;
   if (!refType || !defType || !paraType) {
     // gfm preset 没注册成功时静默失败，至少不抛异常打断编辑
-    // eslint-disable-next-line no-console
     console.warn("[footnote] schema 缺少 footnote_reference / footnote_definition 节点");
     return false;
   }
@@ -206,23 +477,6 @@ function jumpToDefinition(view: EditorView, label: string): boolean {
   return true;
 }
 
-/** 点定义编号 → 跳回正文第一个引用该 label 的上标 */
-function jumpToReference(view: EditorView, label: string): boolean {
-  const hit = findFootnote(view.state.doc, REF, label);
-  if (!hit) {
-    flashHint(view, "正文里没有引用这条脚注");
-    return true;
-  }
-  const after = hit.pos + hit.node.nodeSize;
-  const tr = view.state.tr;
-  // 落点取引用【之后】：光标停在紧跟着的文字前，方便直接改后面的正文
-  tr.setSelection(TextSelection.near(tr.doc.resolve(after), 1));
-  tr.scrollIntoView();
-  view.dispatch(tr);
-  view.focus();
-  return true;
-}
-
 /**
  * 点击跳转：
  *  - 点正文里的上标（footnote_reference）→ 跳到文末定义；
@@ -235,23 +489,15 @@ function jumpToReference(view: EditorView, label: string): boolean {
  * 副作用（已与用户确认，同 Typora / Obsidian）：单击上标被跳转占用，
  * 想删除上标要用 Backspace，或删掉文末对应的定义。
  */
-export const footnoteClickPlugin = $prose(
-  () =>
-    new Plugin({
+export function createFootnoteClickPlugin(): Plugin {
+  return new Plugin({
       props: {
         handleClick(view, pos, event) {
           const state = view.state;
 
-          // ---- 1) 点定义编号 ----
           const target = event.target as HTMLElement | null;
-          const dt = target?.closest?.("dt") ?? null;
-          const dl = dt?.parentElement ?? null;
-          if (dl?.getAttribute("data-type") === DEF) {
-            const label = dl.getAttribute("data-label") ?? "";
-            if (label) return jumpToReference(view, label);
-          }
 
-          // ---- 2) 点上标 ----
+          // ---- 点上标 ----
           // 必须真的点中上标元素才跳：引用是行内原子节点，常位于行尾，点它后面
           // （行内尾随空白）时 PM 的 pos 落在引用之后、nodeBefore 正是引用，
           // 只按"pos 相邻有没有 REF"判断会误触发跳转，导致无法在行尾点一下继续输入。
@@ -268,8 +514,10 @@ export const footnoteClickPlugin = $prose(
           return false;
         },
       },
-    })
-);
+  });
+}
+
+export const footnoteClickPlugin = $prose(createFootnoteClickPlugin);
 
 /**
  * Ctrl/Cmd + Alt + F：插入脚注。
@@ -292,4 +540,9 @@ export const footnoteKeymapPlugin = $prose(
 );
 
 /** 供 plugins.ts 注册（顺序：须在 gfmPlugins 之后，依赖它注册的节点类型） */
-export const footnotePlugins = [footnoteKeymapPlugin, footnoteClickPlugin];
+export const footnotePlugins = [
+  footnoteReferenceView,
+  footnoteDefinitionView,
+  footnoteKeymapPlugin,
+  footnoteClickPlugin,
+];

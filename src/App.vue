@@ -4,6 +4,7 @@ import "@/editor/theme/index.css";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import Sidebar from "@/components/Sidebar.vue";
 import FindBar from "@/components/FindBar.vue";
+import AppToolbar from "@/components/AppToolbar.vue";
 import {
   createEditor,
   installSurroundFocusGuard,
@@ -23,9 +24,16 @@ import {
   cleanMarkdownBr,
 } from "@/editor/index";
 import type { HeadingItem } from "@/editor/index";
-import { parserCtx, serializerCtx } from "@milkdown/kit/core";
+import { commandsCtx, parserCtx, serializerCtx } from "@milkdown/kit/core";
+import { insertHrCommand } from "@milkdown/kit/preset/commonmark";
 import { importImagePaths } from "@/editor/image-files";
-import { setSlashActionHandler } from "@/editor/slash-menu";
+import { grantPathAccess, openAuthorizedPath } from "@/editor/fileAccess";
+import {
+  clearRecoveryDraft,
+  loadRecoveryDraft,
+  saveRecoveryDraft,
+} from "@/editor/recovery";
+import { setEditorActionHandler } from "@/editor/editor-actions";
 import { openFile, saveFile, newFile } from "@/editor/fileOps";
 import {
   clearRecentFiles,
@@ -57,16 +65,6 @@ import type {
   WorkspaceItem,
   WorkspaceListing,
 } from "@/editor/workspace";
-import {
-  buildStandaloneHtml,
-  getEditorHtml,
-  htmlToPlainText,
-  inlineImages,
-  pickExportFile,
-  warmUpCodeBlocks,
-  writeExportFile,
-} from "@/editor/exporter";
-import { buildDocx } from "@/editor/docxExporter";
 import { setImageBaseDir } from "@/editor/image-view";
 import {
   closeFind as closeEditorFind,
@@ -143,6 +141,11 @@ let visualEdited = false;
 let pendingApply: string | null = null;
 /** 最近打开的文件列表（最近使用的排在最前，持久化在 store 中） */
 const recentFiles = ref<RecentFile[]>([]);
+/** 每个窗口独立保存恢复草稿，避免多窗口互相覆盖 */
+let recoveryScope = "browser";
+let recoveryTimer: number | null = null;
+let recoveryWrite: Promise<void> = Promise.resolve();
+let recoveryArmed = false;
 
 // 源码模式：查看/编辑 Markdown 原文（WYSIWYG ⇄ 源码）
 /** 是否处于源码模式 */
@@ -300,8 +303,6 @@ let headingTimer: number | null = null;
 // 主题菜单状态
 /** 主题下拉菜单是否展开 */
 const themeMenuOpen = ref(false);
-/** 主题菜单容器（用于点击外部时收起菜单） */
-const themeMenuWrap = ref<HTMLElement | null>(null);
 /** 固定主题目录下已安装的主题列表（打开菜单时刷新） */
 const installedThemes = ref<{ name: string; filePath: string }[]>([]);
 
@@ -326,15 +327,40 @@ async function toggleDarkMode() {
  * 杜绝深色模式下「整窗白闪再转深」的问题。幂等，确保只显示一次。
  */
 let windowRevealed = false;
+let startupFocusSettled = false;
+let startupUserInteracted = false;
+
+function markStartupInteraction(): void {
+  startupUserInteracted = true;
+}
+
+function focusEditorStartOnStartup(
+  editor: ReturnType<typeof createEditor>
+): void {
+  if (startupFocusSettled || startupUserInteracted) return;
+  startupFocusSettled = true;
+  focusEditorStart(editor);
+}
+
 async function revealWindow() {
   if (windowRevealed || !isTauri) return;
   windowRevealed = true;
   try {
     const win = getCurrentWebviewWindow();
-    const bg =
-      document.documentElement.dataset.theme === "dark" ? "#131a16" : "#ffffff";
-    await win.setBackgroundColor(bg);
-    await win.show();
+    if (!(await win.isVisible())) {
+      const bg =
+        document.documentElement.dataset.theme === "dark"
+          ? "#131a16"
+          : "#ffffff";
+      await win.setBackgroundColor(bg);
+      await win.show();
+    }
+    if (!(await win.isFocused())) {
+      await win.setFocus();
+    }
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve())
+    );
   } catch (e) {
     console.warn("[NoteMark] reveal window failed:", e);
   }
@@ -369,10 +395,118 @@ function onEditorChange(markdown: string) {
     visualEdited = true;
   }
   isDirty.value = markdown !== savedContent.value;
+  if (isDirty.value) {
+    scheduleRecoveryDraft();
+  } else if (recoveryArmed && savedContent.value !== null) {
+    void clearRecoveryDraftState();
+  }
   // 标题增删/改名后刷新大纲（内部节流，避免每次按键都遍历文档）
   scheduleHeadingRefresh();
   // 查找栏打开时同步结果数：编辑会改变匹配位置，插件已重算，这里只取结果
   if (findOpen.value && !sourceMode.value) syncFindState();
+}
+
+function queueRecoveryWrite(task: () => Promise<void>): Promise<void> {
+  recoveryWrite = recoveryWrite.catch(() => undefined).then(task);
+  return recoveryWrite;
+}
+
+function cancelRecoveryTimer(): void {
+  if (recoveryTimer !== null) {
+    window.clearTimeout(recoveryTimer);
+    recoveryTimer = null;
+  }
+}
+
+/** 编辑停顿 800ms 后持久化恢复草稿，写入串行化以避免与保存清理竞态。 */
+function scheduleRecoveryDraft(): void {
+  if (!isTauri || !editorInstance) return;
+  cancelRecoveryTimer();
+  recoveryTimer = window.setTimeout(() => {
+    recoveryTimer = null;
+    if (!editorInstance || !isDirty.value) return;
+    recoveryArmed = true;
+    const content = getCurrentContent();
+    const draft = {
+      path: currentPath.value,
+      name: displayName.value,
+      content,
+      savedAt: Date.now(),
+    };
+    void queueRecoveryWrite(async () => {
+      try {
+        await saveRecoveryDraft(recoveryScope, draft);
+      } catch (err) {
+        console.warn("[NoteMark] save recovery draft failed:", err);
+      }
+    });
+  }, 800);
+}
+
+/** 清掉当前窗口的恢复草稿；排队执行以保证晚到的写入不能复活草稿。 */
+function clearRecoveryDraftState(): Promise<void> {
+  cancelRecoveryTimer();
+  recoveryArmed = false;
+  if (!isTauri) return Promise.resolve();
+  return queueRecoveryWrite(() => clearRecoveryDraft(recoveryScope));
+}
+
+function formatRecoveryTime(timestamp: number): string {
+  try {
+    return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return "未知时间";
+  }
+}
+
+/**
+ * 启动时恢复本窗口上次异常退出前的草稿。
+ * 恢复后的基准仍指向磁盘版本；只有保存成功后才会清除恢复草稿。
+ */
+async function maybeRestoreRecoveryDraft(): Promise<void> {
+  if (!isTauri || !editorInstance) return;
+  const draft = await loadRecoveryDraft(recoveryScope);
+  if (!draft || !draft.content) return;
+
+  const restore = await askConfirm(
+    `检测到 ${formatRecoveryTime(draft.savedAt)} 自动保存的「${draft.name}」草稿。是否恢复？`,
+    "恢复草稿"
+  );
+  if (!restore) {
+    await clearRecoveryDraftState();
+    return;
+  }
+
+  if (draft.path) {
+    // 上次会话的路径在重启后不再默认受信任；草稿正文仍可恢复，
+    // 原路径若无法授权，则按“文件已移动”处理并在保存时重新选择位置。
+    await grantPathAccess(draft.path).catch(() => undefined);
+  }
+  currentPath.value = draft.path;
+  setImageBaseDir(draft.path);
+  updateTitle(draft.name || "untitled");
+  rawContent.value = draft.content;
+  visualEdited = false;
+  pendingApply = draft.content;
+  await setMarkdown(editorInstance, draft.content);
+  await nextTick();
+
+  fileMissing.value = draft.path ? !(await pathExists(draft.path)) : false;
+  if (draft.path && !fileMissing.value) {
+    try {
+      savedContent.value = normalizeMarkdown(await readMarkdownFile(draft.path));
+    } catch {
+      savedContent.value = null;
+      fileMissing.value = true;
+    }
+  } else {
+    savedContent.value = null;
+  }
+  isDirty.value = true;
+  syncSourceDraft();
+  refreshHeadings();
+  if (draft.path) await startWatching(draft.path);
+  scheduleRecoveryDraft();
 }
 
 // ==================== 源码模式 ====================
@@ -466,6 +600,8 @@ function toggleSourceMode() {
 function onSourceInput(e: Event) {
   sourceDraft.value = (e.target as HTMLTextAreaElement).value;
   isDirty.value = sourceDraft.value !== savedContent.value;
+  if (isDirty.value) scheduleRecoveryDraft();
+  else if (recoveryArmed && savedContent.value !== null) void clearRecoveryDraftState();
   // 查找栏打开时重算匹配：以光标为锚点，边输入边跟随结果
   if (findOpen.value) syncSourceFind();
 }
@@ -791,6 +927,7 @@ async function loadFileIntoEditor(
   opts?: { keepCaret?: boolean }
 ) {
   if (!editorInstance) return;
+  await grantPathAccess(path);
   currentPath.value = path;
   fileMissing.value = false;
   // 必须先设置图片基准目录，再渲染文档，
@@ -819,6 +956,7 @@ async function loadFileIntoEditor(
     syncSourceDraft();
     refreshHeadings();
   }
+  await clearRecoveryDraftState();
   // 侧边栏同步到该文件所在目录，文件列表即展示同级文件（同时记住该目录）
   await syncWorkspaceToFile(path);
   // 记入「最近打开」（写入失败仅告警，不影响已打开的文档）
@@ -881,6 +1019,7 @@ async function handleSave(opts?: { force?: boolean; saveAs?: boolean }): Promise
       defaultPath: path ?? undefined,
     });
     if (!result) return false; // 用户取消
+    await grantPathAccess(result.path);
     currentPath.value = result.path;
     setImageBaseDir(result.path);
     updateTitle(result.name);
@@ -892,6 +1031,7 @@ async function handleSave(opts?: { force?: boolean; saveAs?: boolean }): Promise
     // 保存的内容成为新的原文基线（源码模式下即用户草稿，排版原样保留）
     rawContent.value = content;
     visualEdited = false;
+    await clearRecoveryDraftState();
     // 保存已落盘：立刻刷新 mtime 基准并延长静默期，覆盖后续一连串 await
     // （扫目录 / 写最近文件 / 重新订阅）。否则这些操作耗时一旦超过 saveFile
     // 前设的 2 秒静默期，自家写盘事件会被当成「外部改动」触发静默重载，
@@ -951,6 +1091,7 @@ async function openDocumentPath(path: string): Promise<void> {
   if (!(await confirmDiscardIfDirty())) return;
   const name = path.split(/[\\/]/).pop() || path;
   try {
+    await grantPathAccess(path);
     const content = await readMarkdownFile(path);
     await loadFileIntoEditor(path, name, content);
     if (isTauri) {
@@ -1099,6 +1240,7 @@ async function handleNew() {
     // 焦点还停在工具栏按钮上，交给编辑区，用户可以直接开始输入
     focusEditorStart(editorInstance);
   }
+  await clearRecoveryDraftState();
 }
 
 // ==================== 侧边栏（文件列表 + 大纲） ====================
@@ -1130,6 +1272,7 @@ async function refreshWorkspace(dir: string | null) {
   }
   let listing: WorkspaceListing | null = null;
   try {
+    await grantPathAccess(dir);
     listing = await listWorkspace(dir);
   } catch (err) {
     console.warn("[NoteMark] refresh workspace failed:", err);
@@ -1182,6 +1325,7 @@ async function handleSidebarOpenFile(path: string) {
     }
   }
   try {
+    await grantPathAccess(path);
     const content = await readMarkdownFile(path);
     const name = path.split(/[\\/]/).pop() || path;
     currentPath.value = path;
@@ -1201,6 +1345,7 @@ async function handleSidebarOpenFile(path: string) {
       syncSourceDraft();
       refreshHeadings();
     }
+  await clearRecoveryDraftState();
   } catch (err) {
     console.error("[NoteMark] sidebar open file failed:", err);
     alert(`打开失败：${err instanceof Error ? err.message : String(err)}`);
@@ -1258,7 +1403,12 @@ const INVALID_NAME_CHARS = /[\\/:*?"<>|]/;
 /** 复制文本到剪贴板 */
 async function copyText(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    if (isTauri) {
+      const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+      await writeText(text);
+    } else {
+      await navigator.clipboard.writeText(text);
+    }
   } catch (err) {
     console.warn("[NoteMark] clipboard failed:", err);
     alert("复制失败，请手动记录路径。");
@@ -1508,6 +1658,8 @@ async function srcReplaceOne() {
   const next = draft.slice(0, m.from) + findReplacement.value + draft.slice(m.to);
   sourceDraft.value = next;
   isDirty.value = next !== savedContent.value;
+  if (isDirty.value) scheduleRecoveryDraft();
+  else if (recoveryArmed && savedContent.value !== null) void clearRecoveryDraftState();
   const caret = m.from + findReplacement.value.length;
   // 等 textarea 的 value 随 draft 更新后再设置选区，否则会被重置。
   // caret 是源码原文坐标，textarea 需要归一化坐标
@@ -1535,6 +1687,8 @@ async function srcReplaceAll() {
   out += draft.slice(cursor);
   sourceDraft.value = out;
   isDirty.value = out !== savedContent.value;
+  if (isDirty.value) scheduleRecoveryDraft();
+  else if (recoveryArmed && savedContent.value !== null) void clearRecoveryDraftState();
   await nextTick();
   syncSourceFind();
 }
@@ -1661,8 +1815,6 @@ function resyncFindOnModeSwitch() {
 
 /** 导出下拉菜单是否展开 */
 const exportMenuOpen = ref(false);
-/** 导出菜单容器（点击外部时收起） */
-const exportMenuWrap = ref<HTMLElement | null>(null);
 /** 展开 / 收起导出菜单 */
 function toggleExportMenu() {
   exportMenuOpen.value = !exportMenuOpen.value;
@@ -1670,8 +1822,6 @@ function toggleExportMenu() {
 
 /** 最近打开菜单是否展开 */
 const recentMenuOpen = ref(false);
-/** 最近打开菜单容器（点击外部时收起） */
-const recentMenuWrap = ref<HTMLElement | null>(null);
 
 /** 展开 / 收起「最近打开」菜单 */
 function toggleRecentMenu() {
@@ -1680,8 +1830,6 @@ function toggleRecentMenu() {
 
 /** 保存拆分按钮的「另存为」下拉菜单是否展开 */
 const saveMenuOpen = ref(false);
-/** 保存拆分按钮容器（点击外部时收起菜单） */
-const saveMenuWrap = ref<HTMLElement | null>(null);
 
 /** 展开 / 收起「另存为」下拉菜单 */
 function toggleSaveMenu() {
@@ -1733,164 +1881,22 @@ function exportTitle(): string {
 }
 
 /**
- * 取编辑器正文 HTML（含已渲染的公式、图表、代码高亮）。
- *
- * 取 HTML 前必须先 warmUpCodeBlocks()：代码块由 CodeMirror 懒加载，
- * 视口外的块只有纯文本占位，直接取会丢掉语法高亮（HTML / PDF 都受影响）。
+ * 导出实现按需加载，避免 docx / Mermaid / 导出专用依赖进入首屏主包。
  */
-async function currentEditorHtml(): Promise<string> {
-  if (!editorInstance) return "";
-  await warmUpCodeBlocks(editorInstance);
-  return getEditorHtml(editorInstance);
-}
-
-/**
- * 导出为自包含 HTML（内联样式 + 内嵌图片，可双击打开）。
- * 先弹保存框再准备内容：和 Typora 一致，点导出立刻出对话框，
- * 点保存后直接生成（预热 / 图片内联均无可见变化，无需遮罩）。
- */
-async function exportHtml() {
-  if (!editorInstance) return;
+async function runExport(format: "html" | "txt" | "docx" | "pdf") {
   exportMenuOpen.value = false;
-  const target = await pickExportFile(`${exportTitle()}.html`, [
-    { name: "网页", extensions: ["html"] },
-  ]);
-  if (!target) return;
+  if (!editorInstance) return;
   try {
-    const html = await inlineImages(await currentEditorHtml());
-    const full = buildStandaloneHtml({
+    const { exportDocument } = await import("@/editor/exportActions");
+    await exportDocument(format, {
+      editor: editorInstance,
       title: exportTitle(),
-      bodyHtml: html,
       dark: isDark.value,
     });
-    await writeExportFile(target, full);
   } catch (err) {
-    console.error("[NoteMark] export html failed:", err);
-    alert(`导出 HTML 失败：${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[NoteMark] export ${format} failed:`, err);
+    alert(err instanceof Error ? err.message : String(err));
   }
-}
-
-/** 导出为纯文本（去掉语法标记），先弹保存框再准备内容 */
-async function exportTxt() {
-  if (!editorInstance) return;
-  exportMenuOpen.value = false;
-  const target = await pickExportFile(`${exportTitle()}.txt`, [
-    { name: "纯文本", extensions: ["txt"] },
-  ]);
-  if (!target) return;
-  try {
-    const text = htmlToPlainText(await currentEditorHtml());
-    await writeExportFile(target, text);
-  } catch (err) {
-    console.error("[NoteMark] export txt failed:", err);
-    alert(`导出纯文本失败：${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-/** 导出为 Word 文档（按文档结构生成真正的 .docx），先弹保存框再生成 */
-async function exportDocx() {
-  if (!editorInstance) return;
-  exportMenuOpen.value = false;
-  const target = await pickExportFile(`${exportTitle()}.docx`, [
-    { name: "Word 文档", extensions: ["docx"] },
-  ]);
-  if (!target) return;
-  try {
-    const data = await buildDocx(editorInstance!);
-    await writeExportFile(target, data);
-  } catch (err) {
-    console.error("[NoteMark] export docx failed:", err);
-    alert(`导出 Word 失败：${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-/**
- * 导出为 PDF。
- * 优先静默生成（后端调系统 Edge/Chrome 无头打印，直接输出到用户选择的路径）；
- * 失败时回退到打印对话框（隐藏 iframe + window.print，用户选「另存为 PDF」）。
- * 预热 / 图片内联均无可见变化，后端打印在后台执行，全程不需要遮罩。
- */
-async function exportPdf() {
-  if (!isTauri || !editorInstance) return;
-  exportMenuOpen.value = false;
-
-  // 先选保存位置，让后端直接输出到该路径；准备内容（代码块预热 / 图片
-  // 内联）无可见变化，后端打印在后台执行，全程不需要遮罩
-  const { save } = await import("@tauri-apps/plugin-dialog");
-  const target = await save({
-    defaultPath: `${exportTitle()}.pdf`,
-    filters: [{ name: "PDF 文档", extensions: ["pdf"] }],
-  });
-  if (!target) return;
-
-  try {
-    const html = await inlineImages(await currentEditorHtml());
-    const full = buildStandaloneHtml({
-      title: exportTitle(),
-      bodyHtml: html,
-      dark: isDark.value,
-      forPrint: true,
-    });
-
-    const { writeTextFile, remove } = await import("@tauri-apps/plugin-fs");
-    const { tempDir, join } = await import("@tauri-apps/api/path");
-    const { invoke } = await import("@tauri-apps/api/core");
-    const htmlPath = await join(await tempDir(), `notemark-export-${Date.now()}.html`);
-    try {
-      await writeTextFile(htmlPath, full);
-      await invoke<void>("export_pdf", { htmlPath, pdfPath: target });
-    } finally {
-      // 清理临时 HTML（清理失败不影响导出结果）
-      await remove(htmlPath).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("[NoteMark] silent pdf export failed, fallback to print:", err);
-    try {
-      const html = await inlineImages(await currentEditorHtml());
-      printHtml(
-        buildStandaloneHtml({
-          title: exportTitle(),
-          bodyHtml: html,
-          dark: isDark.value,
-          forPrint: true,
-        })
-      );
-    } catch (inner) {
-      console.error("[NoteMark] pdf fallback print failed:", inner);
-      alert(`导出 PDF 失败：${inner instanceof Error ? inner.message : String(inner)}`);
-    }
-  }
-}
-
-/**
- * PDF 导出的回退方案：在隐藏 iframe 中渲染完整 HTML 并调起系统打印对话框。
- * 用户在打印预览里选择「另存为 PDF」即可完成导出。
- */
-function printHtml(html: string) {
-  const frame = document.createElement("iframe");
-  frame.setAttribute("aria-hidden", "true");
-  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
-  document.body.appendChild(frame);
-
-  const doc = frame.contentDocument;
-  if (!doc) {
-    frame.remove();
-    alert("无法打开打印预览，请改用 HTML 导出。");
-    return;
-  }
-
-  const doPrint = () => {
-    frame.contentWindow?.focus();
-    frame.contentWindow?.print();
-    // 延后移除，避免打印对话框还没弹出 iframe 就被销毁
-    window.setTimeout(() => frame.remove(), 2000);
-  };
-
-  doc.open();
-  doc.write(html);
-  doc.close();
-  if (doc.readyState === "complete") doPrint();
-  else frame.addEventListener("load", doPrint, { once: true });
 }
 
 // ==================== 主题菜单 ====================
@@ -1929,17 +1935,6 @@ async function openThemeFolder() {
   if (!dir) alert("无法打开主题文件夹");
 }
 
-/** 该已安装主题是否为当前生效主题 */
-function isThemeActive(theme: { name: string; filePath: string }): boolean {
-  const p = getActiveThemePath();
-  return p !== null && p.toLowerCase() === theme.filePath.toLowerCase();
-}
-
-/** 当前是否处于内置主题 */
-function isDefaultThemeActive(): boolean {
-  return getActiveThemePath() === null;
-}
-
 /** 导入自定义主题：文件对话框（支持多选）→ 校验 → 复制到固定目录 → 应用 */
 async function importTheme() {
   themeMenuOpen.value = false;
@@ -1965,20 +1960,14 @@ async function importTheme() {
 
 /** 点击主题菜单外部区域时收起菜单 */
 function onDocumentClick(e: MouseEvent) {
-  if (exportMenuOpen.value && !exportMenuWrap.value?.contains(e.target as Node)) {
-    exportMenuOpen.value = false;
-  }
-  if (themeMenuOpen.value && !themeMenuWrap.value?.contains(e.target as Node)) {
-    themeMenuOpen.value = false;
-  }
-  if (recentMenuOpen.value && !recentMenuWrap.value?.contains(e.target as Node)) {
-    recentMenuOpen.value = false;
-  }
-  if (saveMenuOpen.value && !saveMenuWrap.value?.contains(e.target as Node)) {
-    saveMenuOpen.value = false;
-  }
   // 编辑器内点击超链接：交给系统浏览器打开
   const target = e.target as Element | null;
+  if (!target?.closest?.(".mt-toolbar")) {
+    exportMenuOpen.value = false;
+    themeMenuOpen.value = false;
+    recentMenuOpen.value = false;
+    saveMenuOpen.value = false;
+  }
   const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
   if (!anchor) return;
   const href = anchor.getAttribute("href") ?? "";
@@ -1993,8 +1982,7 @@ function onDocumentClick(e: MouseEvent) {
 /** 用系统默认程序打开本地文件路径（Tauri）；出错时弹出提示 */
 async function openLocalFile(absPath: string, rawHref: string): Promise<void> {
   try {
-    const { openPath } = await import("@tauri-apps/plugin-opener");
-    await openPath(absPath);
+    await openAuthorizedPath(absPath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[NoteMark] open local link failed:", err);
@@ -2150,7 +2138,13 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 }
 
 onMounted(() => {
+  // Startup focus is a convenience, not a command to override user input.
+  // Capture any interaction that happens before the delayed focus frame.
+  window.addEventListener("pointerdown", markStartupInteraction, true);
+  window.addEventListener("keydown", markStartupInteraction, true);
+  window.addEventListener("contextmenu", markStartupInteraction, true);
   try {
+    recoveryScope = isTauri ? getCurrentWebviewWindow().label : "browser";
     if (!editorHost.value) return;
 
     // 主题/深色模式必须先于编辑器渲染内容落地：
@@ -2168,28 +2162,24 @@ onMounted(() => {
         // 点编辑区周围留白时保持输入焦点（对齐 Typora），不改变编辑区大小
         installSurroundFocusGuard();
 
-        // 本窗口是否带了待打开的文件：
-        // - 冷启动双击关联的 .md（Rust 侧把路径挂在 "main" 上）；
-        // - 运行中双击时由单实例转发新建的窗口（挂在按路径派生的 label 上）。
-        // 用「拉取」而非事件：进程刚起时前端还没订阅，此刻 emit 会丢。
-        if (isTauri) {
-          void (async () => {
-            try {
-              const { invoke } = await import("@tauri-apps/api/core");
-              const path = await invoke<string | null>("take_window_file", {
-                label: getCurrentWebviewWindow().label,
-              });
-              if (path) await openDocumentPath(path);
-            } catch (e) {
-              console.warn("[NoteMark] take window file failed:", e);
-            }
-          })();
-        }
-
         // 斜杠菜单的「图片」命令：插件不直接调 Tauri，由这里开系统文件对话框，
         // 选完路径后交回 importImagePaths 落盘并插入文档。
-        setSlashActionHandler(async (action, _view, pos) => {
-          if (action !== "image" || !editorInstance) return;
+        setEditorActionHandler(async (action, view, pos) => {
+          if (!editorInstance) return;
+          if (action === "horizontalRule") {
+            // Chromium can keep a stale native caret when a block is inserted
+            // beside the active DOM selection, even though ProseMirror's
+            // state.selection is already correct. Clear the native range
+            // before the structural update so selectionToDOM must rewrite it.
+            // https://github.com/ProseMirror/prosemirror/issues/710
+            view.dom.ownerDocument.getSelection()?.removeAllRanges();
+            editorInstance.action((ctx) => {
+              ctx.get(commandsCtx).call(insertHrCommand.key);
+            });
+            view.focus();
+            return;
+          }
+          if (action !== "image") return;
           const { open } = await import("@tauri-apps/plugin-dialog");
           const selected = await open({
             multiple: true,
@@ -2208,7 +2198,7 @@ onMounted(() => {
         });
 
         // 真正创建编辑器（视图在这里挂载）
-        editorInstance.create().then(() => {
+        editorInstance.create().then(async () => {
           // 初始内容不算"未保存修改"：create 完成后建立内容快照
           if (editorInstance) {
             savedContent.value = getMarkdown(editorInstance);
@@ -2223,17 +2213,33 @@ onMounted(() => {
             pendingApply = null;
             // 初始文档也可能含标题（示例内容/上次加载），补一次大纲收集
             refreshHeadings();
-            // 启动后把光标放进编辑区：否则打开应用还得先点一下才能打字。
-            // 延后一帧执行——应用刚启动时窗口可能还没拿到系统焦点，
-            // 此时立刻 focus 会被浏览器忽略。
-            requestAnimationFrame(() => {
-              if (editorInstance) focusEditorStart(editorInstance);
-            });
           }
           // 首帧已带最终主题样式（主题已在 createEditor 前注入），露窗。
           // 仅设置匹配深/浅的底色，避免 OS 打开动画期间的背景闪——这是独立的
           // 底色处理，并非用来遮“主题晚到”的闪烁。
           requestAnimationFrame(revealWindow);
+
+          // 显式双击打开的文件优先；否则再尝试恢复本窗口上次异常退出时的草稿。
+          if (isTauri) {
+            try {
+              const { invoke } = await import("@tauri-apps/api/core");
+              const path = await invoke<string | null>("take_window_file", {
+                label: getCurrentWebviewWindow().label,
+              });
+              if (path) {
+                await openDocumentPath(path);
+              } else {
+                await maybeRestoreRecoveryDraft();
+              }
+            } catch (e) {
+              console.warn("[NoteMark] startup document restore failed:", e);
+            }
+          }
+
+          // 启动后把光标放进编辑区：否则打开应用还得先点一下才能打字。
+          requestAnimationFrame(() => {
+            if (editorInstance) focusEditorStartOnStartup(editorInstance);
+          });
         });
       } catch (err) {
         console.error("[NoteMark] editor init failed:", err);
@@ -2302,11 +2308,13 @@ onMounted(() => {
               const saved = await handleSave();
               if (!saved) return; // 保存被取消/失败，留在当前窗口
             }
+            if (action === "discard") {
+              await clearRecoveryDraftState();
+            }
             webview?.destroy(); // 保存成功或选择不保存：真正关闭窗口
           } catch (err) {
-            // 兜底：任何异常都不能让窗口卡死，强制关闭
             console.error("[NoteMark] close confirm failed:", err);
-            webview?.destroy().catch(() => {});
+            alert("关闭前确认失败，窗口已保持打开，请重试保存。");
           }
         });
 
@@ -2362,6 +2370,10 @@ onMounted(() => {
 
 
 onBeforeUnmount(() => {
+  window.removeEventListener("pointerdown", markStartupInteraction, true);
+  window.removeEventListener("keydown", markStartupInteraction, true);
+  window.removeEventListener("contextmenu", markStartupInteraction, true);
+  cancelRecoveryTimer();
   window.removeEventListener("keydown", onKeydown);
   document.removeEventListener("click", onDocumentClick);
   window.removeEventListener("beforeunload", onBeforeUnload);
@@ -2383,238 +2395,39 @@ onBeforeUnmount(() => {
   <!-- 满屏无干扰布局：模拟 Typora 沉浸式写作 -->
   <div class="notemark-app">
     <!-- 固定顶部极简工具栏（不随编辑区滚动） -->
-    <header class="mt-toolbar">
-      <div class="mt-toolbar__left">
-        <button
-          class="mt-btn mt-btn--icon"
-          :class="{ 'mt-btn--icon-on': sidebarOpen }"
-          :title="sidebarOpen ? '收起侧边栏' : '展开侧边栏'"
-          :aria-expanded="sidebarOpen"
-          aria-label="切换侧边栏"
-          @click="toggleSidebar"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <line x1="9" y1="4" x2="9" y2="20" />
-          </svg>
-        </button>
-      </div>
-      <div class="mt-toolbar__center">
-        <span class="mt-file-name">
-          <span v-if="needsSave" class="mt-dirty-dot" aria-hidden="true"></span>{{ displayName }}
-        </span>
-      </div>
-      <div class="mt-toolbar__right">
-        <button
-          class="mt-btn mt-btn--icon"
-          title="新建"
-          aria-label="新建"
-          @click="handleNew"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="12" y1="11" x2="12" y2="17" />
-            <line x1="9" y1="14" x2="15" y2="14" />
-          </svg>
-        </button>
-        <div ref="recentMenuWrap" class="mt-split">
-          <button
-            class="mt-btn mt-btn--icon mt-split__main"
-            title="打开"
-            aria-label="打开"
-            @click="handleOpen"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-            </svg>
-          </button>
-          <button
-            class="mt-btn mt-btn--icon mt-split__arrow"
-            title="最近打开"
-            aria-label="最近打开"
-            :aria-expanded="recentMenuOpen"
-            @click.stop="toggleRecentMenu"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </button>
-          <div v-if="recentMenuOpen" class="mt-theme-menu mt-theme-menu--recent" role="menu">
-            <div class="mt-theme-menu__status" aria-hidden="true">最近打开</div>
-            <template v-if="recentFiles.length">
-              <button
-                v-for="f in recentFiles"
-                :key="f.path"
-                class="mt-theme-menu__item mt-recent__item"
-                role="menuitem"
-                :title="f.path"
-                @click="openRecentFile(f.path)"
-              >
-                <span class="mt-recent__name">{{ f.name }}</span>
-                <span class="mt-recent__dir">{{ dirOfPath(f.path) }}</span>
-              </button>
-              <div class="mt-theme-menu__sep" role="separator"></div>
-              <button
-                class="mt-theme-menu__item mt-theme-menu__item--muted"
-                role="menuitem"
-                @click="clearRecent"
-              >清空列表</button>
-            </template>
-            <div v-else class="mt-theme-menu__empty">（暂无记录）</div>
-          </div>
-        </div>
-        <div ref="saveMenuWrap" class="mt-split">
-          <button
-            class="mt-btn mt-btn--icon mt-split__main"
-            title="保存 (Ctrl+S)"
-            aria-label="保存"
-            @click="handleSave()"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-              <polyline points="17 21 17 13 7 13 7 21" />
-              <polyline points="7 3 7 8 15 8" />
-            </svg>
-          </button>
-          <button
-            class="mt-btn mt-btn--icon mt-split__arrow"
-            title="另存为 (Ctrl+Shift+S)"
-            aria-label="另存为"
-            :aria-expanded="saveMenuOpen"
-            @click.stop="toggleSaveMenu"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </button>
-          <div v-if="saveMenuOpen" class="mt-theme-menu" role="menu">
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="runSaveAs"
-            >另存为…</button>
-          </div>
-        </div>
-        <div ref="exportMenuWrap" class="mt-theme-wrap">
-          <button
-            class="mt-btn mt-btn--icon"
-            title="导出"
-            aria-label="导出"
-            @click.stop="toggleExportMenu"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-          </button>
-          <div v-if="exportMenuOpen" class="mt-theme-menu" role="menu">
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="exportHtml"
-            >HTML 网页（.html）</button>
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="exportPdf"
-            >PDF 文档（.pdf）</button>
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="exportDocx"
-            >Word 文档（.docx）</button>
-            <div class="mt-theme-menu__sep" role="separator"></div>
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="exportTxt"
-            >纯文本（.txt）</button>
-          </div>
-        </div>
-        <div class="mt-toolbar__sep" role="separator"></div>
-        <div ref="themeMenuWrap" class="mt-theme-wrap">
-          <button
-            class="mt-btn mt-btn--icon"
-            title="主题"
-            aria-label="主题"
-            @click.stop="toggleThemeMenu"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" stroke="none" />
-              <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" stroke="none" />
-              <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" stroke="none" />
-              <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" stroke="none" />
-              <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
-            </svg>
-          </button>
-          <div v-if="themeMenuOpen" class="mt-theme-menu" role="menu">
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="toggleDarkMode"
-            >
-              深色模式：{{ isDark ? "开" : "关" }}
-            </button>
-
-            <div class="mt-theme-menu__sep" role="separator"></div>
-
-            <button
-              class="mt-theme-menu__item"
-              :class="{ 'mt-theme-menu__item--active': isDefaultThemeActive() }"
-              role="menuitem"
-              @click="useDefaultTheme"
-            >
-              内置主题（默认）
-            </button>
-
-            <template v-if="installedThemes.length">
-              <button
-                v-for="t in installedThemes"
-                :key="t.filePath"
-                class="mt-theme-menu__item"
-                :class="{ 'mt-theme-menu__item--active': isThemeActive(t) }"
-                role="menuitem"
-                @click="switchTheme(t)"
-              >
-                {{ t.name }}
-              </button>
-            </template>
-
-            <div class="mt-theme-menu__sep" role="separator"></div>
-
-            <button
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="importTheme"
-            >
-              导入自定义主题...
-            </button>
-            <button
-              v-if="isTauri"
-              class="mt-theme-menu__item"
-              role="menuitem"
-              @click="openThemeFolder"
-            >
-              打开主题文件夹
-            </button>
-          </div>
-        </div>
-        <button
-          class="mt-btn mt-btn--icon"
-          :class="{ 'mt-btn--icon-on': sourceMode }"
-          title="源码模式"
-          aria-label="源码模式"
-          @click="toggleSourceMode"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="16 18 22 12 16 6" />
-            <polyline points="8 6 2 12 8 18" />
-          </svg>
-        </button>
-      </div>
-    </header>
+    <AppToolbar
+      :sidebar-open="sidebarOpen"
+      :needs-save="needsSave"
+      :display-name="displayName"
+      :recent-files="recentFiles"
+      :installed-themes="installedThemes"
+      :active-theme-path="getActiveThemePath()"
+      :is-dark="isDark"
+      :is-tauri="isTauri"
+      :source-mode="sourceMode"
+      :recent-menu-open="recentMenuOpen"
+      :save-menu-open="saveMenuOpen"
+      :export-menu-open="exportMenuOpen"
+      :theme-menu-open="themeMenuOpen"
+      @toggle-sidebar="toggleSidebar"
+      @new-file="handleNew"
+      @open-file="handleOpen"
+      @toggle-recent-menu="toggleRecentMenu"
+      @open-recent="openRecentFile"
+      @clear-recent="clearRecent"
+      @save="handleSave()"
+      @toggle-save-menu="toggleSaveMenu"
+      @save-as="runSaveAs"
+      @toggle-export-menu="toggleExportMenu"
+      @export="runExport"
+      @toggle-theme-menu="toggleThemeMenu"
+      @toggle-dark-mode="toggleDarkMode"
+      @use-default-theme="useDefaultTheme"
+      @switch-theme="switchTheme"
+      @import-theme="importTheme"
+      @open-theme-folder="openThemeFolder"
+      @toggle-source-mode="toggleSourceMode"
+    />
 
     <!-- 查找 / 替换浮层（绝对定位在工具栏下方右侧，不占布局高度） -->
     <FindBar

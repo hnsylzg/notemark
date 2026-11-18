@@ -10,7 +10,14 @@
  * 这里只负责“声明”插件数组，不在本文件创建 editor 实例。
  */
 import type { MilkdownPlugin } from "@milkdown/ctx";
-import { commonmark, inlineCodeSchema } from "@milkdown/kit/preset/commonmark";
+import {
+  commonmark,
+  emphasisStarInputRule,
+  emphasisUnderscoreInputRule,
+  inlineCodeInputRule,
+  inlineCodeSchema,
+  strongInputRule,
+} from "@milkdown/kit/preset/commonmark";
 import {
   gfm,
   remarkGFMPlugin,
@@ -25,39 +32,46 @@ import {
   mathInlineSchema,
   mathInlineInputRule,
   remarkMathPlugin,
-  katexOptionsCtx,
-} from "@milkdown/plugin-math";
+} from "./math-schema";
 import { diagram } from "@milkdown/plugin-diagram";
 import { diagramView } from "./diagram-view";
 import { mathBlockPlugins, mathInlineView } from "./math-view";
 import { alertPlugins } from "./alert";
-import { highlightPlugins } from "./highlight";
-import { scriptPlugins } from "./script";
+import { highlightInputRule, highlightPlugins } from "./highlight";
+import {
+  scriptPlugins,
+  strikethroughInputRule,
+  subscriptInputRule,
+  superscriptInputRule,
+} from "./script";
 import { htmlView } from "./html-view";
 import { htmlMergePlugins } from "./html-merge";
 import { underlinePlugins } from "./underline";
-import { htmlBlockPlugins } from "./html-block";
+import { htmlBlockGapGuardPlugin, htmlBlockPlugins } from "./html-block";
 import { imageView } from "./image-view";
 import { listItemPlugins } from "./list-item";
-import { frontmatterPlugins } from "./frontmatter";
-import { tocPlugins } from "./toc";
+import {
+  frontmatterGapGuardPlugin,
+  frontmatterPlugins,
+} from "./frontmatter";
+import { tocGapGuardPlugin, tocPlugins } from "./toc";
 import { strongParensPlugins } from "./strong-parens";
 import { codeBlockComponent } from "@milkdown/components/code-block";
 // gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
 // 前后（默认未注册，原子块周围放不进光标，也无法用箭头键跨越）。
 import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
-import { tableMenuPlugin } from "./table-menu";
 import { formatMenuPlugin } from "./format-menu";
-import { slashMenuPlugin } from "./slash-menu";
 import { footnotePlugins } from "./footnote";
 import { atomBlockDeletePlugin } from "./atom-block-delete";
 import { blockExitPlugin, codeBlockExitClickPlugin } from "./block-exit";
 import { findReplacePlugin } from "./find-replace";
-import { inlineMarkEscapePlugin } from "./inline-mark-escape";
+import { markSourcePlugin } from "./mark-source";
 import { imagePastePlugin } from "./image-paste";
 import { imageDropPlugin } from "./image-drop";
 import { imageBlockPlugin } from "./image-block";
+import { blockquoteBackspacePlugin } from "./blockquote-backspace";
+import { tableSelectAllPlugin } from "./table-commands";
 import "@milkdown/prose/gapcursor/style/gapcursor.css";
 
 const gapcursorPlugin = $prose(() => gapCursor());
@@ -77,6 +91,25 @@ const gfmPlugins = gfm.filter(
     p !== remarkGFMPlugin.options &&
     p !== remarkGFMPlugin.plugin &&
     p !== gfmStrikethroughInputRule
+);
+
+const commonmarkPlugins = commonmark.filter(
+  (plugin) =>
+    plugin !== emphasisStarInputRule &&
+    plugin !== emphasisUnderscoreInputRule &&
+    plugin !== inlineCodeInputRule &&
+    plugin !== strongInputRule
+);
+
+const highlightPluginsWithoutInputRule = highlightPlugins.filter(
+  (plugin) => plugin !== highlightInputRule
+);
+
+const scriptPluginsWithoutInputRules = scriptPlugins.filter(
+  (plugin) =>
+    plugin !== superscriptInputRule &&
+    plugin !== subscriptInputRule &&
+    plugin !== strikethroughInputRule
 );
 
 /**
@@ -100,6 +133,15 @@ const inlineCodeInclusiveSchema = inlineCodeSchema.extendSchema((prev) => (ctx) 
  */
 export function getEditorPlugins(): MilkdownPlugin[] {
   return [
+    // 表格内第一次 Ctrl/Cmd+A 选中整张表格，保持用户可直接复制整表。
+    tableSelectAllPlugin,
+    // Typora-style inline mark source editing. Register before commonmark so
+    // Ctrl+B/I/E are intercepted before the preset keymaps silently toggle the
+    // mark. The plugin also owns delimiter decorations and click-to-edit.
+    markSourcePlugin,
+    // 引用第一段开头按一次 Backspace：沿用标准 lift，但同步重建原生光标，
+    // 避免引用 DOM 被替换后视觉光标停在上一行。
+    blockquoteBackspacePlugin,
     // 退格 / Delete 删除不可选原子块（yaml 元数据 / htmlBlock）。
     // 刻意排在最前面：基础 keymap 的 Backspace 链（deleteSelection → joinBackward
     // → selectNodeBackward）对 selectable:false 的 atom 落空，但链中某一步也可能
@@ -114,7 +156,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     blockExitPlugin,
     // 代码块在文末时，鼠标点其下方空白自动补空段落并进入（对齐原子块的点出来行为）
     codeBlockExitClickPlugin,
-    ...commonmark,
+    ...commonmarkPlugins,
     // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖
     ...inlineCodeInclusiveSchema,
     // 表格 / 任务列表 / 脚注 / 删除线等 GFM 支持（remark-gfm 与删除线输入
@@ -125,25 +167,21 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 注册，解析与序列化也由它负责，所以必须排在其后；本插件只补交互。
     ...footnotePlugins,
     ...history,
-    // 只取 @milkdown/plugin-math 的 inline 部分（remark-math + katex 配置 + 行内公式 schema/输入规则），
-    // block 公式完全由本项目自定义的 mathBlockPlugins 接管，避免官方 schema.toDOM 自带 KaTeX 导致的双重渲染。
+    // MathJax 是唯一公式引擎：本项目的 schema 负责解析/序列化数据，
+    // NodeView 异步用 MathJax SVG 渲染，避免任何第三方 KaTeX 默认渲染。
     ...remarkMathPlugin,
-    katexOptionsCtx,
     ...mathInlineSchema,
     mathInlineInputRule,
     mathInlineView,
     ...mathBlockPlugins,
     ...diagram,
     diagramView,
+    frontmatterGapGuardPlugin,
+    htmlBlockGapGuardPlugin,
+    tocGapGuardPlugin,
     gapcursorPlugin,
-    // 右键格式菜单必须排在 tableMenuPlugin 之前：单元格内右键落在文字选区上时
-    // 由本菜单接管（给选中的文字套格式），其余表格内右键才让位给表格菜单
     formatMenuPlugin,
-    tableMenuPlugin,
     findReplacePlugin,
-    // 必须排在 findReplacePlugin 之后：查找栏打开时 Esc 先用于关闭查找栏，
-    // 查找栏关闭状态下 Esc 才轮到"跳出加粗等行内格式"（见 inline-mark-escape.ts）
-    inlineMarkEscapePlugin,
     // 必须排在 clipboard 之前：ProseMirror 的 handlePaste 按注册顺序取第一个
     // 返回 true 的插件，纯图片粘贴没有 text/html 与 text/plain，
     // 交给 clipboard 解析只会得到空内容（图片丢失），这里先接管。
@@ -152,10 +190,10 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     imageBlockPlugin,
     clipboard,
     ...alertPlugins,
-    ...highlightPlugins,
+    ...highlightPluginsWithoutInputRule,
     // 上标 ^x^ / 下标 ~x~：拆分 text 的 scriptRemark 须排在高亮等同样拆分
     // text 的 remark 之后（==a^b^== 才能先成高亮再拆上标）
-    ...scriptPlugins,
+    ...scriptPluginsWithoutInputRules,
     htmlView,
     imageView,
     ...htmlMergePlugins,
@@ -168,8 +206,5 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...tocPlugins,
     ...strongParensPlugins,
     ...codeBlockComponent,
-    // 斜杠命令菜单放最后：它依赖上面所有自定义节点（math/alert/toc/yaml 等）
-    // 的 schema，注册顺序靠后可确保类型都能取到。
-    slashMenuPlugin,
   ];
 }

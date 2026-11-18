@@ -18,10 +18,12 @@
  *   - $view：NodeView 只读渲染，避免 ProseMirror 光标进入该原子节点。
  */
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
-import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
+import { $nodeSchema, $prose, $remark, $view } from "@milkdown/kit/utils";
 import type { RemarkPluginRaw } from "@milkdown/transformer";
 import remarkFrontmatter from "remark-frontmatter";
-import { exitToNextLine } from "./block-exit";
+import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
+import { GapCursor } from "@milkdown/kit/prose/gapcursor";
+import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
 
 /** remark-frontmatter 配置：yaml 块、`---` 分隔（index.ts 重建序列化器时复用，须保持一致） */
 export const FRONTMATTER_OPTIONS = { type: "yaml", marker: "-" };
@@ -64,8 +66,31 @@ export const frontmatterSchema = $nodeSchema("yaml", () => ({
   },
 }));
 
-export const frontmatterView = $view(frontmatterSchema.node, () => {
-  const nodeView: NodeViewConstructor = (node, view, getPos) => {
+export interface FrontmatterRow {
+  key: string | null;
+  value: string;
+}
+
+/** 将常见顶层 YAML 标量行解析成可读预览，复杂内容保留原始行。 */
+export function parseFrontmatterRows(value: string): FrontmatterRow[] {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() && line.trim() !== "---")
+    .map((line) => {
+      const match = line.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/);
+      return match
+        ? { key: match[1], value: match[2] }
+        : { key: null, value: line.trim() };
+    });
+}
+
+export const createFrontmatterNodeView: NodeViewConstructor = (
+  node,
+  view,
+  getPos
+) => {
     const dom = document.createElement("div");
     dom.className = "mt-frontmatter";
     dom.dataset.type = "yaml";
@@ -75,19 +100,90 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
     body.value = node.attrs.value as string;
     body.rows = 1;
     body.spellcheck = false;
-    body.placeholder = "title: 我的笔记（YAML 元数据，随内容自动伸缩）";
+    body.placeholder = "title: 文档标题";
 
-    dom.append(body);
+    const preview = document.createElement("div");
+    preview.className = "mt-frontmatter-preview";
+
+    const source = document.createElement("div");
+    source.className = "mt-block-source mt-block-source--frontmatter";
+    source.style.display = "none";
+    const open = document.createElement("span");
+    open.className = "mt-block-source-marker";
+    open.textContent = "---";
+    open.setAttribute("aria-hidden", "true");
+    const close = open.cloneNode(true) as HTMLSpanElement;
+    source.append(open, body, close);
+    dom.append(preview, source);
 
     // 高度自适应：随内容增减自动伸缩，不再固定 rows、也无需手动拖拽。
     // 先归零再取 scrollHeight，避免历史高度残留导致量不准。
+    let editing = false;
+
     const autoSize = () => {
-      if (!body.isConnected) return;
+      if (!body.isConnected || !editing) return;
       body.style.height = "auto";
       body.style.height = `${body.scrollHeight}px`;
     };
-    // 首帧 DOM 尚未布局时 scrollHeight 会量到 0，延后一帧再量
-    requestAnimationFrame(autoSize);
+
+    const renderPreview = (value: string) => {
+      preview.replaceChildren();
+      for (const row of parseFrontmatterRows(value)) {
+        const item = document.createElement("div");
+        item.className = "mt-frontmatter-row";
+        const key = document.createElement("span");
+        key.className = "mt-frontmatter-key";
+        key.textContent = row.key ?? "";
+        const text = document.createElement("span");
+        text.className = "mt-frontmatter-value";
+        text.textContent = row.value || (row.key ? "—" : "");
+        item.append(key, text);
+        preview.appendChild(item);
+      }
+    };
+
+    const setEditing = (on: boolean) => {
+      editing = on;
+      source.style.display = on ? "" : "none";
+      preview.style.display = on ? "none" : "";
+      if (on) {
+        body.value = node.attrs.value as string;
+        requestAnimationFrame(() => {
+          autoSize();
+          body.focus();
+          const len = body.value.length;
+          body.setSelectionRange(len, len);
+        });
+      }
+    };
+
+    const finish = (commit: boolean, focusEditor = false): boolean => {
+      if (!editing) return false;
+      const current = body.value;
+      const next = commit ? current : (node.attrs.value as string);
+      const pos = getPos();
+      if (typeof pos === "number" && !next.trim()) {
+        editing = false;
+        deleteEmptyEditableBlock(view, pos, node.nodeSize, focusEditor);
+        return true;
+      }
+
+      editing = false;
+      if (
+        commit &&
+        next !== node.attrs.value &&
+        typeof pos === "number"
+      ) {
+        view.dispatch(
+          view.state.tr.setNodeAttribute(pos, "value", next)
+        );
+      }
+      body.value = next;
+      setEditing(false);
+      renderPreview(next);
+      if (focusEditor) view.focus();
+      return false;
+    };
 
     // 阻止 ProseMirror 接收编辑区内的鼠标交互：该节点是 atom，PM 不管理其内部，
     // 避免光标 / 选区被 PM 抢走
@@ -100,11 +196,15 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
     // 否则会被编辑器的 keymap 拦截、导致 textarea 内退格等按键失效；
     // 带修饰键（Ctrl / Cmd / Alt，如 Ctrl+S 保存、Ctrl+C/V）则放行给全局快捷键
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false, true);
+        return;
+      }
       // Ctrl/Cmd + Enter：与表格 / 代码块一致，跳到块后的下一行继续写。
-      // 元数据是常驻编辑态（没有"关闭编辑框"这一步），内容已在 input 里同步，
-      // 这里只需把光标移走。必须放在下面"带修饰键直接放行"之前拦截。
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
+        if (finish(true, true)) return;
         const curPos = getPos();
         if (typeof curPos === "number") {
           exitToNextLine(view, curPos, node.nodeSize);
@@ -123,8 +223,8 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
         const pos = getPos();
         if (typeof pos === "number") {
           e.preventDefault();
-          view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
-          view.focus();
+          editing = false;
+          deleteEmptyEditableBlock(view, pos, node.nodeSize, true);
         }
         return;
       }
@@ -132,16 +232,16 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
     };
     body.addEventListener("keydown", onKeyDown);
 
-    // 输入时把内容同步到节点 attrs（保留 value 数据结构，便于序列化）
-    const sync = () => {
-      const pos = getPos();
-      if (pos == null) return;
-      view.dispatch(view.state.tr.setNodeAttribute(pos, "value", body.value));
-    };
-    body.addEventListener("input", () => {
-      autoSize();
-      sync();
+    body.addEventListener("input", autoSize);
+    body.addEventListener("blur", () => finish(true));
+    dom.addEventListener("click", () => {
+      if (!editing) setEditing(true);
     });
+    dom.addEventListener("mousedown", stop);
+    dom.addEventListener("touchstart", stop, { passive: true });
+
+    body.value = node.attrs.value as string;
+    renderPreview(node.attrs.value as string);
 
     return {
       dom,
@@ -150,22 +250,34 @@ export const frontmatterView = $view(frontmatterSchema.node, () => {
       update: (updatedNode) => {
         if (updatedNode.type !== node.type) return false;
         node = updatedNode;
-        // 仅当外部（加载文件 / 撤销重做）改变了 value 才回写，
-        // 否则会覆盖用户正在输入的内容、导致光标跳动
-        if (body.value !== (node.attrs.value as string)) {
+        if (!editing) {
           body.value = node.attrs.value as string;
-          autoSize();
+          renderPreview(node.attrs.value as string);
         }
         return true;
       },
-      destroy: () => {
-        body.removeEventListener("input", sync);
-        body.removeEventListener("keydown", onKeyDown);
-      },
+      destroy: () => {},
     };
-  };
-  return nodeView;
-});
+};
+
+export const frontmatterView = $view(
+  frontmatterSchema.node,
+  () => createFrontmatterNodeView
+);
+
+export function createFrontmatterGapGuardPlugin(): Plugin {
+  return new Plugin({
+    key: new PluginKey("notemark-frontmatter-gap-guard"),
+    filterTransaction(tr) {
+      if (!tr.selectionSet || !(tr.selection instanceof GapCursor)) return true;
+      return tr.selection.$from.nodeAfter?.type.name !== "yaml";
+    },
+  });
+}
+
+export const frontmatterGapGuardPlugin = $prose(
+  createFrontmatterGapGuardPlugin
+);
 
 export const frontmatterPlugins = [
   ...frontmatterRemark,

@@ -26,6 +26,7 @@ import { editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/prose/view";
 import { TextSelection } from "@milkdown/prose/state";
 import { getImageBaseDir } from "./image-view";
+import { writeBytesAtomic } from "./fileAccess";
 
 /** 图片存放的子目录名（相对当前文档所在目录） */
 const ASSETS_DIR = "assets";
@@ -208,11 +209,11 @@ async function writeImageToAssets(
   baseDir: string
 ): Promise<string> {
   const { join } = await import("@tauri-apps/api/path");
-  const { mkdir, writeFile, exists } = await import("@tauri-apps/plugin-fs");
+  const { mkdir, exists } = await import("@tauri-apps/plugin-fs");
   const dir = await join(baseDir, ASSETS_DIR);
   if (!(await exists(dir))) await mkdir(dir, { recursive: true });
   const name = await uniqueName(dir, sanitizeName(fileName));
-  await writeFile(await join(dir, name), bytes);
+  await writeBytesAtomic(await join(dir, name), bytes);
   return `${ASSETS_DIR}/${name}`;
 }
 

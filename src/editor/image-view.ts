@@ -20,8 +20,15 @@
  */
 import { $view, type $Node } from "@milkdown/kit/utils";
 import { imageSchema } from "@milkdown/kit/preset/commonmark";
-import type { EditorView } from "@milkdown/prose/view";
+import type {
+  EditorView,
+  NodeViewConstructor,
+} from "@milkdown/prose/view";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { formatImageMarkdown, parseImageMarkdown } from "./image-markdown";
+
+export const IMAGE_SOURCE_CONTEXTMENU_EVENT =
+  "notemark-image-source-contextmenu";
 
 /** 当前 markdown 文件所在目录（末尾带分隔符），空表示未知 */
 let imageBaseDir = "";
@@ -87,7 +94,11 @@ const DRAG_THRESHOLD = 5;
  * - 松手时若确实拖拽过 → 把图片节点搬到落点。
  * 监听挂在 window 上（捕获阶段），鼠标离开图片范围也能继续跟踪。
  */
-function startImageDrag(view: EditorView, img: HTMLElement, start: MouseEvent): void {
+function startImageDrag(
+  view: EditorView,
+  img: HTMLElement,
+  start: MouseEvent
+): void {
   const from = view.posAtDOM(img, 0);
   const s: {
     moved: boolean;
@@ -133,6 +144,12 @@ function startImageDrag(view: EditorView, img: HTMLElement, start: MouseEvent): 
     img.style.opacity = "";
     if (s.moved) {
       moveImageNode(view, from, s.dropPos);
+      // 浏览器的 click 在 mouseup 后同步触发；用一个短命标记吞掉它，
+      // 避免拖完图片立刻进入源码态。
+      img.dataset.mdImageDragged = "1";
+      setTimeout(() => {
+        delete img.dataset.mdImageDragged;
+      }, 0);
       // 阻止 ProseMirror 把这次松手当普通点击（避免刚搬完又被选中/移动光标）
       e.preventDefault();
       e.stopPropagation();
@@ -162,10 +179,25 @@ function moveImageNode(view: EditorView, from: number, to: number): void {
   view.focus();
 }
 
-export const imageView = $view(
-  imageSchema.node as unknown as $Node,
-  () => (node) => {
+export const createImageNodeView: NodeViewConstructor = (
+  node,
+  view,
+  getPos
+) => {
+    const wrapper = document.createElement("span");
+    wrapper.className = "mt-image-node";
     const img = document.createElement("img");
+    const source = document.createElement("span");
+    source.className = "mt-image-source";
+    source.contentEditable = "plaintext-only";
+    source.spellcheck = false;
+    source.hidden = true;
+    source.setAttribute("role", "textbox");
+    source.setAttribute("aria-label", "Markdown 图片源码");
+    wrapper.append(img, source);
+
+    let currentNode = node;
+    let editingSource = false;
     const render = (attrs: Record<string, unknown>): void => {
       const raw = String(attrs.src ?? "");
       // 保存原始 src，供基准目录变化后重新解析
@@ -180,28 +212,155 @@ export const imageView = $view(
       if (attrs.title) img.title = String(attrs.title);
       else img.removeAttribute("title");
     };
+
+    const setSourceValidity = (valid: boolean): void => {
+      source.setAttribute("aria-invalid", valid ? "false" : "true");
+      source.title = valid
+        ? ""
+        : '请输入完整的 Markdown 图片语法，例如 ![说明](assets/image.png "标题")';
+    };
+
+    const closeSourceEditor = (): void => {
+      editingSource = false;
+      source.hidden = true;
+      img.hidden = false;
+      wrapper.classList.remove("mt-image-source-editing");
+      setSourceValidity(true);
+    };
+
+    const activateSourceEditor = (): void => {
+      if (editingSource) return;
+      editingSource = true;
+      source.textContent = formatImageMarkdown(currentNode.attrs);
+      source.hidden = false;
+      img.hidden = true;
+      wrapper.classList.add("mt-image-source-editing");
+      setSourceValidity(true);
+      requestAnimationFrame(() => {
+        source.focus();
+        const selection = source.ownerDocument.getSelection();
+        if (!selection) return;
+        const range = source.ownerDocument.createRange();
+        range.selectNodeContents(source);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+    };
+
+    const commitSourceEditor = (focusEditor = false): boolean => {
+      const raw = source.textContent ?? "";
+      const parsed = parseImageMarkdown(raw);
+      const pos = getPos();
+      const live =
+        typeof pos === "number" ? view.state.doc.nodeAt(pos) : null;
+      if (!parsed) {
+        closeSourceEditor();
+        if (typeof pos === "number" && live) {
+          const tr = view.state.tr;
+          if (raw) {
+            tr.replaceWith(
+              pos,
+              pos + live.nodeSize,
+              view.state.schema.text(raw)
+            );
+          } else {
+            tr.delete(pos, pos + live.nodeSize);
+          }
+          view.dispatch(tr);
+        }
+        if (focusEditor) view.focus();
+        return true;
+      }
+      if (typeof pos !== "number") return false;
+      if (!live || live.type !== currentNode.type) return false;
+      const attrs = { ...currentNode.attrs, ...parsed };
+      const changed =
+        live.attrs.src !== attrs.src ||
+        live.attrs.alt !== attrs.alt ||
+        live.attrs.title !== attrs.title;
+      closeSourceEditor();
+      if (changed) {
+        view.dispatch(
+          view.state.tr.setNodeMarkup(pos, undefined, attrs, live.marks)
+        );
+      }
+      if (focusEditor) view.focus();
+      return true;
+    };
+
+    source.addEventListener("mousedown", (event) => event.stopPropagation());
+    source.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      source.dispatchEvent(
+        new CustomEvent(IMAGE_SOURCE_CONTEXTMENU_EVENT, {
+          bubbles: true,
+          cancelable: true,
+          detail: {
+            clientX: event.clientX,
+            clientY: event.clientY,
+          },
+        })
+      );
+    });
+    source.addEventListener("input", () => setSourceValidity(true));
+    source.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSourceEditor();
+        view.focus();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        commitSourceEditor(true);
+      }
+    });
+    source.addEventListener("blur", () => {
+      if (editingSource) commitSourceEditor(false);
+    });
+
     render(node.attrs);
     // 关掉浏览器对 img 的原生拖拽：HTML5 拖放在 Tauri 原生拖放下不可用，
     // 且会与下面的鼠标模拟拖拽打架（双重拖拽）。文字选区的拖拽不受影响。
     img.draggable = false;
+    img.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      startImageDrag(view, img, event);
+    });
+    img.addEventListener("click", (event) => {
+      if (img.dataset.mdImageDragged === "1") {
+        delete img.dataset.mdImageDragged;
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      activateSourceEditor();
+    });
     return {
-      dom: img,
-      handleDOMEvents: {
-        mousedown: (view: EditorView, event: Event) => {
-          const e = event as MouseEvent;
-          if (e.button !== 0) return false;
-          // 阻止浏览器把图片当拖拽源（原生图片拖拽在 Tauri 下不可用且会打架），
-          // 但仍返回 false 让 ProseMirror 处理点击选中。
-          e.preventDefault();
-          startImageDrag(view, img, e);
-          return false;
-        },
-      },
+      dom: wrapper,
       update: (newNode) => {
         if (newNode.type !== node.type) return false;
+        currentNode = newNode;
         render(newNode.attrs);
+        if (!editingSource) source.textContent = formatImageMarkdown(newNode.attrs);
         return true;
       },
+      selectNode: () => {
+        wrapper.classList.add("ProseMirror-selectednode");
+      },
+      deselectNode: () => {
+        wrapper.classList.remove("ProseMirror-selectednode");
+      },
+      stopEvent: (event) => source.contains(event.target as Node),
+      ignoreMutation: () => true,
+      destroy: () => {
+        editingSource = false;
+      },
     };
-  }
+};
+
+export const imageView = $view(
+  imageSchema.node as unknown as $Node,
+  () => createImageNodeView
 );

@@ -19,9 +19,6 @@ import type { Editor } from "@milkdown/kit/core";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore editorViewCtx 运行时可用（d.ts 未声明）
 import { editorViewCtx } from "@milkdown/kit/core";
-// 导出 / 打印自包含的 KaTeX 样式（字体已内联为 data URL），确保公式在 PDF 中正确渲染
-import { katexExportCss } from "./katex-export-css";
-
 // ?inline：以字符串形式导入处理后的主题 CSS（含 @import 展开），不注入页面
 import themeCss from "@/editor/theme/index.css?inline";
 // 语言列表：与编辑器注入 codeBlockConfig 的是同一数组实例，load() 带缓存，
@@ -30,6 +27,8 @@ import { languages } from "@codemirror/language-data";
 // EditorView.findFromDOM 是 CM6 公开 API：从 DOM 反查每个代码块的 view 实例，
 // 用于在导出前打开 CM6 的打印模式（viewState.printing）强制全量渲染
 import { EditorView } from "@codemirror/view";
+import { writeBytesAtomic } from "./fileAccess";
+import { tableToAlignedPlainText } from "./table-clipboard";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -166,7 +165,6 @@ export function buildStandaloneHtml(opts: StandaloneHtmlOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(title)}</title>
 <style>${themeCss}</style>
-<style>${katexExportCss}</style>
 <style>${collectRuntimeStyles()}</style>
 <style>${EXPORT_BASE_CSS}</style>
 <style>${forPrint ? PRINT_CSS : ""}${extraCss}</style>
@@ -184,7 +182,7 @@ ${bodyHtml}
 /**
  * 取编辑器正文 HTML。
  * view.dom 即 ProseMirror 的可编辑根元素，其 innerHTML 是渲染后的真实结构：
- * 公式（KaTeX）、图表（Mermaid SVG）、代码块（CM6 含高亮 span）都已在 DOM 中。
+ * 公式（MathJax SVG）、图表（Mermaid SVG）、代码块（CM6 含高亮 span）都已在 DOM 中。
  *
  * 注意：调用前应先 warmUpCodeBlocks()，它保证两件事：
  * 1. 所有代码块完成初始化（视口外默认只有纯文本占位，无语法高亮）
@@ -195,6 +193,14 @@ export function getEditorHtml(editor: Editor): string {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     return view.dom.innerHTML;
+  });
+}
+
+/** 取 Word 导出所需文档快照，避免动态加载的导出模块再次依赖 Milkdown context。 */
+export function getWordExportSource(editor: Editor) {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    return { doc: view.state.doc, viewDom: view.dom as HTMLElement };
   });
 }
 
@@ -429,6 +435,9 @@ const BLOCK_CONTAINERS = new Set([
   "BODY",
 ]);
 
+/** Nested list lines stay visibly grouped under their parent item. */
+const LIST_ITEM_CONTINUATION_INDENT = "  ";
+
 /**
  * HTML → 纯文本（TXT 导出）。
  *
@@ -491,9 +500,24 @@ function serializeNode(node: Node, inBlock = true): string {
       const label = collapseInline(
         el.querySelector(".label-wrapper")?.textContent ?? ""
       );
-      const body = collapseInline(el.querySelector(".children")?.textContent ?? "");
-      const line = [listItemPrefix(el, label), body].filter(Boolean).join(" ");
-      if (line.trim()) out += `\n${line}`;
+      const nodeViewBody = el.querySelector(".children");
+      // 编辑器 NodeView 有 .children 容器；从选区直接序列化得到的标准 HTML
+      // 则是 <li><p>正文</p></li>，必须递归读取正文，否则整项丢失。
+      // Recursively serialize the item body so nested lists keep their lines.
+      const body = serializeNode(nodeViewBody ?? el, true)
+        .replace(/\r\n?/g, "\n")
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim());
+      const prefix = listItemPrefix(el, label);
+      const [firstLine = "", ...continuation] = body;
+      const first = firstLine.trim();
+      if (first) {
+        out += `\n${[prefix, first].filter(Boolean).join(" ")}`;
+        for (const line of continuation) {
+          out += `\n${LIST_ITEM_CONTINUATION_INDENT}${line}`;
+        }
+      }
       return;
     }
 
@@ -510,7 +534,13 @@ function serializeNode(node: Node, inBlock = true): string {
       return;
     }
 
-    // 表格单元格：用制表符分隔（便于粘贴到表格软件），避免文字粘连
+    if (tag === "TABLE") {
+      const tableText = tableToAlignedPlainText(el as HTMLTableElement);
+      if (tableText) out += `\n${tableText}\n`;
+      return;
+    }
+
+    // 表格单元格：非表格容器中仍用制表符分隔，避免文字粘连
     if (tag === "TD" || tag === "TH") {
       const cell = collapseInline(el.textContent ?? "");
       if (cell) out += `${cell}\t`;
@@ -591,9 +621,9 @@ export async function writeExportFile(
   target: string,
   data: string | Uint8Array
 ): Promise<void> {
-  const { writeTextFile, writeFile } = await import("@tauri-apps/plugin-fs");
-  if (typeof data === "string") await writeTextFile(target, data);
-  else await writeFile(target, data);
+  const bytes =
+    typeof data === "string" ? new TextEncoder().encode(data) : data;
+  await writeBytesAtomic(target, bytes);
 }
 
 /**

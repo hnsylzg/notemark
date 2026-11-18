@@ -16,9 +16,14 @@
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import type { MilkdownPlugin } from "@milkdown/ctx";
 import type { RemarkPluginRaw } from "@milkdown/transformer";
-import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
+import { $nodeSchema, $prose, $remark, $view } from "@milkdown/kit/utils";
+import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
+import { GapCursor } from "@milkdown/kit/prose/gapcursor";
 import { sanitizeHtmlBlock } from "./html-view";
-import { exitToNextLine } from "./block-exit";
+import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
+
+export const HTML_SOURCE_CONTEXTMENU_EVENT =
+  "notemark-html-source-contextmenu";
 
 export const htmlBlockSchema = $nodeSchema("htmlBlock", () => ({
   group: "block",
@@ -61,8 +66,11 @@ export const htmlBlockSchema = $nodeSchema("htmlBlock", () => ({
   },
 }));
 
-export const htmlBlockView = $view(htmlBlockSchema.node, () => {
-  const nodeView: NodeViewConstructor = (node, view, getPos) => {
+export const createHtmlBlockNodeView: NodeViewConstructor = (
+  node,
+  view,
+  getPos
+) => {
     const dom = document.createElement("div");
     dom.className = "mt-html-block";
     dom.dataset.type = "htmlblock";
@@ -78,9 +86,55 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
     ta.placeholder = "在此输入 HTML 代码，例如 <div>...</div> 或 <iframe ...>";
     ta.style.display = "none";
 
-    dom.append(ta, preview);
+    const toolbar = document.createElement("div");
+    toolbar.className = "mt-html-block-toolbar";
+
+    const editButton = document.createElement("button");
+    editButton.className = "mt-html-block-edit";
+    editButton.type = "button";
+    editButton.textContent = "HTML </>";
+    editButton.title = "编辑 HTML 源码";
+    editButton.setAttribute("aria-label", "编辑 HTML 源码");
+    toolbar.appendChild(editButton);
+
+    dom.append(ta, toolbar, preview);
 
     let editing = false;
+    let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const showToolbar = () => {
+      if (toolbarHideTimer) {
+        clearTimeout(toolbarHideTimer);
+        toolbarHideTimer = null;
+      }
+      toolbar.classList.add("mt-html-block-toolbar--visible");
+    };
+    const scheduleToolbarHide = () => {
+      if (toolbarHideTimer) clearTimeout(toolbarHideTimer);
+      toolbarHideTimer = setTimeout(() => {
+        toolbarHideTimer = null;
+        toolbar.classList.remove("mt-html-block-toolbar--visible");
+      }, 180);
+    };
+    dom.addEventListener("pointerenter", showToolbar);
+    dom.addEventListener("pointerleave", scheduleToolbarHide);
+    toolbar.addEventListener("pointerenter", showToolbar);
+    toolbar.addEventListener("pointerleave", scheduleToolbarHide);
+
+    const openSourceMenu = (event: MouseEvent): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      ta.dispatchEvent(
+        new CustomEvent(HTML_SOURCE_CONTEXTMENU_EVENT, {
+          bubbles: true,
+          cancelable: true,
+          detail: {
+            clientX: event.clientX,
+            clientY: event.clientY,
+          },
+        })
+      );
+    };
 
     // 渲染对象（块级 HTML 用更宽松的白名单）；空态给与公式块一致的占位提示
     const render = (value: string) => {
@@ -100,6 +154,7 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
       editing = on;
       ta.style.display = on ? "" : "none";
       preview.style.display = on ? "none" : "";
+      toolbar.hidden = on;
       if (on) {
         ta.value = node.attrs.value as string;
         ta.focus();
@@ -112,15 +167,25 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
 
     // 退出编辑并提交 / 取消：commit=true 用 textarea 当前内容写回文档，
     // commit=false（Esc）恢复原值。与公式块 finish() 行为一致。
-    const finish = (commit: boolean) => {
-      if (!editing) return;
+    const finish = (commit: boolean, focusEditor = false): boolean => {
+      if (!editing) return false;
       const next = commit ? ta.value : (node.attrs.value as string);
       editing = false;
+      const pos = getPos();
       ta.style.display = "none";
       preview.style.display = "";
-      if (next !== node.attrs.value) {
-        const pos = getPos();
-        if (typeof pos === "number") {
+      toolbar.hidden = false;
+      if (typeof pos === "number") {
+        if (!next.trim()) {
+          deleteEmptyEditableBlock(
+            view,
+            pos,
+            node.nodeSize,
+            focusEditor
+          );
+          return true;
+        }
+        if (next !== node.attrs.value) {
           // setNodeMarkup 整体替换 attrs，需合并原 attrs（保留其他字段）
           view.dispatch(
             view.state.tr.setNodeMarkup(pos, undefined, {
@@ -128,10 +193,13 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
               value: next,
             }),
           );
-          return; // update() 会触发重渲染
+          if (focusEditor) view.focus();
+          return false;
         }
       }
       render(next);
+      if (focusEditor) view.focus();
+      return false;
     };
 
     // 编辑区交互不要冒泡到 ProseMirror（atom 节点，PM 不管理其内部）
@@ -144,15 +212,15 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
     ta.addEventListener("copy", stop);
     ta.addEventListener("cut", stop);
     ta.addEventListener("drop", stop);
-    ta.addEventListener("contextmenu", stop);
+    ta.addEventListener("contextmenu", openSourceMenu);
     ta.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") {
         e.preventDefault();
-        finish(false);
+        finish(false, true);
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        finish(true);
+        if (finish(true, true)) return;
         // 与表格 / 代码块一致：保存后光标跳到块后的下一行，可直接接着写
         const curPos = getPos();
         if (typeof curPos === "number") {
@@ -169,21 +237,27 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
         if (typeof pos === "number") {
           e.preventDefault();
           editing = false; // 先退出编辑态，删除后 blur 触发的 finish 才不会再提交一次
-          view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
-          view.focus();
+          deleteEmptyEditableBlock(view, pos, node.nodeSize, true);
         }
       }
     });
     // 失焦即提交并退出编辑态（与公式块一致「输完就关闭」）
     ta.addEventListener("blur", () => finish(true));
 
-    // 点击整块进入编辑；编辑态下忽略，且不抢 PM 选区
+    // HTML 内容可能包含 iframe 等交互元素，不能让整块点击都进入源码编辑。
+    // HTML 块不接管右键，保留嵌入内容/WebViewer 的原生菜单与左键交互。
     dom.addEventListener("mousedown", stop);
-    dom.addEventListener("click", () => {
-      if (!editing) setEditing(true);
+    editButton.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    editButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setEditing(true);
     });
 
-    // 初始态：默认显示渲染对象（空内容时由 CSS 占位提示）；点整块再进入编辑
+    // 初始态：默认显示渲染对象；只有右上角 HTML </> 标签能进入源码编辑。
     render(node.attrs.value as string);
 
     return {
@@ -193,16 +267,22 @@ export const htmlBlockView = $view(htmlBlockSchema.node, () => {
       update: (updatedNode) => {
         if (updatedNode.type !== node.type) return false;
         node = updatedNode;
+        toolbar.hidden = false;
         // 仅非编辑态回写（外部改动：加载文件 / 撤销重做）；
         // 编辑态不碰 textarea，避免重置光标 / 选区
         if (!editing) render(node.attrs.value as string);
         return true;
       },
-      destroy: () => {},
+      destroy: () => {
+        if (toolbarHideTimer) clearTimeout(toolbarHideTimer);
+      },
     };
-  };
-  return nodeView;
-});
+};
+
+export const htmlBlockView = $view(
+  htmlBlockSchema.node,
+  () => createHtmlBlockNodeView
+);
 
 /*
  * htmlBlockRemark — 在 mdast 阶段把「块级 HTML」与「行内 HTML」区分开。
@@ -277,6 +357,20 @@ const htmlBlockRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
 };
 
 export const htmlBlockRemark = $remark("notemark-html-block", () => htmlBlockRemarkTransform);
+
+export function createHtmlBlockGapGuardPlugin(): Plugin {
+  return new Plugin({
+    key: new PluginKey("notemark-html-block-gap-guard"),
+    filterTransaction(tr) {
+      if (!tr.selectionSet || !(tr.selection instanceof GapCursor)) return true;
+      return tr.selection.$from.nodeAfter?.type.name !== "htmlBlock";
+    },
+  });
+}
+
+export const htmlBlockGapGuardPlugin = $prose(
+  createHtmlBlockGapGuardPlugin
+);
 
 export const htmlBlockPlugins: MilkdownPlugin[] = [
   ...htmlBlockSchema,
