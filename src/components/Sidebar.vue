@@ -360,7 +360,6 @@ function isActive(path: string): boolean {
 
       <template v-else-if="menu.target.kind === 'dir'">
         <div class="mt-context-menu__group">
-          <div class="mt-context-menu__group-title">目录</div>
           <button class="mt-context-menu__item" role="menuitem" @click="act('reveal')">
             <span class="mt-context-menu__icon">
               <ContextMenuIcon :icon="FolderOpen" />
