@@ -61,7 +61,7 @@ import {
 } from "./frontmatter";
 import { tocGapGuardPlugin, tocPlugins } from "./toc";
 import { strongParensPlugins } from "./strong-parens";
-import { codeBlockComponent } from "@milkdown/components/code-block";
+import { persistentCodeBlockPlugins } from "./code-block-view";
 // gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
 // 前后（默认未注册，原子块周围放不进光标，也无法用箭头键跨越）。
 import { $prose } from "@milkdown/utils";
@@ -212,6 +212,6 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...frontmatterPlugins,
     ...tocPlugins,
     ...strongParensPlugins,
-    ...codeBlockComponent,
+    ...persistentCodeBlockPlugins,
   ];
 }

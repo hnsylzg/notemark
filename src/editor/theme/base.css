@@ -370,7 +370,31 @@
      此处必须用 !important 才能保证引用块内段落不被撑大、与 .md-alert 对齐 */
   margin: 4px 0 !important;
 }
-
+/* 嵌套引用保留每层左边框与缩进，但递减内部空白，避免多层后正文过窄、
+   上下间距层层叠加。使用非 :where() 选择器，主题仍可通过同名变量调整。 */
+.milkdown .editor blockquote blockquote:not(.md-alert) {
+  margin-block: 0;
+  padding-block: var(--mt-quote-nested-padding-block, 0.375rem);
+  padding-inline: var(--mt-quote-nested-padding-inline, 0.75rem);
+}
+.milkdown .editor blockquote blockquote blockquote:not(.md-alert) {
+  padding-block: var(--mt-quote-deep-padding-block, 0.25rem);
+  padding-inline: var(--mt-quote-deep-padding-inline, 0.625rem);
+}
+/* 嵌套引用前面存在任意兄弟块时只增加一次引入间距，避免按层级累计。 */
+.milkdown
+  .editor
+  blockquote
+  > * + blockquote:not(.md-alert) {
+  margin-block-start: var(--mt-quote-nested-intro-gap, 0.5em);
+}
+/* 引用内非首个标题按自身字号获得间距，避免紧贴前一个块。 */
+.milkdown
+  .editor
+  blockquote:not(.md-alert)
+  > :is(h1, h2, h3, h4, h5, h6):not(:first-child) {
+  margin-block-start: var(--mt-quote-heading-gap, 0.375em);
+}
 /* ============ Alert 引用块（> [!NOTE] 等，GitHub 风格） ============
    类名体系：.md-alert / .md-alert-<type>（与 milkdown 官方 alert 插件一致）。
    - 结构：图标 + 标题同一行，内容段落独占一行；[!TYPE] 标记行不进入文档内容；

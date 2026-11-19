@@ -9,7 +9,24 @@
  * 组件只负责展示与事件派发，数据获取（目录扫描、文件读取、大纲收集）
  * 全部由 App.vue 通过 props 传入，便于后续替换为其它数据源。
  */
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import {
+  h,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  type FunctionalComponent,
+} from "vue";
+import {
+  Copy,
+  FilePlus2,
+  FileText,
+  FolderOpen,
+  PencilLine,
+  RefreshCw,
+  Trash2,
+  type IconNode,
+} from "lucide";
 import type {
   BlankAction,
   DirAction,
@@ -21,6 +38,25 @@ import {
   clampFloatingLayer,
   inheritEditorTheme,
 } from "@/editor/floating-layer";
+
+const ContextMenuIcon: FunctionalComponent<{ icon: IconNode }> = ({
+  icon,
+}) =>
+  h(
+    "svg",
+    {
+      xmlns: "http://www.w3.org/2000/svg",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": 1.75,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+      class: "mt-sidebar-menu-icon",
+    },
+    icon.map(([tag, attrs]) => h(tag, attrs))
+  );
 
 const props = defineProps<{
   /** 是否展开（false 时宽度收拢为 0） */
@@ -281,26 +317,32 @@ function isActive(path: string): boolean {
       >
       <template v-if="menu.target.kind === 'file'">
         <div class="mt-context-menu__group">
-          <div class="mt-context-menu__group-title">打开</div>
           <button class="mt-context-menu__item" role="menuitem" @click="act('open')">
-            <span class="mt-context-menu__icon">↵</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="FileText" />
+            </span>
             <span class="mt-context-menu__label">打开</span>
             <span class="mt-context-menu__shortcut">Enter</span>
           </button>
           <button class="mt-context-menu__item" role="menuitem" @click="act('copyPath')">
-            <span class="mt-context-menu__icon">⧉</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="Copy" />
+            </span>
             <span class="mt-context-menu__label">复制路径</span>
           </button>
           <button class="mt-context-menu__item" role="menuitem" @click="act('reveal')">
-            <span class="mt-context-menu__icon">⌖</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="FolderOpen" />
+            </span>
             <span class="mt-context-menu__label">在文件管理器中显示</span>
           </button>
         </div>
         <div class="mt-context-menu__sep" role="separator"></div>
         <div class="mt-context-menu__group">
-          <div class="mt-context-menu__group-title">文件操作</div>
           <button class="mt-context-menu__item" role="menuitem" @click="act('rename')">
-            <span class="mt-context-menu__icon">✎</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="PencilLine" />
+            </span>
             <span class="mt-context-menu__label">重命名…</span>
           </button>
           <button
@@ -308,7 +350,9 @@ function isActive(path: string): boolean {
             role="menuitem"
             @click="act('delete')"
           >
-            <span class="mt-context-menu__icon">×</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="Trash2" />
+            </span>
             <span class="mt-context-menu__label">移入回收站</span>
           </button>
         </div>
@@ -318,7 +362,9 @@ function isActive(path: string): boolean {
         <div class="mt-context-menu__group">
           <div class="mt-context-menu__group-title">目录</div>
           <button class="mt-context-menu__item" role="menuitem" @click="act('reveal')">
-            <span class="mt-context-menu__icon">⌖</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="FolderOpen" />
+            </span>
             <span class="mt-context-menu__label">在文件管理器中显示</span>
           </button>
         </div>
@@ -328,11 +374,15 @@ function isActive(path: string): boolean {
         <div class="mt-context-menu__group">
           <div class="mt-context-menu__group-title">文件面板</div>
           <button class="mt-context-menu__item" role="menuitem" @click="act('newFile')">
-            <span class="mt-context-menu__icon">＋</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="FilePlus2" />
+            </span>
             <span class="mt-context-menu__label">新建 Markdown 文件</span>
           </button>
           <button class="mt-context-menu__item" role="menuitem" @click="act('refresh')">
-            <span class="mt-context-menu__icon">↻</span>
+            <span class="mt-context-menu__icon">
+              <ContextMenuIcon :icon="RefreshCw" />
+            </span>
             <span class="mt-context-menu__label">刷新</span>
           </button>
         </div>
@@ -531,6 +581,17 @@ function isActive(path: string): boolean {
   font-size: 12px;
   line-height: 1.6;
   color: var(--mt-muted, #888);
+}
+
+.mt-sidebar-menu-icon {
+  display: block;
+  width: 1.2em;
+  height: 1.2em;
+  shape-rendering: geometricPrecision;
+}
+
+.mt-context-menu__item--danger:hover .mt-sidebar-menu-icon {
+  color: var(--mt-color-danger, #d33);
 }
 
 </style>

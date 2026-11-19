@@ -43,8 +43,8 @@
   background: transparent;
   border: none;
   font-family: var(--mt-font-mono);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: var(--mt-code-font-size, 14px);
+  line-height: var(--mt-code-line-height, 1.6);
   color: var(--mt-code-fg);
   white-space: pre-wrap;
   word-break: break-word;
@@ -52,15 +52,34 @@
 
 /* ============ 代码块工具条（语言选择 + 复制按钮） ============ */
 :where(.milkdown .editor) .milkdown-code-block .tools {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  right: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
-  margin: -12px -16px 8px; /* 抵消容器 padding，工具条顶到容器上沿 */
-  padding: 4px 8px 4px 12px;
-  background: rgba(127, 127, 127, 0.06); /* 工具条底色，与代码区略作区分 */
-  border-radius: 6px 6px 0 0;
+  width: auto;
+  margin: 0;
+  padding: 2px 4px;
+  border-radius: 5px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
   user-select: none;
+}
+
+:where(.milkdown .editor)
+  .milkdown-code-block:is(:hover, :focus-within)
+  .tools,
+:where(.milkdown .editor) .milkdown-code-block .tools:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 :where(.milkdown .editor) .milkdown-code-block .language-button,
@@ -83,7 +102,7 @@
 :where(.milkdown .editor) .milkdown-code-block .language-button:hover,
 :where(.milkdown .editor) .milkdown-code-block .copy-button:hover,
 :where(.milkdown .editor) .milkdown-code-block .preview-toggle-button:hover {
-  background: rgba(127, 127, 127, 0.12);
+  background: transparent;
   color: var(--mt-code-fg);
 }
 :where(.milkdown .editor) .milkdown-code-block .expand-icon {
@@ -194,6 +213,10 @@
   font-family: var(--mt-font-mono);
   font-size: 14px;
   line-height: 1.6;
+}
+:where(.milkdown .editor) .cm-editor .cm-scroller {
+  /* CM 自带样式默认是 1.4；必须显式覆盖，才能与懒加载占位行盒一致。 */
+  line-height: var(--mt-code-line-height, 1.6);
 }
 
 /* 移除默认聚焦轮廓（映射 Typora 无干扰体验） */

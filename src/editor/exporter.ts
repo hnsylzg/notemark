@@ -240,9 +240,9 @@ function blockFullyRendered(v: EditorView): boolean {
  * 官方没有"导出前渲染全部代码块"的开关（IO 在源码里硬编码），而 IO 的回调表
  * （visibilityCallbacks WeakMap）是模块私有的，无法直接调用。因此：
  *
- * 第一步（初始化）：把未初始化的代码块临时 `position: fixed` 叠到视口左上角，
- * 其矩形与视口的相交状态必然变化 → 共享 IO 下一帧回调 → 同步初始化。元素临时
- * visibility: hidden，全程无可见变化。轮询等待 placeholder 全部消失（超时兜底）。
+ * 第一步（初始化）：用 CSS translate 把未初始化的代码块视觉位置移入滚动视口，
+ * 保持其文档流和占位尺寸不变 → 共享 IO 下一帧回调 → 同步初始化。元素临时
+ * opacity: 0，全程无可见变化。轮询等待 placeholder 全部消失（超时兜底）。
  *
  * 第二步（全量渲染）：CM6 只为"浏览器窗口内可见"的代码行创建 DOM（源码
  * visiblePixelRange = scrollDOM 矩形与 innerWidth/innerHeight 的交集），其余行
@@ -293,26 +293,41 @@ export async function warmUpCodeBlocks(editor: Editor): Promise<void> {
   if (!view.dom.querySelector(".milkdown-code-block")) return;
 
   // 第一步：找出尚未初始化的代码块（内部仍是占位、没有 CM6 高亮 span），
-  // 临时 fixed 到视口左上角触发共享 IO 初始化；记录原内联样式以便恢复。
+  // 通过 transform 把元素视觉位置移入滚动视口，触发共享 IO 初始化。
+  // 不能使用 position: fixed：它会把这些块移出文档流，导致周围内容重排、
+  // 滚动容器在导出过程中跳动。
   const pending = Array.from(
     view.dom.querySelectorAll<HTMLElement>(".milkdown-code-block")
   ).filter((el) => el.querySelector(".milkdown-code-block-placeholder"));
-  const relocated: { el: HTMLElement; saved: Record<string, string> }[] = [];
+  const scroller = view.dom.closest<HTMLElement>(".milkdown");
+  const savedScroll = scroller
+    ? { top: scroller.scrollTop, left: scroller.scrollLeft }
+    : null;
+  const relocated: Array<{
+    el: HTMLElement;
+    translate: string;
+    opacity: string;
+    pointerEvents: string;
+  }> = [];
   if (pending.length > 0) {
+    const viewport = scroller?.getBoundingClientRect();
+    const viewportTop = viewport?.top ?? 0;
+    const viewportBottom = viewport?.bottom ?? window.innerHeight;
+    const viewportCenter = (viewportTop + viewportBottom) / 2;
     for (const el of pending) {
+      const rect = el.getBoundingClientRect();
+      const offsetY = viewportCenter - (rect.top + rect.height / 2);
       const saved = {
-        position: el.style.position,
-        top: el.style.top,
-        left: el.style.left,
-        width: el.style.width,
-        visibility: el.style.visibility,
+        el,
+        translate: el.style.translate,
+        opacity: el.style.opacity,
+        pointerEvents: el.style.pointerEvents,
       };
-      el.style.position = "fixed";
-      el.style.top = "0";
-      el.style.left = "0";
-      // 折叠到视口左上角期间隐藏元素，避免任何瞬时闪现
-      el.style.visibility = "hidden";
-      relocated.push({ el, saved });
+      // 保留正常文档流和占位尺寸，只改变元素的视觉位置。
+      el.style.translate = `0 ${offsetY}px`;
+      el.style.opacity = "0";
+      el.style.pointerEvents = "none";
+      relocated.push(saved);
     }
     // 轮询等待全部占位初始化完成（IO 回调→同步 initializeCodeMirror），
     // 5s 超时兜底：已初始化的块足够多时导出仍可用，只是少部分丢失高亮
@@ -355,13 +370,15 @@ export async function warmUpCodeBlocks(editor: Editor): Promise<void> {
       const vs = (v as unknown as CMViewInternals).viewState;
       if (vs) vs.printing = false;
     }
-    // 恢复原位：DOM 结构从未变化，已生成的行 DOM 会保留到导出快照
-    for (const { el, saved } of relocated) {
-      el.style.position = saved.position;
-      el.style.top = saved.top;
-      el.style.left = saved.left;
-      el.style.width = saved.width;
-      el.style.visibility = saved.visibility;
+    // DOM 结构从未变化；恢复视觉位置并校正滚动，避免预热影响阅读位置。
+    for (const { el, translate, opacity, pointerEvents } of relocated) {
+      el.style.translate = translate;
+      el.style.opacity = opacity;
+      el.style.pointerEvents = pointerEvents;
+    }
+    if (scroller && savedScroll) {
+      scroller.scrollTop = savedScroll.top;
+      scroller.scrollLeft = savedScroll.left;
     }
   }
 }

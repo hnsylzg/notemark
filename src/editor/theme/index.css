@@ -209,6 +209,23 @@ body,
   width: var(--mt-scrollbar-size, 10px);
   height: var(--mt-scrollbar-size, 10px);
 }
+.milkdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+.milkdown::-webkit-scrollbar-thumb {
+  min-height: 2.5rem;
+  border: 2px solid transparent;
+  border-radius: calc(var(--mt-scrollbar-size, 10px) / 2);
+  background: var(--mt-color-border-strong);
+  background-clip: padding-box;
+}
+.milkdown::-webkit-scrollbar-thumb:hover {
+  background: var(--mt-color-fg-muted);
+  background-clip: padding-box;
+}
+.milkdown::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 /* 正文宽度：恢复为内置主题的页面列宽度（860px 居中）。 */
 .milkdown > * {
