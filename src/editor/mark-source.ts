@@ -25,6 +25,10 @@ import {
   type EditorView,
 } from "@milkdown/prose/view";
 import { $prose } from "@milkdown/utils";
+import {
+  EDITABLE_INLINE_HTML_MARK_TAGS,
+  INLINE_HTML_MARK_NAME,
+} from "./inline-html-mark";
 
 export interface MarkSourceSession {
   markName: string;
@@ -32,6 +36,23 @@ export interface MarkSourceSession {
   from: number;
   to: number;
   attrs?: Readonly<Record<string, unknown>>;
+  /**
+   * 会话期间是否发生过真实的文档改动（用户输入/删除）。
+   *
+   * 打开会话时会把 `**`、反引号、`<mark>` 等分隔符作为【真实文本】写进文档，
+   * 关闭时再按原文反推标记。反推并非在所有形态下都精确（行内代码里含反引号/
+   * 换行、行内代码外层还套着加粗等），所以「没有任何输入」的会话不反推，
+   * 直接把两段分隔符删掉，文档就精确回到打开前的状态。
+   */
+  dirty?: boolean;
+  /**
+   * 这次会话是否「只是在已有标记上打开源码」。
+   *
+   * 只有这种会话才允许走「只删分隔符」的关闭路径：点中已有加粗、或用光标
+   * 进入已有标记，打开前文档里就有这个标记。反过来，选中文字后按 Ctrl+B 是
+   * 【新增】标记，必须走原来的解析逻辑，否则会把用户的格式化操作撤销掉。
+   */
+  restorable?: boolean;
 }
 
 interface MarkSyntax {
@@ -50,6 +71,11 @@ export const MARK_SOURCE_SYNTAX: Readonly<Record<string, MarkSyntax>> = {
   underline: { open: "<u>", close: "</u>", selector: "u" },
   superscript: { open: "^", close: "^", selector: "sup" },
   subscript: { open: "~", close: "~", selector: "sub" },
+  [INLINE_HTML_MARK_NAME]: {
+    open: "",
+    close: "",
+    selector: "[data-inline-html-mark]",
+  },
 };
 
 const SOURCE_TEXTBLOCK_SELECTOR = "p, h1, h2, h3, h4, h5, h6";
@@ -161,6 +187,11 @@ function delimitersFor(
   markName: string,
   attrs: Readonly<Record<string, unknown>> | undefined
 ): { open: string; close: string } | null {
+  if (markName === INLINE_HTML_MARK_NAME) {
+    const open = String(attrs?.open ?? "");
+    const close = String(attrs?.close ?? "");
+    return open && close ? { open, close } : null;
+  }
   if (markName !== "link") {
     const syntax = MARK_SOURCE_SYNTAX[markName];
     return syntax ? { open: syntax.open, close: syntax.close } : null;
@@ -174,6 +205,36 @@ function delimitersFor(
   };
 }
 
+function parseInlineHtmlSource(
+  source: string
+): {
+  tag: string;
+  content: string;
+  openLength: number;
+  closeLength: number;
+  attrs: Readonly<Record<string, unknown>>;
+} | null {
+  const open = /^<([a-z][a-z0-9-]*)(?:\s[^>]*)?>/i.exec(source);
+  if (!open) return null;
+  const close = new RegExp(`</${open[1]}\\s*>$`, "i").exec(source);
+  if (!close || close.index < open[0].length) return null;
+  return {
+    tag: open[1].toLowerCase(),
+    content: source.slice(open[0].length, close.index),
+    openLength: open[0].length,
+    closeLength: close[0].length,
+    attrs: {
+      open: open[0],
+      close: close[0],
+    },
+  };
+}
+
+function isCompleteEditableInlineHtmlSource(source: string): boolean {
+  const parsed = parseInlineHtmlSource(source);
+  return parsed !== null && EDITABLE_INLINE_HTML_MARK_TAGS.has(parsed.tag);
+}
+
 function openSourceSessionTransaction(
   state: EditorState,
   markName: string,
@@ -181,7 +242,9 @@ function openSourceSessionTransaction(
   to: number,
   attrs: Readonly<Record<string, unknown>> | undefined,
   caret: number,
-  selectContent = false
+  selectContent = false,
+  /** 是否「在已有标记上打开源码」（见 MarkSourceSession.restorable） */
+  restorable = true
 ): Transaction | null {
   const type = markTypeFor(state, markName);
   const delimiters = delimitersFor(markName, attrs);
@@ -206,18 +269,29 @@ function openSourceSessionTransaction(
       type.create(attrs)
     );
   }
+  // Preserve the user's entry side. Entering from before/after a mark must not
+  // push the caret into the text; only an interior click maps inside content.
   const safeCaret =
-    contentFrom +
-    Math.max(0, Math.min(caret - from, contentTo - contentFrom));
+    safeFrom < safeTo && caret <= safeFrom
+      ? safeFrom
+      : safeFrom < safeTo && caret >= safeTo
+        ? sourceTo
+        : contentFrom +
+          Math.max(0, Math.min(caret - from, contentTo - contentFrom));
   tr = tr.setSelection(
     safeFrom !== safeTo && selectContent
       ? TextSelection.create(tr.doc, contentFrom, contentTo)
       : TextSelection.create(tr.doc, safeCaret)
   );
   tr = tr.setStoredMarks(storedMarksWith(state, type, attrs));
+  if (restorable) {
+    // Opening an existing mark is only a transient source view. Its temporary
+    // delimiters must not become a phantom undo step when the user clicks away.
+    tr = tr.setMeta("addToHistory", false);
+  }
   return tr.setMeta(markSourceKey, {
     type: "start",
-    session: { markName, from: safeFrom, to: sourceTo, attrs },
+    session: { markName, from: safeFrom, to: sourceTo, attrs, restorable },
   } satisfies MarkSourceMeta);
 }
 
@@ -276,7 +350,10 @@ export function createMarkSourceTransaction(
     selection.to,
     attrs,
     selection.to,
-    true
+    true,
+    // 选区还未被标记：这次打开是在【新增】标记（工具栏 / Ctrl+B），
+    // 关闭时必须保留格式化结果，不能整段还原。
+    false
   );
 }
 
@@ -303,6 +380,12 @@ function activateMarkRange(
 ): boolean {
   const type = markTypeFor(view.state, markName);
   if (!type || from > to) return false;
+  if (
+    from < to &&
+    view.state.doc.textBetween(from, to, "", "") === ""
+  ) {
+    return false;
+  }
   const attrs = markAttrsAtRange(view.state.doc, type, from, to);
   if (markName === "link" && !attrs) return false;
   const tr = openSourceSessionTransaction(
@@ -329,18 +412,48 @@ export function startMarkSourceRange(
   return activateMarkRange(view, markName, from, to, caret);
 }
 
+/**
+ * 关闭一个「只打开、没有任何输入」的会话：删掉打开时插入的两段分隔符。
+ *
+ * 打开会话时 mark 已经从分隔符区间移到了内容区间，所以只要删除分隔符文本，
+ * 文档就精确回到打开前的状态，不需要解析、也不会碰到其它 mark。
+ *
+ * 用 delete 而不是整段替换文档：整段替换会让 ProseMirror 丢失位置映射，
+ * 只能按记录的光标复位，于是用户用方向键把光标移出去时会被弹回原位。
+ */
+function closeSessionWithoutEdit(
+  state: EditorState,
+  session: MarkSourceSession
+): Transaction {
+  const delimiters = delimitersFor(session.markName, session.attrs);
+  let tr = state.tr;
+  if (delimiters) {
+    tr = tr.delete(session.to - delimiters.close.length, session.to);
+    tr = tr.delete(session.from, session.from + delimiters.open.length);
+  }
+  return tr
+    .setMeta("addToHistory", false)
+    .setMeta(markSourceKey, { type: "close" });
+}
+
 function finishMarkSourceTransaction(
   state: EditorState,
   session: MarkSourceSession
 ): Transaction {
+  // 只是点开又点走（会话期间没有任何输入）：删掉分隔符即可精确还原。
+  // 不走下面的正则反推——行内代码含反引号/换行、或外层还套着加粗时，
+  // 反推会失败并把插入的分隔符留在正文里，于是「点一下」就变成了真实修改。
+  if (session.restorable !== false && !session.dirty) {
+    return closeSessionWithoutEdit(state, session);
+  }
   const originalType = markTypeFor(state, session.markName);
-  const delimiters = delimitersFor(session.markName, session.attrs);
   const source = state.doc.textBetween(
     session.from,
     session.to,
     "\n",
     "\n"
   );
+  const delimiters = delimitersFor(session.markName, session.attrs);
   let content = "";
   let attrs = session.attrs;
   let valid = false;
@@ -348,7 +461,19 @@ function finishMarkSourceTransaction(
   let closeLength = 0;
   let finalType = originalType;
 
-  const parsed = findPlainInlineMatch(source);
+  const parsedInlineHtml =
+    session.markName === INLINE_HTML_MARK_NAME
+      ? parseInlineHtmlSource(source)
+      : null;
+  if (parsedInlineHtml && originalType) {
+    content = parsedInlineHtml.content;
+    openLength = parsedInlineHtml.openLength;
+    closeLength = parsedInlineHtml.closeLength;
+    attrs = parsedInlineHtml.attrs;
+    valid = true;
+  }
+
+  const parsed = valid ? null : findPlainInlineMatch(source);
   if (
     parsed &&
     parsed.start === 0 &&
@@ -410,10 +535,20 @@ function finishMarkSourceTransaction(
       );
     }
   } else if (originalType) {
+    // Incomplete delimiters are valid user text while editing. Keep the raw
+    // source (for example `**bold*`) instead of deleting the remaining marker
+    // characters and making the whole construct appear swallowed.
     tr = tr.removeMark(session.from, session.to, originalType);
   }
   if (finalType) {
     tr = tr.setStoredMarks(storedMarksWithout(state, finalType));
+  }
+  if (session.restorable !== false) {
+    // 「点中已有标记」的会话里，关闭只是把临时分隔符换回原来的 mark，
+    // 并不是一次新的格式化操作：它不该单独占一条撤销记录。否则撤销时
+    // 会先把分隔符还原成正文（`****粗体****`），而那条记录又被用完，
+    // 正文里的 `**` 就再也撤不掉了。用户真正输入的内容另有自己的记录。
+    tr = tr.setMeta("addToHistory", false);
   }
   return tr.setMeta(markSourceKey, {
     type: "close",
@@ -446,6 +581,18 @@ function clickedMark(
   target: Element | null
 ): { markName: string; element: HTMLElement } | null {
   if (!target) return null;
+  // 代码块里的 <code>（CodeMirror 编辑器或占位 <pre><code>）不是行内代码。
+  // 误判会把代码块正文当成行内代码插入反引号，而关闭时的正则又匹配不上
+  // （正文里有换行/反引号），反引号就永久留在代码里——点一下即脏。
+  if (target.closest("pre, .cm-editor, .milkdown-code-block-placeholder")) {
+    return null;
+  }
+  const inlineHtml = target.closest<HTMLElement>(
+    "[data-inline-html-mark]"
+  );
+  if (inlineHtml) {
+    return { markName: INLINE_HTML_MARK_NAME, element: inlineHtml };
+  }
   let found: { markName: string; element: HTMLElement } | null = null;
   for (const [markName, syntax] of Object.entries(MARK_SOURCE_SYNTAX)) {
     const element = target.closest<HTMLElement>(syntax.selector);
@@ -502,14 +649,68 @@ const INLINE_SYNTAX_INPUT_CHARS = new Set([
   ")",
 ]);
 
-function findPlainInlineMatch(text: string): PlainInlineMatch | null {
+function findPlainInlineMatch(
+  text: string,
+  focus?: number,
+  includeMath = false
+): PlainInlineMatch | null {
   let found: PlainInlineMatch | null = null;
-  const link =
-    /(?<!!)\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"((?:[^"\\]|\\.)*)")?\)/.exec(
-      text
-    );
-  if (link && link.index != null) {
-    found = {
+  const consider = (candidate: PlainInlineMatch): void => {
+    if (
+      focus != null &&
+      (focus < candidate.start || focus > candidate.end + 1)
+    ) {
+      return;
+    }
+    if (
+      !found ||
+      candidate.start < found.start ||
+      (candidate.start === found.start && candidate.end > found.end)
+    ) {
+      found = candidate;
+    }
+  };
+
+  const inlineHtmlPattern =
+    /<([a-z][a-z0-9-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/gi;
+  for (const match of text.matchAll(inlineHtmlPattern)) {
+    if (match.index == null) continue;
+    const tag = match[1].toLowerCase();
+    if (tag === "u" || !EDITABLE_INLINE_HTML_MARK_TAGS.has(tag)) continue;
+    const parsed = parseInlineHtmlSource(match[0]);
+    if (!parsed) continue;
+    consider({
+      start: match.index,
+      end: match.index + match[0].length,
+      contentStart: match.index + parsed.openLength,
+      contentEnd:
+        match.index + match[0].length - parsed.closeLength,
+      content: parsed.content,
+      markName: INLINE_HTML_MARK_NAME,
+      attrs: parsed.attrs,
+    });
+  }
+
+  if (includeMath) {
+    const mathPattern = /\$([^$\n]+)\$/g;
+    for (const match of text.matchAll(mathPattern)) {
+      if (match.index == null || !match[1]) continue;
+      consider({
+        start: match.index,
+        end: match.index + match[0].length,
+        contentStart: match.index + 1,
+        contentEnd: match.index + match[0].length - 1,
+        content: match[1],
+        markName: "math_inline",
+      });
+    }
+  }
+
+  const linkPattern =
+    /(?<!!)\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"((?:[^"\\]|\\.)*)")?\)/g;
+  for (const link of text.matchAll(linkPattern)) {
+    if (link.index == null) continue;
+    consider({
       start: link.index,
       end: link.index + link[0].length,
       contentStart: link.index + 1,
@@ -520,28 +721,24 @@ function findPlainInlineMatch(text: string): PlainInlineMatch | null {
         href: link[2],
         title: (link[3] ?? "").replaceAll('\\"', '"'),
       },
-    };
+    });
   }
   for (const { markName, pattern } of PLAIN_INLINE_PATTERNS) {
-    const match = pattern.exec(text);
-    if (!match || match.index == null || !match[1]) continue;
-    const candidate: PlainInlineMatch = {
-      start: match.index,
-      end: match.index + match[0].length,
-      contentStart:
-        match.index + match[0].indexOf(match[1]),
-      contentEnd:
-        match.index + match[0].indexOf(match[1]) + match[1].length,
-      content: match[1],
-      markName,
-    };
-    if (
-      !found ||
-      candidate.start < found.start ||
-      (candidate.start === found.start &&
-        candidate.end > found.end)
-    ) {
-      found = candidate;
+    const globalPattern = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
+    );
+    for (const match of text.matchAll(globalPattern)) {
+      if (match.index == null || !match[1]) continue;
+      consider({
+        start: match.index,
+        end: match.index + match[0].length,
+        contentStart: match.index + match[0].indexOf(match[1]),
+        contentEnd:
+          match.index + match[0].indexOf(match[1]) + match[1].length,
+        content: match[1],
+        markName,
+      });
     }
   }
   return found;
@@ -639,87 +836,125 @@ export function autoFormatInlineMarkdown(
     return nodes;
   };
 
-  state.doc.descendants((node, pos) => {
-    if (changed || !node.isTextblock || node.content.size === 0) {
-      return !changed;
+  // Interactive auto-formatting is scoped to the textblock where the user is
+  // working. Scanning the whole document on blur can rewrite untouched literal
+  // Markdown such as escaped backticks in a format-test document.
+  const { $from } = state.selection;
+  const node = $from.parent;
+  if (
+    $from.depth === 0 ||
+    !node.isTextblock ||
+    node.content.size === 0 ||
+    node.type.spec.code
+  ) {
+    return null;
+  }
+
+  let runs: Array<{
+    node: ProseMirrorNode;
+    start: number;
+    end: number;
+    text: string;
+  }> = [];
+  const tryFormatRuns = (): boolean => {
+    if (runs.length === 0) return false;
+    const text = runs.map((run) => run.text).join("");
+    const focus = state.selection.from - runs[0].start;
+    const match = findPlainInlineMatch(text, focus, true);
+    const type = markTypeFor(state, match?.markName ?? "");
+    const mathType = state.schema.nodes.math_inline;
+    if (
+      !match ||
+      (match.markName === "math_inline" ? !mathType : !type)
+    ) {
+      return false;
     }
-    if (node.type.spec.code) return true;
-
-    let runs: Array<{
-      node: ProseMirrorNode;
-      start: number;
-      end: number;
-      text: string;
-    }> = [];
-    const tryFormatRuns = (): boolean => {
-      if (runs.length === 0) return false;
-      const text = runs.map((run) => run.text).join("");
-      const match = findPlainInlineMatch(text);
-      const type = markTypeFor(state, match?.markName ?? "");
-      if (!match || !type) return false;
-      if (respectSelection) {
-        const sourceStart = runs[0].start + match.start;
-        const sourceEnd = runs[0].start + match.end;
-        const selection = state.selection;
-        if (
-          selection.from <= sourceEnd &&
-          selection.to >= sourceStart
-        ) {
-          return false;
-        }
+    if (respectSelection) {
+      const sourceStart = runs[0].start + match.start;
+      const sourceEnd = runs[0].start + match.end;
+      const selection = state.selection;
+      const atOpeningBoundary =
+        selection.empty && selection.from === sourceStart;
+      const atClosingBoundary =
+        selection.empty && selection.from === sourceEnd;
+      const insideSource =
+        (selection.from < sourceEnd &&
+          selection.to > sourceStart) ||
+        atClosingBoundary;
+      if (!atOpeningBoundary && insideSource) {
+        return false;
       }
+    }
 
-      const inline = [
-        ...buildSlice(runs, 0, match.start),
-        ...buildSlice(
-          runs,
-          match.contentStart,
-          match.contentEnd,
-          type,
-          match.attrs
-        ),
-        ...buildSlice(runs, match.end, text.length),
-      ];
-      tr = tr.replaceWith(
-        runs[0].start,
-        runs[runs.length - 1].end,
-        Fragment.fromArray(inline)
-      );
-      changed = true;
-      return true;
-    };
+    const inline = [
+      ...buildSlice(runs, 0, match.start),
+      ...(match.markName === "math_inline"
+        ? [
+            mathType!.create(
+              null,
+              state.schema.text(match.content)
+            ),
+          ]
+        : buildSlice(
+            runs,
+            match.contentStart,
+            match.contentEnd,
+            type!,
+            match.attrs
+          )),
+      ...buildSlice(runs, match.end, text.length),
+    ];
+    tr = tr.replaceWith(
+      runs[0].start,
+      runs[runs.length - 1].end,
+      Fragment.fromArray(inline)
+    );
+    changed = true;
+    return true;
+  };
 
-    let offset = pos + 1;
-    node.forEach((child) => {
-      if (changed) return;
-      if (child.isText && child.text) {
-        runs.push({
-          node: child,
-          start: offset,
-          end: offset + child.nodeSize,
-          text: child.text,
-        });
-      } else {
-        if (tryFormatRuns()) return;
-        runs = [];
-      }
-      offset += child.nodeSize;
-    });
-    if (!changed) tryFormatRuns();
-    return !changed;
+  let offset = $from.start($from.depth);
+  node.forEach((child) => {
+    if (changed) return;
+    if (child.isText && child.text) {
+      runs.push({
+        node: child,
+        start: offset,
+        end: offset + child.nodeSize,
+        text: child.text,
+      });
+    } else {
+      if (tryFormatRuns()) return;
+      runs = [];
+    }
+    offset += child.nodeSize;
   });
+  if (!changed) tryFormatRuns();
   return changed ? tr : null;
 }
 
 export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
+  let pendingAutoFormat = false;
+  let pendingVerticalExit = false;
+
   return new Plugin<MarkSourceSession | null>({
     key: markSourceKey,
     view(editorView) {
       const closeOnOutsidePointer = (event: Event): void => {
         const session = markSourceKey.getState(editorView.state);
         if (!session) {
-          const tr = autoFormatInlineMarkdown(editorView.state, false);
-          if (tr) editorView.dispatch(tr);
+          if (event.type !== "click" || !pendingAutoFormat) return;
+          const clickedInsideEditor =
+            event.target instanceof Node &&
+            editorView.dom.contains(event.target);
+          const tr = autoFormatInlineMarkdown(
+            editorView.state,
+            clickedInsideEditor
+          );
+          if (tr) {
+            pendingAutoFormat = false;
+            editorView.dispatch(tr);
+          }
           return;
         }
         const blockElement = sourceSessionBlockElement(
@@ -783,14 +1018,30 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
     state: {
       init: () => null,
       apply(tr, previous) {
+        if (tr.getMeta("addToHistory") === false) {
+          pendingAutoFormat = false;
+        }
         const meta = tr.getMeta(markSourceKey) as MarkSourceMeta | undefined;
-        if (meta?.type === "close") return null;
-        if (meta?.type === "start") return meta.session;
+        if (meta?.type === "close") {
+          pendingAutoFormat = false;
+          pendingVerticalExit = false;
+          return null;
+        }
+        if (meta?.type === "start") {
+          pendingAutoFormat = false;
+          pendingVerticalExit = false;
+          return { ...meta.session, dirty: false };
+        }
         if (!previous || !tr.docChanged) return previous;
 
         const from = tr.mapping.map(previous.from, -1);
         const to = tr.mapping.map(previous.to, 1);
-        return from <= to ? { ...previous, from, to } : null;
+        if (from > to) {
+          pendingVerticalExit = false;
+          return null;
+        }
+        // 用户真的动了内容：关闭时走原有的解析还原逻辑。
+        return { ...previous, from, to, dirty: true };
       },
     },
     appendTransaction(_transactions, _oldState, newState) {
@@ -802,7 +1053,15 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             !tr.docChanged &&
             !tr.getMeta("pointer")
         );
-        if (!selectionMoved || !newState.selection.empty) return null;
+        if (!selectionMoved) return null;
+        if (!newState.selection.empty) return null;
+        if (pendingAutoFormat) {
+          const tr = autoFormatInlineMarkdown(newState);
+          if (tr) {
+            pendingAutoFormat = false;
+            return tr;
+          }
+        }
         for (const markName of Object.keys(MARK_SOURCE_SYNTAX)) {
           const type = markTypeFor(newState, markName);
           if (!type) continue;
@@ -832,7 +1091,38 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
       }
 
       if (!selectionInsideSession(newState, session)) {
+        if (
+          pendingVerticalExit &&
+          _transactions.every((tr) => !tr.docChanged)
+        ) {
+          return null;
+        }
         return finishMarkSourceTransaction(newState, session);
+      }
+      if (
+        session.markName === INLINE_HTML_MARK_NAME &&
+        _transactions.some((tr) => tr.docChanged)
+      ) {
+        const oldSession = markSourceKey.getState(_oldState);
+        if (oldSession?.markName !== INLINE_HTML_MARK_NAME) return null;
+        const oldSource = _oldState.doc.textBetween(
+          oldSession.from,
+          oldSession.to,
+          "\n",
+          "\n"
+        );
+        const source = newState.doc.textBetween(
+          session.from,
+          session.to,
+          "\n",
+          "\n"
+        );
+        if (
+          !isCompleteEditableInlineHtmlSource(oldSource) &&
+          isCompleteEditableInlineHtmlSource(source)
+        ) {
+          return finishMarkSourceTransaction(newState, session);
+        }
       }
       return null;
     },
@@ -853,9 +1143,11 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
           );
           const parsed = findPlainInlineMatch(source);
           const complete =
-            !!parsed &&
-            parsed.start === 0 &&
-            parsed.end === source.length;
+            (!!parsed &&
+              parsed.start === 0 &&
+              parsed.end === source.length) ||
+            (session.markName === INLINE_HTML_MARK_NAME &&
+              isCompleteEditableInlineHtmlSource(source));
           if (
             complete &&
             ![...text].every((character) =>
@@ -865,12 +1157,16 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             closeMarkSource(view);
           }
         } else if (!session) {
+          pendingAutoFormat = true;
           queueMicrotask(() => {
             if (view.isDestroyed || markSourceKey.getState(view.state)) {
               return;
             }
             const tr = autoFormatInlineMarkdown(view.state);
-            if (tr) view.dispatch(tr);
+            if (tr) {
+              view.dispatch(tr);
+              pendingAutoFormat = false;
+            }
           });
         }
         return false;
@@ -904,21 +1200,53 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
           closeMarkSource(view);
           return false;
         }
-        if (
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          // ProseMirror leaves ordinary vertical movement to the browser.
+          // Keep the source DOM stable until keyup so Chromium can finish the
+          // native line movement before the document is redrawn.
+          pendingVerticalExit = true;
+          return false;
+        }
+        const atBoundary =
           (event.key === "ArrowRight" &&
             view.state.selection.head === session.to) ||
           (event.key === "ArrowLeft" &&
-            view.state.selection.head === session.from)
-        ) {
+            view.state.selection.head === session.from);
+        if (atBoundary) {
+          const source = view.state.doc.textBetween(
+            session.from,
+            session.to,
+            "\n",
+            "\n"
+          );
+          const complete =
+            session.markName !== INLINE_HTML_MARK_NAME ||
+            isCompleteEditableInlineHtmlSource(source);
+          if (!complete) return false;
           closeMarkSource(view);
         }
         return false;
       },
       handleDOMEvents: {
+        keyup(view, event) {
+          if (
+            !pendingVerticalExit ||
+            (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+          ) {
+            return false;
+          }
+          pendingVerticalExit = false;
+          const session = markSourceKey.getState(view.state);
+          if (session && !selectionInsideSession(view.state, session)) {
+            closeMarkSource(view);
+          }
+          return false;
+        },
         blur(view) {
           if (markSourceKey.getState(view.state)) {
             closeMarkSource(view);
-          } else {
+          } else if (pendingAutoFormat) {
+            pendingAutoFormat = false;
             const tr = autoFormatInlineMarkdown(view.state, false);
             if (tr) view.dispatch(tr);
           }

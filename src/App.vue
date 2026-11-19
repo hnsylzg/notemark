@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, computed, nextTick } from "vue";
+import {
+  onMounted,
+  onBeforeUnmount,
+  ref,
+  computed,
+  nextTick,
+} from "vue";
 import "@/editor/theme/index.css";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import Sidebar from "@/components/Sidebar.vue";

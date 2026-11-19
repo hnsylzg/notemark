@@ -462,12 +462,9 @@ function normalizeParsedDoc(doc: PMNode, schema: Schema): PMNode {
 /**
  * 当前编辑器文档是否仍等于「markdown 基线」解析出的文档（同步判断，无防抖）。
  *
- * 背景：编辑器文档变更监听采用 200ms 防抖，App.vue 的
- * visualEdited 只能由这个防抖回调置位。于是存在真实竞态窗口：
- * 1. 用户刚打完字就切源码（< 200ms）→ visualEdited 仍未置位；
- * 2. 用户退出源码后立刻输入（< 200ms）→ visualEdited 仍未置位。
- * 两种情况下 getVisualContent() 都可能返回旧的 rawContent —— 刚输入的文字在源码
- * 草稿中凭空消失，再切回 WYSIWYG 即被真正删除。
+ * 背景：编辑器文档变更监听采用 200ms 防抖。用户刚打完字就切源码时，
+ * 脏标记回调可能尚未执行；getVisualContent() 必须先同步判断当前文档是否
+ * 已经偏离基线，否则刚输入的文字会在源码草稿中凭空消失。
  *
  * 这里以「当前文档是否偏离 rawContent 基线」为同步判据，与 setMarkdown 走
  * 同一解析管线（LF 归一化 + guardUnclosedFrontmatter + ensureFootnoteParagraphs），
@@ -1648,6 +1645,19 @@ export function createEditor(
         // 不引入新语法，外部编辑器也能正常显示。
         underline: (node, _parent, state, info) =>
           `<u>${state.containerPhrasing(node, info)}</u>`,
+        inlineHtmlMarkup: (node, _parent, state, info) => {
+          const record = node as {
+            data?: Record<string, unknown>;
+            open?: unknown;
+            close?: unknown;
+          };
+          const open = record.open ?? record.data?.open;
+          const close = record.close ?? record.data?.close;
+          return `${String(open ?? "")}${state.containerPhrasing(
+            node,
+            info
+          )}${String(close ?? "")}`;
+        },
         list: customListHandler,
         strong: customStrongHandler,
         emphasis: customEmphasisHandler,

@@ -185,9 +185,6 @@ export function applyCustomTheme(css: string): void {
   // 同步暗色块：若当前处于深色模式，立即用新主题的暗色分支重绘。
   customDarkCss = extractMediaDarkBlocks(css);
   applyCustomDarkCss();
-  console.log(
-    `[NoteMark] custom theme applied (${normalized.length} chars; dark blocks: ${customDarkCss.length} chars; head has ${document.head.querySelectorAll("style").length} style tags)`
-  );
 }
 
 /**

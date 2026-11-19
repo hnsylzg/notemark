@@ -1,4 +1,5 @@
 import { Schema } from "@milkdown/prose/model";
+import { undoDepth } from "@milkdown/prose/history";
 import { EditorState } from "@milkdown/prose/state";
 import { EditorView } from "@milkdown/prose/view";
 import { describe, expect, it } from "vitest";
@@ -46,6 +47,48 @@ const schema = new Schema({
 });
 
 describe("footnote definition source label", () => {
+  it("activates definition and reference editing without changing the document or history", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [schema.text("body"), reference]),
+      definition,
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({ schema, doc }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const before = view.state.doc.toJSON();
+      const depthBefore = undoDepth(view.state);
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      referenceDom.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+      );
+      const dt = view.dom.querySelector<HTMLElement>("dt")!;
+      dt.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+      );
+
+      expect(view.state.doc.toJSON()).toEqual(before);
+      expect(undoDepth(view.state)).toBe(depthBefore);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("edits and synchronizes both footnote labels", () => {
     const reference = schema.nodes.footnote_reference.create({ label: "1" });
     const definition = schema.nodes.footnote_definition.create(

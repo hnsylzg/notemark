@@ -1,4 +1,5 @@
 import { Schema } from "@milkdown/prose/model";
+import { undoDepth } from "@milkdown/prose/history";
 import { EditorState } from "@milkdown/prose/state";
 import { EditorView } from "@milkdown/prose/view";
 import { describe, expect, it } from "vitest";
@@ -76,6 +77,22 @@ async function startTitleEdit(view: EditorView): Promise<HTMLInputElement> {
 }
 
 describe("editable GitHub Alert title", () => {
+  it("activates title editing without changing the document or history", async () => {
+    const { view, host } = createAlertView();
+
+    try {
+      const before = view.state.doc.toJSON();
+      const depthBefore = undoDepth(view.state);
+      await startTitleEdit(view);
+
+      expect(view.state.doc.toJSON()).toEqual(before);
+      expect(undoDepth(view.state)).toBe(depthBefore);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("edits the source marker and updates the alert type without replacing content", async () => {
     const { view, host } = createAlertView();
 

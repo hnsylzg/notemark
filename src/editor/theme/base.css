@@ -862,6 +862,38 @@
   background: var(--mt-color-bg-soft);
 }
 
+/* ============ 行内 HTML 源码编辑 ============ */
+:where(.milkdown .editor) .mt-inline-html-node,
+:where(.milkdown .editor) .mt-inline-html-preview {
+  display: inline;
+}
+
+:where(.milkdown .editor) .mt-inline-html-preview.mt-inline-html-literal {
+  color: var(--mt-color-fg-soft);
+  font-family: var(--mt-font-mono, monospace);
+}
+
+:where(.milkdown .editor) .mt-inline-html-preview[hidden],
+:where(.milkdown .editor) .mt-inline-html-source[hidden] {
+  display: none;
+}
+
+:where(.milkdown .editor) .mt-inline-html-source {
+  display: inline;
+  padding: 0 0.15em;
+  border-radius: 0.25em;
+  outline: none;
+  background: var(--mt-color-bg-soft);
+  color: var(--mt-color-fg-soft);
+  font-family: var(--mt-font-mono, monospace);
+  font-size: 0.92em;
+  line-height: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 /* ============ 高亮 ==text==（mark） ============ */
 :where(.milkdown .editor) .md-highlight {
   padding: 0 2px;

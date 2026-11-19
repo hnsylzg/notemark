@@ -5,9 +5,11 @@
  * MathJax SVG；复制和 Word 导出也复用同一个 MathJax TeX 输入树。
  * NodeView 内部固定一个 content 子容器，避免重渲染时重复追加。
  */
-import { $node, $view, $inputRule } from "@milkdown/utils";
+import { $node, $view, $inputRule, $prose } from "@milkdown/utils";
 import { InputRule } from "@milkdown/prose/inputrules";
 import {
+  NodeSelection,
+  Plugin,
   TextSelection,
   type EditorState,
   type Transaction,
@@ -253,7 +255,12 @@ export const createMathInlineNodeView: NodeViewConstructor = (
     };
     void render(node.textContent);
 
-    const setEditing = (on: boolean, selectAll = false) => {
+    const setEditing = (
+      on: boolean,
+      selectAll = false,
+      keyboardEntry = false,
+      fromLeft = true
+    ) => {
       editing = on;
       if (on) renderVersion += 1;
       dom.classList.toggle("is-editing", on);
@@ -262,10 +269,18 @@ export const createMathInlineNodeView: NodeViewConstructor = (
         display.style.display = "none";
         input.style.display = "";
         input.focus();
-        const start = selectAll ? 0 : 1;
+        const start = selectAll
+          ? 0
+          : keyboardEntry
+            ? fromLeft
+              ? 0
+              : input.value.length
+            : 1;
         const end = selectAll
           ? input.value.length
-          : Math.max(1, input.value.length - 1);
+          : keyboardEntry
+            ? start
+            : Math.max(1, input.value.length - 1);
         input.setSelectionRange(start, end);
       } else {
         input.style.display = "none";
@@ -273,59 +288,69 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       }
     };
 
-    const finish = (commit: boolean, focusEditor = false) => {
+    const finish = (
+      commit: boolean,
+      focusPosition: false | "before" | "after" = false
+    ) => {
       if (!editing) return;
       const source = commit ? input.value : `$${node.textContent}$`;
       const match = /^\$([\s\S]*)\$$/.exec(source);
       const next = match ? match[1] : source;
       const pos = getPos();
+      editing = false;
+      setEditing(false);
+      if (typeof pos !== "number") {
+        render(node.textContent);
+        return;
+      }
+
+      let finalBefore = pos;
+      let finalAfter = pos + node.nodeSize;
+      let tr: Transaction | null = null;
       if (
-        typeof pos === "number" &&
         commit &&
         (!next || !match || next !== node.textContent)
       ) {
-        editing = false;
-        setEditing(false);
-        const tr = view.state.tr;
+        tr = view.state.tr;
         if (next) {
           if (match) {
             const innerStart = pos + 1;
             const innerEnd = pos + node.nodeSize - 1;
             tr.replaceWith(innerStart, innerEnd, view.state.schema.text(next));
+            finalAfter = tr.mapping.map(pos) + 2 + next.length;
           } else {
             tr.replaceWith(
               pos,
               pos + node.nodeSize,
               view.state.schema.text(next)
             );
-          }
-          if (focusEditor) {
-            tr.setSelection(
-              TextSelection.create(
-                tr.doc,
-                match
-                  ? tr.mapping.map(pos) + 2 + next.length
-                  : tr.mapping.map(pos) + next.length
-              )
-            );
+            finalAfter = tr.mapping.map(pos) + next.length;
           }
         } else {
           tr.delete(pos, pos + node.nodeSize);
-          if (focusEditor) {
-            tr.setSelection(
-              TextSelection.near(
-                tr.doc.resolve(Math.min(pos, tr.doc.content.size)),
-                -1
-              )
-            );
-          }
+          finalBefore = finalAfter = tr.mapping.map(pos);
         }
-        view.dispatch(tr);
-        if (focusEditor) view.focus();
-        return;
+        finalBefore = tr.mapping.map(pos);
       }
-      setEditing(false);
-      render(node.textContent);
+
+      if (focusPosition) {
+        const target =
+          focusPosition === "before" ? finalBefore : finalAfter;
+        tr = (tr ?? view.state.tr).setSelection(
+          TextSelection.near(
+            (tr?.doc ?? view.state.doc).resolve(
+              Math.max(0, Math.min(target, tr?.doc.content.size ?? view.state.doc.content.size))
+            )
+          )
+        );
+      }
+
+      if (tr) {
+        view.dispatch(tr);
+      } else {
+        render(node.textContent);
+      }
+      if (focusPosition) view.focus();
     };
 
     const stop = (e: Event) => e.stopPropagation();
@@ -341,10 +366,27 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       e.stopPropagation();
       if (e.key === "Escape") {
         e.preventDefault();
-        finish(false, true);
+        finish(false, "after");
       } else if (e.key === "Enter") {
         e.preventDefault();
-        finish(true, true);
+        finish(true, "after");
+      } else if (
+        e.key === "ArrowLeft" &&
+        input.selectionStart === 0 &&
+        input.selectionEnd === 0
+      ) {
+        e.preventDefault();
+        finish(true, "before");
+      } else if (
+        e.key === "ArrowRight" &&
+        input.selectionStart === input.value.length &&
+        input.selectionEnd === input.value.length
+      ) {
+        e.preventDefault();
+        finish(true, "after");
+      } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        finish(true, e.key === "ArrowUp" ? "before" : "after");
       }
     });
     input.addEventListener("blur", () => finish(true));
@@ -359,7 +401,11 @@ export const createMathInlineNodeView: NodeViewConstructor = (
     dom.addEventListener("mt-inline-math-edit", (event) => {
       const selectAll =
         event instanceof CustomEvent && event.detail?.selectAll === true;
-      setEditing(true, selectAll);
+      const keyboardEntry =
+        event instanceof CustomEvent && event.detail?.keyboardEntry === true;
+      const fromLeft =
+        event instanceof CustomEvent && event.detail?.fromLeft !== false;
+      setEditing(true, selectAll, keyboardEntry, fromLeft);
     });
     dom.addEventListener("click", () => {
       if (!editing) setEditing(true);
@@ -379,6 +425,86 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       },
     };
 };
+
+function selectedInlineMathRange(
+  state: EditorState
+): { from: number; to: number } | null {
+  const selection = state.selection;
+  if (
+    selection instanceof NodeSelection &&
+    selection.node.type.name === "math_inline"
+  ) {
+    return { from: selection.from, to: selection.to };
+  }
+  if (!selection.empty) return null;
+  const $pos = state.doc.resolve(selection.from);
+  if ($pos.nodeAfter?.type.name === "math_inline") {
+    return {
+      from: $pos.pos,
+      to: $pos.pos + $pos.nodeAfter.nodeSize,
+    };
+  }
+  if ($pos.nodeBefore?.type.name === "math_inline") {
+    return {
+      from: $pos.pos - $pos.nodeBefore.nodeSize,
+      to: $pos.pos,
+    };
+  }
+  return null;
+}
+
+/**
+ * Keyboard navigation is handled by ProseMirror outside the NodeView. When a
+ * keyboard selection enters math_inline, forward that state to the existing
+ * input editor without changing the document.
+ */
+export function createMathInlineCursorPlugin(): Plugin {
+  let pendingEntry:
+    | { from: number; to: number; fromLeft: boolean }
+    | null = null;
+  return new Plugin({
+    appendTransaction(transactions, oldState, newState) {
+      const selectionMoved = transactions.some(
+        (tr) =>
+          tr.selectionSet &&
+          !tr.docChanged &&
+          !tr.getMeta("pointer")
+      );
+      if (!selectionMoved) return null;
+      const range = selectedInlineMathRange(newState);
+      if (!range) return null;
+      pendingEntry = {
+        ...range,
+        fromLeft: oldState.selection.from <= range.from,
+      };
+      return null;
+    },
+    view(view) {
+      return {
+        update() {
+          const entry = pendingEntry;
+          pendingEntry = null;
+          if (!entry) return;
+          const dom = view.nodeDOM(entry.from);
+          if (!(dom instanceof HTMLElement)) return;
+          dom.dispatchEvent(
+            new CustomEvent("mt-inline-math-edit", {
+              detail: {
+                selectAll: false,
+                keyboardEntry: true,
+                fromLeft: entry.fromLeft,
+              },
+            })
+          );
+        },
+      };
+    },
+  });
+}
+
+export const mathInlineCursorPlugin = $prose(
+  createMathInlineCursorPlugin
+);
 
 export const mathInlineView = $view(
   mathInlineSchema.node,

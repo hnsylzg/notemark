@@ -35,7 +35,11 @@ import {
 } from "./math-schema";
 import { diagram } from "@milkdown/plugin-diagram";
 import { diagramView } from "./diagram-view";
-import { mathBlockPlugins, mathInlineView } from "./math-view";
+import {
+  mathBlockPlugins,
+  mathInlineCursorPlugin,
+  mathInlineView,
+} from "./math-view";
 import { alertPlugins } from "./alert";
 import { highlightInputRule, highlightPlugins } from "./highlight";
 import {
@@ -47,6 +51,7 @@ import {
 import { htmlView } from "./html-view";
 import { htmlMergePlugins } from "./html-merge";
 import { underlinePlugins } from "./underline";
+import { inlineHtmlMarkPlugins } from "./inline-html-mark";
 import { htmlBlockGapGuardPlugin, htmlBlockPlugins } from "./html-block";
 import { imageView } from "./image-view";
 import { listItemPlugins } from "./list-item";
@@ -173,6 +178,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...mathInlineSchema,
     mathInlineInputRule,
     mathInlineView,
+    mathInlineCursorPlugin,
     ...mathBlockPlugins,
     ...diagram,
     diagramView,
@@ -196,6 +202,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...scriptPluginsWithoutInputRules,
     htmlView,
     imageView,
+    ...inlineHtmlMarkPlugins,
     ...htmlMergePlugins,
     // 下划线 <u>…</u>：html-merge 解析出 underline 节点后需要对应 mark schema
     // 承接（见 underline.ts）。mark schema 注册顺序不影响解析链。

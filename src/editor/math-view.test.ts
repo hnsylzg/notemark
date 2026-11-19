@@ -1,9 +1,15 @@
 import { Schema } from "@milkdown/prose/model";
-import { EditorState, TextSelection } from "@milkdown/prose/state";
+import { history, undoDepth } from "@milkdown/prose/history";
+import {
+  EditorState,
+  NodeSelection,
+  TextSelection,
+} from "@milkdown/prose/state";
 import { EditorView } from "@milkdown/prose/view";
 import { describe, expect, it, vi } from "vitest";
 import {
   createInlineMathTransaction,
+  createMathInlineCursorPlugin,
   createMathInlineNodeView,
 } from "./math-view";
 
@@ -89,6 +95,73 @@ describe("inline math source insertion", () => {
 
     expect(createInlineMathTransaction(state)).toBeNull();
   });
+
+  it.each([
+    ["left", 1, 0, "ArrowLeft", 1],
+    ["right", 4, 3, "ArrowRight", 4],
+  ])(
+    "opens inline math editing when keyboard enters from the %s",
+    (
+      _side,
+      initialSelection,
+      expectedCaret,
+      exitKey,
+      expectedEditorCaret
+    ) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, initialSelection),
+        plugins: [history(), createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+      const docBefore = view.state.doc.toJSON();
+      expect(undoDepth(view.state)).toBe(0);
+        view.dispatch(
+          view.state.tr.setSelection(
+            NodeSelection.create(view.state.doc, 1)
+          )
+        );
+        const input = view.dom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        expect(input.style.display).toBe("");
+        expect(input.value).toBe("$x$");
+        expect(input.selectionStart).toBe(expectedCaret);
+        expect(input.selectionEnd).toBe(expectedCaret);
+      expect(view.state.doc.toJSON()).toEqual(docBefore);
+      expect(undoDepth(view.state)).toBe(0);
+
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: exitKey,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        expect(input.style.display).toBe("none");
+        expect(view.state.selection.from).toBe(expectedEditorCaret);
+      expect(view.state.doc.toJSON()).toEqual(docBefore);
+      expect(undoDepth(view.state)).toBe(0);
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
 
   it("edits the dollar markers as part of the inline source", () => {
     const math = schema.nodes.math_inline.create(

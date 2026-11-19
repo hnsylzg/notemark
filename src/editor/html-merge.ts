@@ -13,6 +13,10 @@
 import type { MilkdownPlugin } from "@milkdown/ctx";
 import type { MarkdownNode, RemarkPluginRaw } from "@milkdown/transformer";
 import { $remark } from "@milkdown/kit/utils";
+import {
+  EDITABLE_INLINE_HTML_MARK_TAGS,
+  INLINE_HTML_MARK_NAME,
+} from "./inline-html-mark";
 
 /**
  * 递归取节点原文：text/html 直接读 value；strong/emphasis/link 等无 value
@@ -71,6 +75,22 @@ function mergeInlineHtml(children: MarkdownNode[]): MarkdownNode[] {
     // "合并为行内 html 节点"的原逻辑（由 html-view 按白名单渲染）。
     if (tag === "u" && innerNodes.length > 0 && innerNodes.every((c) => c.type !== "html")) {
       merged.push({ type: "underline", children: innerNodes });
+      i = closeIdx;
+      continue;
+    }
+    if (
+      innerNodes.length > 0 &&
+      innerNodes.every((c) => c.type !== "html") &&
+      EDITABLE_INLINE_HTML_MARK_TAGS.has(tag.toLowerCase())
+    ) {
+      merged.push({
+        type: INLINE_HTML_MARK_NAME,
+        data: {
+          open: String(node.value ?? ""),
+          close: String(children[closeIdx].value ?? closeTag),
+        },
+        children: innerNodes,
+      });
       i = closeIdx;
       continue;
     }

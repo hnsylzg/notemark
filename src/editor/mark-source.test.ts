@@ -13,6 +13,7 @@ import {
   markSourceKey,
   sourceSessionBlockElement,
   startMarkSource,
+  startMarkSourceRange,
 } from "./mark-source";
 
 const schema = new Schema({
@@ -23,6 +24,13 @@ const schema = new Schema({
       content: "inline*",
       parseDOM: [{ tag: "p" }],
       toDOM: () => ["p", 0],
+    },
+    hard_break: {
+      group: "inline",
+      inline: true,
+      selectable: false,
+      parseDOM: [{ tag: "br" }],
+      toDOM: () => ["br"],
     },
     text: { group: "inline" },
   },
@@ -91,6 +99,9 @@ describe("Typora-style mark source editing", () => {
     const view = new EditorView(host, { state });
 
     try {
+      view.someProp("handleTextInput", (handler) =>
+        handler(view, 5, 5, "*", () => view.state.tr)
+      );
       document.body.dispatchEvent(
         new MouseEvent("click", { bubbles: false })
       );
@@ -98,6 +109,95 @@ describe("Typora-style mark source editing", () => {
       expect(
         view.state.doc.firstChild?.firstChild?.marks[0].type.name
       ).toBe("emphasis");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not format literal Markdown without user input", () => {
+    const state = stateWithText("`literal`", 2);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, { state });
+
+    try {
+      document.body.dispatchEvent(
+        new MouseEvent("click", { bubbles: false })
+      );
+      expect(view.state.doc.textContent).toBe("`literal`");
+      expect(view.state.doc.firstChild?.firstChild?.marks).toHaveLength(0);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not format untouched blocks after user input", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("active")),
+      schema.node("paragraph", null, schema.text("`literal`")),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      view.someProp("handleTextInput", (handler) =>
+        handler(view, 7, 7, "x", () => view.state.tr)
+      );
+      document.body.dispatchEvent(
+        new MouseEvent("click", { bubbles: false })
+      );
+      expect(view.state.doc.child(1).textContent).toBe("`literal`");
+      expect(view.state.doc.child(1).firstChild?.marks).toHaveLength(0);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("formats only the syntax at the caret inside the active block", () => {
+    const state = stateWithText("`literal` *ddd*", 14);
+    const next = formatState(state);
+
+    expect(next.doc.textContent).toBe("`literal` ddd");
+    expect(
+      next.doc.firstChild?.lastChild?.marks[0].type.name
+    ).toBe("emphasis");
+  });
+
+  it("does not open source editing for a mark around a line break", () => {
+    const codeMark = schema.marks.inlineCode.create();
+    const lineBreak = schema.nodes.hard_break.create(null, null, [codeMark]);
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.text("before"),
+        lineBreak,
+        schema.text("after"),
+      ]),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 8),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      expect(startMarkSourceRange(view, "inlineCode", 7, 8, 8)).toBe(false);
+      expect(view.state.doc.textContent).toBe("beforeafter");
     } finally {
       view.destroy();
       host.remove();
@@ -280,6 +380,71 @@ describe("Typora-style mark source editing", () => {
     );
   });
 
+  it("keeps the keyboard caret on the entry side of an expanded mark", () => {
+    const mark = schema.marks.strong.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("abcd", [mark])),
+    ]);
+
+    const fromStart = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, 5),
+      plugins: [createMarkSourcePlugin()],
+    });
+    const before = fromStart.applyTransaction(
+      fromStart.tr.setSelection(TextSelection.create(doc, 1))
+    ).state;
+    expect(before.doc.textContent).toBe("**abcd**");
+    expect(before.selection.from).toBe(1);
+
+    const fromEnd = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, 1),
+      plugins: [createMarkSourcePlugin()],
+    });
+    const after = fromEnd.applyTransaction(
+      fromEnd.tr.setSelection(TextSelection.create(doc, 5))
+    ).state;
+    expect(after.doc.textContent).toBe("**abcd**");
+    expect(after.selection.from).toBe(9);
+  });
+
+  it.each([
+    [1, 1],
+    [3, 5],
+    [5, 9],
+  ])(
+    "expands when clicking the mark at %i and keeps the mapped caret at %i",
+    (clickCaret, expectedCaret) => {
+      const mark = schema.marks.strong.create();
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, schema.text("abcd", [mark])),
+      ]);
+      const state = EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 1),
+        plugins: [createMarkSourcePlugin()],
+      });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, { state });
+
+      try {
+        expect(startMarkSourceRange(view, "strong", 1, 5, clickCaret)).toBe(
+          true
+        );
+        expect(view.state.doc.textContent).toBe("**abcd**");
+        expect(view.state.selection.from).toBe(expectedCaret);
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
   it("expands a rendered link when the keyboard caret enters it", () => {
     const link = schema.marks.link.create({
       href: "https://example.com",
@@ -315,7 +480,7 @@ describe("Typora-style mark source editing", () => {
       if (node.isText && node.text === "hello") contentMarks = node.marks;
     });
     expect(contentMarks[0].type.name).toBe("strong");
-    expect(markSourceKey.getState(next)).toEqual({
+    expect(markSourceKey.getState(next)).toMatchObject({
       markName: "strong",
       from: 1,
       to: 10,
@@ -328,7 +493,7 @@ describe("Typora-style mark source editing", () => {
     const opened = state.applyTransaction(
       createMarkSourceTransaction(state, "strong")!
     ).state;
-    expect(markSourceKey.getState(opened)).toEqual({
+    expect(markSourceKey.getState(opened)).toMatchObject({
       markName: "strong",
       from: 1,
       to: 5,
@@ -339,7 +504,7 @@ describe("Typora-style mark source editing", () => {
       opened.tr.insertText("粗体", 3, 3)
     ).state;
     expect(typed.doc.textContent).toBe("**粗体**");
-    expect(markSourceKey.getState(typed)).toEqual({
+    expect(markSourceKey.getState(typed)).toMatchObject({
       markName: "strong",
       from: 1,
       to: 7,
@@ -419,6 +584,69 @@ describe("Typora-style mark source editing", () => {
     expect(
       moved.doc.firstChild?.firstChild?.marks[0].type.name
     ).toBe("strong");
+  });
+
+  it("preserves native vertical movement before closing source editing", () => {
+    const strong = schema.marks.strong.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("bold", [strong])),
+      schema.node("paragraph", null, schema.text("target")),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      expect(startMarkSource(view, "strong")).toBe(true);
+      const keyDown = new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+        cancelable: true,
+      });
+      expect(
+        view.someProp("handleKeyDown", (handler) =>
+          handler(view, keyDown)
+        )
+      ).toBeFalsy();
+      expect(keyDown.defaultPrevented).toBe(false);
+
+      const secondBlockStart = view.state.doc.child(0).nodeSize;
+      view.dispatch(
+        view.state.tr.setSelection(
+          TextSelection.create(
+            view.state.doc,
+            secondBlockStart + 3
+          )
+        )
+      );
+      expect(markSourceKey.getState(view.state)).not.toBeNull();
+
+      view.someProp("handleDOMEvents", (handlers) => {
+        handlers.keyup?.(
+          view,
+          new KeyboardEvent("keyup", {
+            key: "ArrowDown",
+            bubbles: true,
+          })
+        );
+        return false;
+      });
+
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.state.doc.textContent).toBe("boldtarget");
+      expect(view.state.selection.$from.parent.textContent).toBe("target");
+      expect(view.state.selection.$from.parentOffset).toBe(2);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
   });
 
   it("renders the delimiters as real editable document text", () => {
@@ -675,6 +903,71 @@ describe("Typora-style mark source editing", () => {
     }
   });
 
+  it.each([
+    "strong",
+    "emphasis",
+    "strike_through",
+    "inlineCode",
+    "highlight",
+    "underline",
+    "superscript",
+    "subscript",
+  ])("keeps partial %s delimiters as literal text", (markName) => {
+    const mark = schema.marks[markName].create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("x", [mark])),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      expect(startMarkSource(view, markName)).toBe(true);
+      const session = markSourceKey.getState(view.state)!;
+      const opened = view.state.doc.textContent ?? "";
+      view.dispatch(
+        view.state.tr.delete(session.to - 1, session.to)
+      );
+      document.body.dispatchEvent(
+        new MouseEvent("click", { bubbles: false })
+      );
+
+      expect(view.state.doc.textContent).toBe(opened.slice(0, -1));
+      expect(view.state.doc.firstChild?.firstChild?.marks).toEqual([]);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("keeps a partial opening delimiter as literal text", () => {
+    const state = stateWithText("粗体", 1, 3);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, { state });
+
+    try {
+      expect(startMarkSource(view, "strong")).toBe(true);
+      view.dispatch(view.state.tr.delete(1, 2));
+      document.body.dispatchEvent(
+        new MouseEvent("click", { bubbles: false })
+      );
+
+      expect(view.state.doc.textContent).toBe("*粗体**");
+      expect(view.state.doc.firstChild?.firstChild?.marks).toEqual([]);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("places editable delimiter text around the caret", () => {
     const state = stateWithText("", 1, 1);
     const host = document.createElement("div");
@@ -685,7 +978,7 @@ describe("Typora-style mark source editing", () => {
       expect(startMarkSource(view, "emphasis")).toBe(true);
       const paragraph = view.dom.querySelector("p")!;
       expect(paragraph.textContent).toBe("**");
-      expect(markSourceKey.getState(view.state)).toEqual({
+      expect(markSourceKey.getState(view.state)).toMatchObject({
         markName: "emphasis",
         from: 1,
         to: 3,
@@ -817,7 +1110,7 @@ describe("Typora-style mark source editing", () => {
         )
       );
       expect(handled).toBe(true);
-      expect(markSourceKey.getState(view.state)).toEqual({
+      expect(markSourceKey.getState(view.state)).toMatchObject({
         markName: "strong",
         from: 1,
         to: 7,

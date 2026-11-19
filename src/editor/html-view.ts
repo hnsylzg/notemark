@@ -9,6 +9,11 @@
  */
 import { $view, type $Node } from "@milkdown/kit/utils";
 import { htmlSchema } from "@milkdown/kit/preset/commonmark";
+import {
+  NodeSelection,
+  TextSelection,
+} from "@milkdown/kit/prose/state";
+import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import { resolveImageSrc } from "./image-view";
 
 /** 允许渲染的 HTML 标签白名单 */
@@ -278,11 +283,230 @@ export function sanitizeHtmlBlock(html: string): string {
   return template.innerHTML;
 }
 
+const EDITABLE_INLINE_HTML_TAGS = new Set([
+  "abbr",
+  "b",
+  "cite",
+  "code",
+  "data",
+  "del",
+  "dfn",
+  "em",
+  "i",
+  "ins",
+  "kbd",
+  "mark",
+  "q",
+  "s",
+  "samp",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "time",
+  "tt",
+  "u",
+  "var",
+]);
+
+const RENDERED_NON_EDITABLE_INLINE_HTML_TAGS = new Set([
+  "a",
+  "br",
+  "iframe",
+  "img",
+  "wbr",
+]);
+
+const PAIRED_INLINE_HTML_RE =
+  /^<([a-z][a-z0-9-]*)(?:\s[^>]*)?>[\s\S]*<\/\1\s*>$/i;
+
+function inlineHtmlTag(value: string): string | null {
+  const match = /^<\s*([a-z][a-z0-9-]*)\b/i.exec(value.trim());
+  return match ? match[1].toLowerCase() : null;
+}
+
+function editableInlineHtmlTag(value: string): string | null {
+  const match = PAIRED_INLINE_HTML_RE.exec(value.trim());
+  if (!match) return null;
+  const tag = match[1].toLowerCase();
+  return EDITABLE_INLINE_HTML_TAGS.has(tag) ? tag : null;
+}
+
+function isNonEditableInlineHtml(value: string): boolean {
+  const tag = inlineHtmlTag(value);
+  return tag !== null && RENDERED_NON_EDITABLE_INLINE_HTML_TAGS.has(tag);
+}
+
+export const createInlineHtmlNodeView: NodeViewConstructor = (
+  node,
+  view,
+  getPos
+) => {
+  const wrapper = document.createElement("span");
+  wrapper.className = "mt-inline-html-node";
+  wrapper.dataset.type = "html";
+
+  const preview = document.createElement("span");
+  preview.className = "mt-inline-html-preview";
+  const source = document.createElement("span");
+  source.className = "mt-inline-html-source";
+  source.contentEditable = "plaintext-only";
+  source.spellcheck = false;
+  source.hidden = true;
+  source.setAttribute("role", "textbox");
+  source.setAttribute("aria-label", "HTML 源码");
+  wrapper.append(preview, source);
+
+  let currentNode = node;
+  let editing = false;
+  const rawValue = (): string => String(currentNode.attrs.value ?? "");
+
+  const renderPreview = (): void => {
+    const value = rawValue();
+    const rendered =
+      editableInlineHtmlTag(value) !== null || isNonEditableInlineHtml(value);
+    preview.classList.toggle("mt-inline-html-literal", !rendered);
+    if (rendered) {
+      preview.innerHTML = sanitizeHtml(value);
+    } else {
+      preview.textContent = value;
+    }
+    preview.hidden = false;
+  };
+
+  const closeSourceEditor = (): void => {
+    editing = false;
+    source.hidden = true;
+    wrapper.classList.remove("mt-inline-html-source-editing");
+    renderPreview();
+  };
+
+  const activateSourceEditor = (): void => {
+    if (editing || isNonEditableInlineHtml(rawValue())) return;
+    editing = true;
+    source.textContent = rawValue();
+    source.hidden = false;
+    preview.hidden = true;
+    wrapper.classList.add("mt-inline-html-source-editing");
+    requestAnimationFrame(() => {
+      source.focus();
+      const selection = source.ownerDocument.getSelection();
+      if (!selection) return;
+      const range = source.ownerDocument.createRange();
+      range.selectNodeContents(source);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  };
+
+  const clearAtomSelection = (): void => {
+    const pos = getPos();
+    if (
+      typeof pos !== "number" ||
+      !(view.state.selection instanceof NodeSelection) ||
+      view.state.selection.from !== pos
+    ) {
+      return;
+    }
+    try {
+      view.dispatch(
+        view.state.tr
+          .setSelection(
+            TextSelection.near(view.state.doc.resolve(pos), -1)
+          )
+          .setMeta("addToHistory", false)
+      );
+    } catch {
+      /* Ignore selection cleanup when the node has just been replaced. */
+    }
+  };
+
+  const commitSourceEditor = (focusEditor = false): void => {
+    if (!editing) return;
+    const next = source.textContent ?? "";
+    const changed = next !== rawValue();
+    const pos = getPos();
+    const live = typeof pos === "number" ? view.state.doc.nodeAt(pos) : null;
+    closeSourceEditor();
+
+    if (
+      changed &&
+      typeof pos === "number" &&
+      live &&
+      live.type === currentNode.type
+    ) {
+      view.dispatch(
+        view.state.tr.setNodeMarkup(pos, undefined, {
+          ...currentNode.attrs,
+          value: next,
+        })
+      );
+    }
+    if (focusEditor) view.focus();
+  };
+
+  const startsSourceEditing = (): boolean =>
+    !isNonEditableInlineHtml(rawValue());
+
+  const activateOnPointer = (event: MouseEvent): void => {
+    if (event.button !== 0 || !startsSourceEditing()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activateSourceEditor();
+  };
+  preview.addEventListener("pointerdown", activateOnPointer);
+  preview.addEventListener("mousedown", activateOnPointer);
+  preview.addEventListener("click", (event) => {
+    if (!startsSourceEditing()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activateSourceEditor();
+  });
+  source.addEventListener("mousedown", (event) => event.stopPropagation());
+  source.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSourceEditor();
+      view.focus();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      commitSourceEditor(true);
+    }
+  });
+  source.addEventListener("blur", () => commitSourceEditor(false));
+
+  renderPreview();
+
+  return {
+    dom: wrapper,
+    selectNode: () => {
+      if (!startsSourceEditing()) return;
+      requestAnimationFrame(() => {
+        clearAtomSelection();
+        activateSourceEditor();
+      });
+    },
+    update: (newNode) => {
+      if (newNode.type !== currentNode.type) return false;
+      currentNode = newNode;
+      if (!editing) {
+        source.textContent = rawValue();
+        renderPreview();
+      }
+      return true;
+    },
+    ignoreMutation: () => true,
+    stopEvent: (event) =>
+      event.target instanceof Node &&
+      (source.contains(event.target) ||
+        (startsSourceEditing() && preview.contains(event.target))),
+  };
+};
+
 export const htmlView = $view(
   htmlSchema.node as unknown as $Node,
-  () => (node) => {
-  const span = document.createElement("span");
-  span.dataset.type = "html";
-  span.innerHTML = sanitizeHtml(node.attrs.value);
-  return { dom: span };
-});
+  () => createInlineHtmlNodeView
+);
