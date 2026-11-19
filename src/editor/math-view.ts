@@ -234,6 +234,11 @@ export const createMathInlineNodeView: NodeViewConstructor = (
 
     let editing = false;
 
+    type VerticalTarget = {
+      position: number;
+      bias: -1 | 1;
+    };
+
     let renderVersion = 0;
     const render = async (value: string) => {
       const version = ++renderVersion;
@@ -291,8 +296,8 @@ export const createMathInlineNodeView: NodeViewConstructor = (
     const finish = (
       commit: boolean,
       focusPosition: false | "before" | "after" = false
-    ) => {
-      if (!editing) return;
+    ): Transaction | null => {
+      if (!editing) return null;
       const source = commit ? input.value : `$${node.textContent}$`;
       const match = /^\$([\s\S]*)\$$/.exec(source);
       const next = match ? match[1] : source;
@@ -301,7 +306,7 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       setEditing(false);
       if (typeof pos !== "number") {
         render(node.textContent);
-        return;
+        return null;
       }
 
       let finalBefore = pos;
@@ -351,6 +356,39 @@ export const createMathInlineNodeView: NodeViewConstructor = (
         render(node.textContent);
       }
       if (focusPosition) view.focus();
+      return tr;
+    };
+
+    const verticalTargetAt = (
+      direction: -1 | 1
+    ): VerticalTarget | undefined => {
+      const rect = dom.getBoundingClientRect();
+      const style = dom.ownerDocument.defaultView?.getComputedStyle(dom);
+      const parsedLineHeight = style
+        ? Number.parseFloat(style.lineHeight)
+        : Number.NaN;
+      const lineHeight =
+        Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+          ? parsedLineHeight
+          : rect.height;
+      const verticalOffset = lineHeight > 0 ? lineHeight / 2 : 0;
+      const valueLength = input.value.length;
+      const caretRatio =
+        valueLength > 0
+          ? Math.max(
+              0,
+              Math.min(1, (input.selectionStart ?? valueLength) / valueLength)
+            )
+          : 0.5;
+      const hit = view.posAtCoords({
+        left: rect.left + rect.width * caretRatio,
+        top:
+          direction < 0
+            ? rect.top - verticalOffset
+            : rect.bottom + verticalOffset,
+      });
+      if (!hit) return undefined;
+      return { position: hit.pos, bias: direction };
     };
 
     const stop = (e: Event) => e.stopPropagation();
@@ -386,7 +424,31 @@ export const createMathInlineNodeView: NodeViewConstructor = (
         finish(true, "after");
       } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
-        finish(true, e.key === "ArrowUp" ? "before" : "after");
+        const direction = e.key === "ArrowUp" ? -1 : 1;
+        const target = verticalTargetAt(direction);
+        const tr = finish(
+          true,
+          target ? false : direction < 0 ? "before" : "after"
+        );
+        if (target) {
+          const mapped = Math.max(
+            0,
+            Math.min(
+              tr?.mapping.map(target.position, target.bias) ??
+                target.position,
+              view.state.doc.content.size
+            )
+          );
+          view.dispatch(
+            view.state.tr.setSelection(
+              TextSelection.near(
+                view.state.doc.resolve(mapped),
+                target.bias
+              )
+            )
+          );
+          view.focus();
+        }
       }
     });
     input.addEventListener("blur", () => finish(true));

@@ -1,5 +1,5 @@
 import { editorViewCtx } from "@milkdown/kit/core";
-import { TextSelection } from "@milkdown/prose/state";
+import { NodeSelection, TextSelection } from "@milkdown/prose/state";
 import type { EditorView } from "@milkdown/prose/view";
 import { describe, expect, it } from "vitest";
 import { createEditor, getMarkdown, setMarkdown } from "./index";
@@ -169,6 +169,86 @@ describe("inline markdown autoformat integration", () => {
         view.state.doc.firstChild?.firstChild?.type.name
       ).toBe("math_inline");
       expect(getMarkdown(editor)).toContain("$xxx$");
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("autoformats inline math when keyboard selection moves to the next line", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      ) as EditorView;
+      setMarkdown(editor, "xxx$\n\nbelow");
+      view.dispatch(
+        view.state.tr.setSelection(
+          TextSelection.create(view.state.doc, 1)
+        )
+      );
+      typePlainText(view, "$");
+      await Promise.resolve();
+
+      expect(root.querySelector(".milkdown-math-inline")).toBeNull();
+      expect(view.state.doc.textContent).toContain("$xxx$");
+
+      const nextLine = view.state.doc.child(0).nodeSize + 2;
+      view.dispatch(
+        view.state.tr.setSelection(
+          TextSelection.create(view.state.doc, nextLine)
+        )
+      );
+
+      expect(root.querySelector(".milkdown-math-inline")).not.toBeNull();
+      expect(view.state.doc.child(0).firstChild?.type.name).toBe(
+        "math_inline"
+      );
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("autoformats inline math when the first vertical move selects a horizontal rule", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      ) as EditorView;
+      setMarkdown(editor, "xxx$\n\n---\n\nafter");
+      view.dispatch(
+        view.state.tr.setSelection(
+          TextSelection.create(view.state.doc, 1)
+        )
+      );
+      typePlainText(view, "$");
+      await Promise.resolve();
+
+      expect(root.querySelector(".milkdown-math-inline")).toBeNull();
+      const rulePos = view.state.doc.child(0).nodeSize;
+      expect(view.state.doc.nodeAt(rulePos)?.type.name).toBe("hr");
+
+      view.dispatch(
+        view.state.tr.setSelection(
+          NodeSelection.create(view.state.doc, rulePos)
+        )
+      );
+
+      expect(root.querySelector(".milkdown-math-inline")).not.toBeNull();
+      expect(view.state.doc.child(0).firstChild?.type.name).toBe(
+        "math_inline"
+      );
     } finally {
       await editor.destroy();
       root.remove();

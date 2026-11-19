@@ -163,6 +163,136 @@ describe("inline math source insertion", () => {
     }
   );
 
+  it.each([
+    ["ArrowUp", "above"],
+    ["ArrowDown", "below"],
+  ])(
+    "moves the editor cursor to the adjacent line on %s",
+    (key, expectedLine) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, schema.text("above")),
+        schema.node("paragraph", null, math),
+        schema.node("paragraph", null, schema.text("below")),
+      ]);
+      const formulaStart = doc.child(0).nodeSize;
+      const target =
+        expectedLine === "above"
+          ? 2
+          : doc.child(0).nodeSize +
+            doc.child(1).nodeSize +
+            2;
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, formulaStart + 1),
+          plugins: [history()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+      const posAtCoords = vi
+        .spyOn(view, "posAtCoords")
+        .mockReturnValue({ pos: target, inside: formulaStart });
+
+      try {
+        const docBefore = view.state.doc.toJSON();
+        const mathDom = view.dom.querySelector<HTMLElement>(
+          ".milkdown-math-inline"
+        )!;
+        const input = mathDom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        mathDom.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+        expect(input.style.display).toBe("");
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+
+        expect(posAtCoords).toHaveBeenCalledOnce();
+        expect(input.style.display).toBe("none");
+        expect(view.state.selection.$from.parent.textContent).toBe(
+          expectedLine
+        );
+        expect(view.state.doc.toJSON()).toEqual(docBefore);
+        expect(undoDepth(view.state)).toBe(0);
+      } finally {
+        posAtCoords.mockRestore();
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each(["ArrowUp", "ArrowDown"])(
+    "renders edited inline math before moving vertically on %s",
+    async (key) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+        schema.node("paragraph", null, schema.text("below")),
+      ]);
+      const formulaStart = 1;
+      const target = doc.child(0).nodeSize + 2;
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, formulaStart + 1),
+          plugins: [history()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+      const posAtCoords = vi
+        .spyOn(view, "posAtCoords")
+        .mockReturnValue({ pos: target, inside: 0 });
+
+      try {
+        const mathDom = view.dom.querySelector<HTMLElement>(
+          ".milkdown-math-inline"
+        )!;
+        const input = mathDom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        const display = mathDom.querySelector<HTMLElement>(
+          ".milkdown-math-inline-display"
+        )!;
+        mathDom.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        input.value = "$y^2$";
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+
+        expect(input.style.display).toBe("none");
+        expect(view.state.doc.firstChild!.firstChild!.textContent).toBe("y^2");
+        await vi.waitFor(() => expect(display.textContent).toBe("y^2"));
+      } finally {
+        posAtCoords.mockRestore();
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
   it("edits the dollar markers as part of the inline source", () => {
     const math = schema.nodes.math_inline.create(
       null,

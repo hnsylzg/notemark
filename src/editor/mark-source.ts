@@ -798,7 +798,8 @@ function previewInlineDecorations(state: EditorState): DecorationSet {
 
 export function autoFormatInlineMarkdown(
   state: EditorState,
-  respectSelection = true
+  respectSelection = true,
+  scope?: { blockPos: number; focusOffset: number }
 ): Transaction | null {
   let tr = state.tr;
   let changed = false;
@@ -840,9 +841,11 @@ export function autoFormatInlineMarkdown(
   // working. Scanning the whole document on blur can rewrite untouched literal
   // Markdown such as escaped backticks in a format-test document.
   const { $from } = state.selection;
-  const node = $from.parent;
+  const node =
+    scope == null ? $from.parent : state.doc.nodeAt(scope.blockPos);
   if (
-    $from.depth === 0 ||
+    (scope == null && $from.depth === 0) ||
+    !node ||
     !node.isTextblock ||
     node.content.size === 0 ||
     node.type.spec.code
@@ -859,7 +862,15 @@ export function autoFormatInlineMarkdown(
   const tryFormatRuns = (): boolean => {
     if (runs.length === 0) return false;
     const text = runs.map((run) => run.text).join("");
-    const focus = state.selection.from - runs[0].start;
+    const targetStart = scope ? scope.blockPos + 1 : $from.start($from.depth);
+    const selectionInsideTarget =
+      state.selection.from >= targetStart &&
+      state.selection.to <= targetStart + node.content.size;
+    const focusPosition =
+      scope && !selectionInsideTarget
+        ? targetStart + scope.focusOffset
+        : state.selection.from;
+    const focus = focusPosition - runs[0].start;
     const match = findPlainInlineMatch(text, focus, true);
     const type = markTypeFor(state, match?.markName ?? "");
     const mathType = state.schema.nodes.math_inline;
@@ -913,7 +924,7 @@ export function autoFormatInlineMarkdown(
     return true;
   };
 
-  let offset = $from.start($from.depth);
+  let offset = scope ? scope.blockPos + 1 : $from.start($from.depth);
   node.forEach((child) => {
     if (changed) return;
     if (child.isText && child.text) {
@@ -934,7 +945,10 @@ export function autoFormatInlineMarkdown(
 }
 
 export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
-  let pendingAutoFormat = false;
+  let pendingAutoFormat: {
+    blockPos: number;
+    focusOffset: number;
+  } | null = null;
   let pendingVerticalExit = false;
 
   return new Plugin<MarkSourceSession | null>({
@@ -949,10 +963,11 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             editorView.dom.contains(event.target);
           const tr = autoFormatInlineMarkdown(
             editorView.state,
-            clickedInsideEditor
+            clickedInsideEditor,
+            pendingAutoFormat
           );
           if (tr) {
-            pendingAutoFormat = false;
+            pendingAutoFormat = null;
             editorView.dispatch(tr);
           }
           return;
@@ -1019,16 +1034,16 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
       init: () => null,
       apply(tr, previous) {
         if (tr.getMeta("addToHistory") === false) {
-          pendingAutoFormat = false;
+          pendingAutoFormat = null;
         }
         const meta = tr.getMeta(markSourceKey) as MarkSourceMeta | undefined;
         if (meta?.type === "close") {
-          pendingAutoFormat = false;
+          pendingAutoFormat = null;
           pendingVerticalExit = false;
           return null;
         }
         if (meta?.type === "start") {
-          pendingAutoFormat = false;
+          pendingAutoFormat = null;
           pendingVerticalExit = false;
           return { ...meta.session, dirty: false };
         }
@@ -1054,14 +1069,20 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             !tr.getMeta("pointer")
         );
         if (!selectionMoved) return null;
-        if (!newState.selection.empty) return null;
         if (pendingAutoFormat) {
-          const tr = autoFormatInlineMarkdown(newState);
+          const tr = autoFormatInlineMarkdown(
+            newState,
+            true,
+            pendingAutoFormat
+          );
           if (tr) {
-            pendingAutoFormat = false;
+            pendingAutoFormat = null;
             return tr;
           }
         }
+      // 水平线等原子节点会用 NodeSelection 接住第一次上下移动。
+      // 待格式化内容仍应在离开原文本块时完成，而不是等第二次移动。
+      if (!newState.selection.empty) return null;
         for (const markName of Object.keys(MARK_SOURCE_SYNTAX)) {
           const type = markTypeFor(newState, markName);
           if (!type) continue;
@@ -1157,15 +1178,26 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             closeMarkSource(view);
           }
         } else if (!session) {
-          pendingAutoFormat = true;
+          const $from = view.state.selection.$from;
+          if ($from.depth > 0) {
+            pendingAutoFormat = {
+              blockPos: $from.before($from.depth),
+              focusOffset: from - $from.start($from.depth),
+            };
+          }
           queueMicrotask(() => {
             if (view.isDestroyed || markSourceKey.getState(view.state)) {
               return;
             }
-            const tr = autoFormatInlineMarkdown(view.state);
+            if (!pendingAutoFormat) return;
+            const tr = autoFormatInlineMarkdown(
+              view.state,
+              true,
+              pendingAutoFormat
+            );
             if (tr) {
               view.dispatch(tr);
-              pendingAutoFormat = false;
+              pendingAutoFormat = null;
             }
           });
         }
@@ -1246,8 +1278,13 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
           if (markSourceKey.getState(view.state)) {
             closeMarkSource(view);
           } else if (pendingAutoFormat) {
-            pendingAutoFormat = false;
-            const tr = autoFormatInlineMarkdown(view.state, false);
+            const pending = pendingAutoFormat;
+            pendingAutoFormat = null;
+            const tr = autoFormatInlineMarkdown(
+              view.state,
+              false,
+              pending
+            );
             if (tr) view.dispatch(tr);
           }
           return false;
