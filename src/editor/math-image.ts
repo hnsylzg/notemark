@@ -20,7 +20,8 @@ function rasterScale(): number {
 
 /** 把当前可见的 MathJax SVG 栅格化为透明背景 canvas。 */
 export async function formulaSvgToCanvas(
-  source: SVGSVGElement
+  source: SVGSVGElement,
+  prepareClone?: (clone: SVGSVGElement) => void
 ): Promise<HTMLCanvasElement> {
   const rect = source.getBoundingClientRect();
   const logicalWidth = Math.max(FALLBACK_SIZE_PX, rect.width);
@@ -29,6 +30,7 @@ export async function formulaSvgToCanvas(
   clone.setAttribute("width", String(logicalWidth));
   clone.setAttribute("height", String(logicalHeight));
   clone.style.color = getComputedStyle(source).color;
+  prepareClone?.(clone);
 
   const scale = rasterScale();
   const canvas = document.createElement("canvas");

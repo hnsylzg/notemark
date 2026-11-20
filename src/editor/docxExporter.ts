@@ -13,7 +13,7 @@
  * - 公式（行内/块级）：MathJax → MathML → OMML，作为 Word 原生公式注入
  *   （可在 Word 里继续编辑，与 Typora 导出一致）；转换失败时降级为
  *   栅格化图片，再失败则退化为源码文本
- * - Mermaid 图表：mermaid 渲染成 SVG 后栅格化成 png 内嵌（Word 无对应物）
+ * - Mermaid 图表：SVG 矢量图内嵌，同时生成 PNG 兼容旧版 Word
  * - 嵌套表格：内层内容以段落呈现（Word 单元格内嵌表格结构复杂）
  * - task list 的勾选框导出为 Word 2010+ 原生复选框内容控件
  *
@@ -29,6 +29,11 @@ import {
   mathMlToOmml,
 } from "./mathml-to-omml";
 import { resolveImageSrc } from "./image-view";
+import {
+  DEFAULT_MERMAID_EXPORT_BACKGROUND,
+  normalizeMermaidSvgForExport,
+  resolveMermaidExportBackground,
+} from "./mermaid-export";
 import {
   AlignmentType,
   BorderStyle,
@@ -2088,14 +2093,11 @@ function pickRenderedSvg(
 ): string | null {
   if (!viewDom || !identity) return null;
   if (document.documentElement.dataset.theme === "dark") return null;
-  let el: SVGSVGElement | null = null;
-  try {
-    el = viewDom.querySelector<SVGSVGElement>(
-      `.diagram[data-diagram-id="${CSS.escape(identity)}"] svg`
-    );
-  } catch {
-    return null;
-  }
+  const container =
+    Array.from(viewDom.querySelectorAll<HTMLElement>(".diagram")).find(
+      (candidate) => candidate.dataset.diagramId === identity
+    ) ?? null;
+  const el = container?.querySelector<SVGSVGElement>("svg") ?? null;
   if (!el) return null;
   // 序列化时把 CSS 变量驱动的前景色内联进 style：脱离页面 CSS 后颜色仍然正确
   let svg: string;
@@ -2111,7 +2113,8 @@ function pickRenderedSvg(
   // --mermaid-flowchart-html-labels 时会出现）。此时放弃复用，改由
   // renderMermaid（固定 htmlLabels:false）输出纯 SVG 文本节点，保证可栅格化。
   if (/<foreignObject[\s>]/i.test(svg)) return null;
-  return svg;
+  const background = resolveMermaidExportBackground(container);
+  return normalizeMermaidSvgForExport(svg, background);
 }
 
 /**
@@ -2156,11 +2159,14 @@ async function renderMermaid(code: string): Promise<string | null> {
       startOnLoad: false,
       // Word 页面是白底，统一用浅色主题：深色主题是浅色文字 + 透明背景，白底上看不清
       theme: "default",
-      flowchart: { htmlLabels: false },
+      htmlLabels: false,
     });
     const id = `docx-mermaid-${Math.random().toString(36).slice(2)}`;
     const { svg } = await mermaid.render(id, code);
-    return svg;
+    return normalizeMermaidSvgForExport(
+      svg,
+      DEFAULT_MERMAID_EXPORT_BACKGROUND
+    );
   } catch (err) {
     console.warn("[NoteMark] mermaid render failed:", err);
     return null;

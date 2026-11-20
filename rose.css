@@ -24,7 +24,7 @@
  *   11. 代码块
  *   12. 代码语法高亮 token
  *   13. 数学公式（KaTeX）
- *   14. Mermaid 图表
+ *   14. Mermaid 图表（默认继承，可选覆盖）
  *   15. 滚动条
  * ═══════════════════════════════════════════════════════════════
  */
@@ -82,9 +82,6 @@
   --mt-token-type: #0d9488;            /* 类型 */
   --mt-token-property: #059669;        /* 属性名 / 方法调用（绿） */
   --mt-token-tag: #0d9488;             /* HTML 标签（青绿） */
-
-  /* ---- Mermaid 图表 ---- */
-  --mt-mermaid-fg: #292524;
 
   /* ---- Alert 引用块（> [!NOTE] 等，GitHub 风格：fg 图标/标题，bg 背景，border 左竖线） ---- */
   --mt-alert-note-fg: #0969da;
@@ -147,8 +144,6 @@
   --mt-token-type: #5eead4;
   --mt-token-property: #6ee7b7;        /* 属性名 / 方法调用（绿） */
   --mt-token-tag: #5eead4;             /* HTML 标签（青绿） */
-
-  --mt-mermaid-fg: #e7e5e4;
 
   /* ---- Alert 引用块（暗色） ---- */
   --mt-alert-note-fg: #6cb0ff;
@@ -577,37 +572,21 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * 14. Mermaid 图表
- *     DOM：<div class="diagram">，渲染为 SVG
+ * 14. Mermaid 图表（默认继承，可选覆盖）
+ *     默认使用内置配置。需要单独覆盖本主题时，取消整段注释。
+ *     注意：显式设置 --mermaid-theme 后，暗色不会自动切换到 dark。
  *
- *     --mermaid-* 为渲染配置（diagram-view.ts 读取），必须写在本选择器
- *     （或更具体的选择器）上：内置默认值也写在 .diagram，CSS 变量
- *     「自身声明优先于继承」，写在 :root / .milkdown 上不会覆盖它。
- *       --mermaid-theme: 固定主题名（default/dark/neutral/forest/base），留空自动跟随明暗
- *       --mermaid-flowchart-curve: 连线曲线 linear/basis
- *       --mermaid-flowchart-html-labels: 节点/连线标签是否用 HTML 渲染（true/false）
- *       --mermaid-flowchart-node-spacing / --mermaid-flowchart-rank-spacing: 节点间距
- * ═══════════════════════════════════════════════════════════════ */
 .milkdown .diagram {
+  --mermaid-theme: redux;
+  --mermaid-look: classic;
+  --mermaid-layout: dagre;
+  --mermaid-font-family: var(--mt-font-sans);
   --mermaid-flowchart-curve: basis;
-  --mermaid-theme: neutral;
-  margin: 1em auto;
-  text-align: center;
-  overflow-x: auto;
+  --mermaid-flowchart-html-labels: false;
+  --mermaid-flowchart-node-spacing: 50;
+  --mermaid-flowchart-rank-spacing: 50;
 }
-.milkdown .diagram svg {
-  max-width: 100%;
-  height: auto;
-  background: transparent !important;
-  color: var(--mt-mermaid-fg);
-}
-.milkdown .diagram .error {
-  color: var(--mt-token-keyword);
-  font-family: var(--mt-font-mono);
-  font-size: 13px;
-  white-space: pre-wrap;
-  text-align: left;
-}
+ * ═══════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════
  * 15. 滚动条

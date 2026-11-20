@@ -13,7 +13,7 @@ vi.mock("mermaid", () => ({
   default: {
     initialize: vi.fn(),
     render: vi.fn(async () => ({
-      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><path d="M10 50 H190" stroke="#333"/></svg>',
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><path d="M10 50 H190" stroke="#333"/><g class="edgeLabel"><rect width="40" height="20" style="fill:#28253D;opacity:0.5"/></g></svg>',
     })),
   },
 }));
@@ -759,6 +759,35 @@ describe("Word Mermaid diagrams", () => {
       expect(media.some((name) => name.endsWith(".svg"))).toBe(true);
       expect(media.some((name) => name.endsWith(".png"))).toBe(true);
       expect(documentXml).toContain("<asvg:svgBlip");
+      const svgName = media.find((name) => name.endsWith(".svg"));
+      expect(svgName).toBeTruthy();
+      const svg = await zip.file(svgName!)!.async("string");
+      const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+      const edgeLabelBackground = parsed.querySelector(".edgeLabel rect");
+      expect(edgeLabelBackground?.getAttribute("fill")).toBe("#ffffff");
+      expect(edgeLabelBackground?.getAttribute("opacity")).toBe("1");
+
+      const viewDom = document.createElement("div");
+      viewDom.innerHTML =
+        '<div class="diagram" data-diagram-id="diagram-test" style="--mt-color-bg:#fefefe">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">' +
+        '<g class="edgeLabel"><rect width="40" height="20" style="fill:#28253D;opacity:0.5"/></g>' +
+        "</svg></div>";
+      const viewBytes = await buildDocx({ doc, viewDom });
+      const viewZip = await JSZip.loadAsync(viewBytes);
+      const viewSvgName = Object.keys(viewZip.files).find(
+        (name) => name.startsWith("word/media/") && name.endsWith(".svg")
+      );
+      expect(viewSvgName).toBeTruthy();
+      const viewSvg = await viewZip.file(viewSvgName!)!.async("string");
+      const viewParsed = new DOMParser().parseFromString(
+        viewSvg,
+        "image/svg+xml"
+      );
+      const viewEdgeLabelBackground =
+        viewParsed.querySelector(".edgeLabel rect");
+      expect(viewEdgeLabelBackground?.getAttribute("fill")).toBe("#fefefe");
+      expect(viewEdgeLabelBackground?.getAttribute("opacity")).toBe("1");
     } finally {
       Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
         configurable: true,

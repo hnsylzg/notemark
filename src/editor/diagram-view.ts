@@ -29,8 +29,10 @@ const isDarkTheme = () =>
  * 读取主题 CSS 中声明的 mermaid 配置（CSS 变量形式，用法同 Typora 主题）。
  * 变量可声明在 .milkdown .editor .diagram 或其任意祖先上，例如：
  *   --mermaid-theme: neutral;                  // 固定 mermaid 主题名
+ *   --mermaid-look: classic;                   // 图形外观
+ *   --mermaid-layout: dagre;                   // 布局引擎
  *   --mermaid-font-family: ...;                // 图表字体
- *   --mermaid-flowchart-curve: basis;          // 连线曲线（linear/basis）
+ *   --mermaid-flowchart-curve: basis;           // 连线曲线（linear/basis）
  *   --mermaid-flowchart-html-labels: true;     // 标签是否用 HTML 渲染
  *   --mermaid-flowchart-node-spacing: 60;      // 同层节点间距
  *   --mermaid-flowchart-rank-spacing: 90;      // 相邻层级间距
@@ -43,19 +45,28 @@ function readMermaidCssConfig(): Record<string, unknown> {
   const pick = (name: string) => style.getPropertyValue(name).trim();
 
   const cfg: Record<string, unknown> = {};
+  const flowchart: Record<string, unknown> = {};
   const theme = pick("--mermaid-theme");
   if (theme) cfg.theme = theme;
+  const look = pick("--mermaid-look");
+  if (look) {
+    cfg.look = look;
+    flowchart.look = look;
+  }
+  const layout = pick("--mermaid-layout");
+  if (layout) cfg.layout = layout;
 
   // 显式指定字体，避免 Mermaid 中文被浏览器回退到另一套字体后，
   // 节点尺寸按一种字体计算、PDF 却用另一种字形绘制，造成文字边缘裁切。
   const fontFamily = pick("--mermaid-font-family") || style.fontFamily;
   if (fontFamily) cfg.fontFamily = fontFamily;
 
-  const flowchart: Record<string, unknown> = {};
   const curve = pick("--mermaid-flowchart-curve");
   if (curve) flowchart.curve = curve;
   const htmlLabels = pick("--mermaid-flowchart-html-labels");
-  if (htmlLabels) flowchart.htmlLabels = htmlLabels === "true";
+  if (htmlLabels) {
+    cfg.htmlLabels = htmlLabels === "true";
+  }
   const nodeSpacing = pick("--mermaid-flowchart-node-spacing");
   if (nodeSpacing) flowchart.nodeSpacing = Number(nodeSpacing);
   const rankSpacing = pick("--mermaid-flowchart-rank-spacing");
@@ -69,15 +80,14 @@ function readMermaidCssConfig(): Record<string, unknown> {
 function getMermaidConfig(): Record<string, unknown> {
   const base: Record<string, unknown> = {
     startOnLoad: false,
-    theme: isDarkTheme() ? "dark" : "default",
-    // 流程图标签用纯 SVG <text> 渲染（而非 foreignObject）：
-    // mermaid 10 的 foreignObject 高度按初始化时的字体度量计算，字体就绪后
-    // 实际行高会超出，导致标签文字底部被裁剪（英文更明显）。
-    // htmlLabels: false 从源头规避该问题，且不依赖任何主题样式。
-    flowchart: { htmlLabels: false },
+    // 使用 Mermaid 内置 Redux 主题、classic 外观、dagre 布局和默认曲线。
+    theme: isDarkTheme() ? "dark" : "redux",
+    look: "classic",
+    layout: "dagre",
+    // 用纯 SVG <text> 渲染标签，避免 foreignObject 导致 Word/PDF 文字裁切。
+    htmlLabels: false,
+    flowchart: { look: "classic" },
   };
-  // 主题 CSS 的 --mermaid-* 变量覆盖内置默认；flowchart 深合并，
-  // 避免只声明 curve 等单项时把默认 htmlLabels: false 一起冲掉。
   const overrides = readMermaidCssConfig();
   if (overrides.flowchart) {
     overrides.flowchart = {

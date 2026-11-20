@@ -91,6 +91,10 @@ import {
 import { formatHtmlFragment, prepareClipboardHtml } from "./html-source";
 import { mathClipboardText, mathTex } from "./math-clipboard";
 import { canvasToPngBlob, formulaSvgToCanvas } from "./math-image";
+import {
+  applyMermaidEdgeLabelBackground,
+  resolveMermaidExportBackground,
+} from "./mermaid-export";
 import { insertInlineMath } from "./math-view";
 import { formatImageMarkdown } from "./image-markdown";
 import { startMarkSourceRange } from "./mark-source";
@@ -617,7 +621,12 @@ async function copyObjectToClipboard(
   if (context.kind === "diagram") {
     const svg = context.element.querySelector<SVGSVGElement>("svg");
     if (!svg) throw new Error("图表尚未完成渲染");
-    await copyCanvasImage(await formulaSvgToCanvas(svg));
+    const background = resolveMermaidExportBackground(context.element);
+    await copyCanvasImage(
+      await formulaSvgToCanvas(svg, (clone) =>
+        applyMermaidEdgeLabelBackground(clone, background)
+      )
+    );
     return;
   }
   await writeClipboardText(objectClipboardSource(context));

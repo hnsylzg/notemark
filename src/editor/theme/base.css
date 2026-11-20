@@ -584,11 +584,12 @@
 /* ============ Mermaid 图表（无外框，mermaid 默认配色） ============ */
 :where(.milkdown .editor) .diagram {
   /* Mermaid 渲染配置（CSS 变量形式，diagram-view.ts 读取，用法同 Typora）：
-     --mermaid-theme: 主题名（default/dark/neutral/forest/base），留空自动跟随明暗
-     --mermaid-flowchart-curve: 连线曲线 linear/basis；basis 更平滑、连线不易穿过标签
+     --mermaid-theme: 可覆盖 Mermaid 主题（如 neutral/dark）
+     --mermaid-look: 可覆盖图形外观（classic/neo/handDrawn）
+     --mermaid-layout: 可覆盖布局引擎（dagre/elk）
+     --mermaid-flowchart-curve: 连线曲线 linear/basis；basis 为 Mermaid 默认曲线
      --mermaid-flowchart-html-labels: 节点/连线标签是否用 HTML 渲染（true/false）
      --mermaid-flowchart-node-spacing / --mermaid-flowchart-rank-spacing: 节点间距 */
-  --mermaid-flowchart-curve: basis;
   margin: 1em auto;
   text-align: center;
   overflow-x: auto;
@@ -599,16 +600,10 @@
   background: transparent !important; /* SVG 背景强制透明 */
   color: var(--mt-mermaid-fg);
 }
-/* Mermaid 默认给边标签背景 0.5 透明度，连线会从文字后透出来。 */
-:where(.milkdown .editor) .diagram .edgeLabel {
-  background-color: var(--mt-color-bg, #fff) !important;
-}
+/* Mermaid 默认使用半透明灰色标签底，连线会从文字后透出。 */
 :where(.milkdown .editor) .diagram .edgeLabel rect {
   fill: var(--mt-color-bg, #fff) !important;
   opacity: 1 !important;
-}
-:where(.milkdown .editor) .diagram .labelBkg {
-  background-color: var(--mt-color-bg, #fff) !important;
 }
 
 /* ============ Math Block / Mermaid 原地编辑（textarea） ============ */
