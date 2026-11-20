@@ -109,6 +109,13 @@ const PRINT_CSS = `
   max-height: none !important;
   overflow: visible !important;
 }
+.mt-export-body .diagram svg {
+  shape-rendering: geometricPrecision;
+}
+.mt-export-body .diagram svg text,
+.mt-export-body .diagram svg tspan {
+  text-rendering: geometricPrecision;
+}
 .mt-export-body pre,
 .mt-export-body blockquote,
 .mt-export-body table,

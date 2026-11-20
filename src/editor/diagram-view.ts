@@ -46,7 +46,9 @@ function readMermaidCssConfig(): Record<string, unknown> {
   const theme = pick("--mermaid-theme");
   if (theme) cfg.theme = theme;
 
-  const fontFamily = pick("--mermaid-font-family");
+  // 显式指定字体，避免 Mermaid 中文被浏览器回退到另一套字体后，
+  // 节点尺寸按一种字体计算、PDF 却用另一种字形绘制，造成文字边缘裁切。
+  const fontFamily = pick("--mermaid-font-family") || style.fontFamily;
   if (fontFamily) cfg.fontFamily = fontFamily;
 
   const flowchart: Record<string, unknown> = {};

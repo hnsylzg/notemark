@@ -243,6 +243,11 @@ const MAX_FIGURE_HEIGHT_RATIO = 0.5;
 const MAX_FIGURE_HEIGHT_PX = Math.floor(
   (PAGE_CONTENT_H / 1440) * 96 * MAX_FIGURE_HEIGHT_RATIO
 ); // ≈ 465
+/**
+ * Word 图表的 PNG 兼容回退使用独立导出倍率，不依赖屏幕 DPR。
+ * 4 倍可覆盖打印缩放，单张图的逻辑尺寸仍保持不变。
+ */
+const DIAGRAM_EXPORT_RASTER_SCALE = 4;
 
 /** 对齐 Word 手动插表使用的默认单元格内边距；上下为 0，左右为 0.1905 cm。 */
 const WORD_TABLE_CELL_MARGINS = {
@@ -1258,19 +1263,26 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       return [sourceParagraph(tex, ctx)];
     }
 
-    // Mermaid 图表：渲染 SVG 后按页面宽度栅格化为 png 内嵌（Word 无原生图表类型）
+    // Mermaid 图表：以 SVG 矢量为主，同时嵌入高分辨率 PNG 作为旧版 Word 回退。
     case "diagram": {
       const code = sourceOf(node);
       const identity = String((node.attrs ?? {}).identity ?? "");
-      const png = await diagramToPng(code, identity, ctx.viewDom);
-      if (png) {
+      const diagram = await diagramToImage(code, identity, ctx.viewDom);
+      if (diagram) {
         return [
           new Paragraph({
             children: [
               new ImageRun({
-                type: "png",
-                data: png.data,
-                transformation: { width: png.width, height: png.height },
+                type: "svg",
+                data: svgDataUri(diagram.svg),
+                fallback: {
+                  type: "png",
+                  data: diagram.fallback,
+                },
+                transformation: {
+                  width: diagram.width,
+                  height: diagram.height,
+                },
               }),
             ],
           }),
@@ -1858,7 +1870,8 @@ async function formulaToImage(tex: string, displayMode: boolean): Promise<ImageR
 async function svgToPng(
   svg: string,
   maxWidth?: number,
-  maxHeight?: number
+  maxHeight?: number,
+  rasterScale?: number
 ): Promise<{ data: Uint8Array; width: number; height: number } | null> {
   try {
     const size = parseSvgSize(svg);
@@ -1874,7 +1887,8 @@ async function svgToPng(
     );
     const wLogical = Math.max(1, Math.round(w0 * fit));
     const hLogical = Math.max(1, Math.round(h0 * fit));
-    const scale = Math.min(3, Math.max(2, window.devicePixelRatio || 2));
+    const scale =
+      rasterScale ?? Math.min(3, Math.max(2, window.devicePixelRatio || 2));
     const w = Math.max(1, Math.round(wLogical * scale));
     const h = Math.max(1, Math.round(hLogical * scale));
     const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
@@ -2101,18 +2115,35 @@ function pickRenderedSvg(
 }
 
 /**
- * 生成 Mermaid 图表的 PNG。
+ * 生成 Mermaid 图表的 SVG 与 PNG 回退。
  * 优先复用编辑器已渲染好的 SVG，取不到（深色主题 / 未渲染 / 导出环境无 DOM）时
  * 回退到浅色主题重新渲染。尺寸仍按 SVG 自身尺寸（viewBox）配合页面内容区缩放。
  */
-async function diagramToPng(
+async function diagramToImage(
   code: string,
   identity: string,
   viewDom: HTMLElement | null
-): Promise<{ data: Uint8Array; width: number; height: number } | null> {
+): Promise<{
+  svg: string;
+  fallback: Uint8Array;
+  width: number;
+  height: number;
+} | null> {
   const svg = pickRenderedSvg(identity, viewDom) ?? (await renderMermaid(code));
   if (!svg) return null;
-  return svgToPng(svg, MERMAID_WIDTH_PX, MAX_FIGURE_HEIGHT_PX);
+  const png = await svgToPng(
+    svg,
+    MERMAID_WIDTH_PX,
+    MAX_FIGURE_HEIGHT_PX,
+    DIAGRAM_EXPORT_RASTER_SCALE
+  );
+  if (!png) return null;
+  return {
+    svg,
+    fallback: png.data,
+    width: png.width,
+    height: png.height,
+  };
 }
 
 /** 兜底：从源码渲染 Mermaid（浅色主题，适配 Word 白底页面） */
@@ -2465,6 +2496,14 @@ function b64ToBytes(b64: string): Uint8Array {
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i);
   return arr;
+}
+
+/** SVG 文本 → docx 可识别的 base64 data URI。 */
+function svgDataUri(svg: string): string {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
 }
 
 /** 从图片字节读取原始尺寸 */

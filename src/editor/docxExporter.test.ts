@@ -9,6 +9,15 @@ import {
   disableDocumentFieldUpdates,
 } from "./docxExporter";
 
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><path d="M10 50 H190" stroke="#333"/></svg>',
+    })),
+  },
+}));
+
 describe("Word TOC field", () => {
   it("wraps the native TOC field in Word's table-of-contents control", () => {
     const xml = buildTocFieldXml();
@@ -685,6 +694,83 @@ describe("Word Pandoc semantic styles", () => {
     expect(tableCaptionStyle).toContain("<w:keepNext/>");
     expect(definitionTermStyle).toContain('<w:basedOn w:val="Normal"/>');
     expect(definitionTermStyle).toContain("<w:b/>");
+  });
+});
+
+describe("Word Mermaid diagrams", () => {
+  it("embeds SVG as the primary image with a PNG compatibility fallback", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        diagram: {
+          group: "block",
+          atom: true,
+          attrs: {
+            value: { default: "" },
+            identity: { default: "" },
+          },
+          toDOM: () => ["div"],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("diagram", {
+        value: "flowchart LR\nA --> B",
+        identity: "diagram-test",
+      }),
+    ]);
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 200;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      }
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mermaid");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: vi.fn(() => ({ drawImage: vi.fn() })),
+    });
+    Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+      configurable: true,
+      value: vi.fn((callback: BlobCallback) => {
+        callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+      }),
+    });
+
+    try {
+      const bytes = await buildDocx({ doc, viewDom: null });
+      const zip = await JSZip.loadAsync(bytes);
+      const documentXml = await zip.file("word/document.xml")!.async("string");
+      const media = Object.keys(zip.files).filter((name) =>
+        name.startsWith("word/media/")
+      );
+
+      expect(media.some((name) => name.endsWith(".svg"))).toBe(true);
+      expect(media.some((name) => name.endsWith(".png"))).toBe(true);
+      expect(documentXml).toContain("<asvg:svgBlip");
+    } finally {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+        configurable: true,
+        value: originalGetContext,
+      });
+      Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+        configurable: true,
+        value: originalToBlob,
+      });
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
   });
 });
 
