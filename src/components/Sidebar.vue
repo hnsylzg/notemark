@@ -371,7 +371,6 @@ function isActive(path: string): boolean {
 
       <template v-else>
         <div class="mt-context-menu__group">
-          <div class="mt-context-menu__group-title">文件面板</div>
           <button class="mt-context-menu__item" role="menuitem" @click="act('newFile')">
             <span class="mt-context-menu__icon">
               <ContextMenuIcon :icon="FilePlus2" />
