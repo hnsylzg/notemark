@@ -34,6 +34,7 @@ import {
   BorderStyle,
   Document,
   ExternalHyperlink,
+  FootnoteReferenceRun,
   HeadingLevel,
   ImageRun,
   LineRuleType,
@@ -44,6 +45,7 @@ import {
   TableLayoutType,
   TableRow,
   TextRun,
+  UnderlineType,
   WidthType,
 } from "docx";
 import type { IRunOptions } from "docx";
@@ -52,7 +54,11 @@ import type { Node as PMNode, Mark as PMMark } from "@milkdown/kit/prose/model";
 /** 段落级元素（Document 的 children） */
 type BlockChild = Paragraph | Table;
 /** 段落内联元素 */
-type InlineChild = TextRun | ExternalHyperlink | ImageRun;
+type InlineChild =
+  | TextRun
+  | ExternalHyperlink
+  | ImageRun
+  | FootnoteReferenceRun;
 /** TextRun 构造参数类型（docx 导出该类型；TextRun 本身还接受 string 参数） */
 type TextRunOptions = IRunOptions;
 
@@ -74,23 +80,87 @@ const CODE_FONTS = {
   eastAsia: "等线",
   cs: "Consolas",
 } as const;
+/** 自定义 Pandoc reference 中定义列表术语使用黑体。 */
+const DEFINITION_TERM_FONTS = {
+  ...BODY_FONTS,
+  eastAsia: "黑体",
+} as const;
+/** 自定义 Pandoc reference 中摘要正文使用仿宋。 */
+const ABSTRACT_FONTS = {
+  ...BODY_FONTS,
+  eastAsia: "仿宋",
+} as const;
 
-/** 正文 1.5 倍行距、段后 6pt。Word 中 line=240 表示单倍行距。 */
+/** 文档默认段落参数；正文段落由独立的 BodyText 样式覆盖。 */
 const BODY_SPACING = {
   before: 0,
   after: 120,
   line: 360,
   lineRule: LineRuleType.AUTO,
 } as const;
-/** 代码块固定 16pt 行高，避免 1.5 倍行距把代码拉得过散。 */
-const CODE_SPACING = {
-  before: 120,
-  after: 120,
-  line: 320,
+/** Pandoc Body Text：段前段后各 9pt，单倍行距。 */
+const PANDOC_BODY_SPACING = {
+  before: 180,
+  after: 180,
+  line: 240,
   lineRule: LineRuleType.AUTO,
 } as const;
+/** Pandoc Compact 样式：段前段后各 36 twips，单倍行距。 */
+const TABLE_CELL_SPACING = {
+  before: 36,
+  after: 36,
+  line: 240,
+  lineRule: LineRuleType.AUTO,
+} as const;
+/** Pandoc Block Text：段前段后各 5pt，单倍行距。 */
+const BLOCK_TEXT_SPACING = {
+  before: 100,
+  after: 100,
+  line: 240,
+  lineRule: LineRuleType.AUTO,
+} as const;
+/**
+ * Pandoc Footnote Text：基于 Normal，段前 0、段后 200 twips、单倍行距。
+ * 200 twips 来自 Pandoc 参考文档的 docDefaults（10pt 段后距）。
+ */
+const PANDOC_FOOTNOTE_TEXT_SPACING = {
+  before: 0,
+  after: 200,
+  line: 240,
+  lineRule: LineRuleType.AUTO,
+} as const;
+/** Pandoc Footnote Block Text：段前段后各 100 twips。 */
+const PANDOC_FOOTNOTE_BLOCK_SPACING = {
+  before: 100,
+  after: 100,
+  line: 240,
+  lineRule: LineRuleType.AUTO,
+} as const;
+/** Pandoc 参考文档中 Footnote Block Text 的左右缩进，OOXML 固定单位为 twips。 */
+const PANDOC_FOOTNOTE_BLOCK_INDENT_TWIPS = 480;
+const FOOTNOTE_TEXT_STYLE = "FootnoteText";
+const FOOTNOTE_BLOCK_TEXT_STYLE = "FootnoteBlockText";
+const CAPTION_STYLE = "Caption";
+const IMAGE_CAPTION_STYLE = "ImageCaption";
+const TABLE_CAPTION_STYLE = "TableCaption";
+const FIGURE_STYLE = "Figure";
+const CAPTIONED_FIGURE_STYLE = "CaptionedFigure";
+const DEFINITION_TERM_STYLE = "DefinitionTerm";
+const DEFINITION_STYLE = "Definition";
+/** 自定义 reference 中 Hyperlink 的主题强调色。 */
+const HYPERLINK_COLOR = "156082";
+/** OOXML 图片对象必须提供内部名称；Word/Pandoc 使用 Picture。 */
+const IMAGE_DOC_PROPERTIES_NAME = "Picture";
+/** Word 保留 0 和 -1 给分隔线脚注，正文脚注从 1 开始。 */
+const FIRST_FOOTNOTE_ID = 1;
+const DEFAULT_ABSTRACT_TITLE = "Abstract";
 /** OOXML twips per typographic point. */
 const TWIPS_PER_POINT = 20;
+/**
+ * Word 内置表格样式的默认左右单元格留白。
+ * OOXML 固定使用 twips；108 twips = 0.1905 cm。
+ */
+const WORD_TABLE_CELL_SIDE_PADDING_TWIPS = 108;
 /** OOXML border widths use eighths of a point. */
 const BORDER_UNITS_PER_POINT = 8;
 /** Code-block border spacing, in points. */
@@ -174,6 +244,25 @@ const MAX_FIGURE_HEIGHT_PX = Math.floor(
   (PAGE_CONTENT_H / 1440) * 96 * MAX_FIGURE_HEIGHT_RATIO
 ); // ≈ 465
 
+/** 对齐 Word 手动插表使用的默认单元格内边距；上下为 0，左右为 0.1905 cm。 */
+const WORD_TABLE_CELL_MARGINS = {
+  marginUnitType: WidthType.DXA,
+  top: 0,
+  left: WORD_TABLE_CELL_SIDE_PADDING_TWIPS,
+  bottom: 0,
+  right: WORD_TABLE_CELL_SIDE_PADDING_TWIPS,
+} as const;
+/** docx exposes percentage widths in whole percent units; 100 = 100%. */
+const WORD_TABLE_FULL_WIDTH_PERCENT = 100;
+const WORD_TABLE_AUTO_WIDTH = {
+  size: 0,
+  type: WidthType.AUTO,
+} as const;
+const WORD_TABLE_FULL_WIDTH = {
+  size: WORD_TABLE_FULL_WIDTH_PERCENT,
+  type: WidthType.PERCENTAGE,
+} as const;
+
 /** Word 数学命名空间（OMML） */
 const OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 /** Word 2010 扩展命名空间（w14:checkbox） */
@@ -213,6 +302,17 @@ type ExportContext = {
   viewDom: HTMLElement | null;
   /** 本文档是否包含代码块（用于后处理 Source Code 样式） */
   hasCodeBlock: boolean;
+  /** Pandoc 语义：下一个正文段落是否为章节首段。 */
+  nextParagraphIsFirst: boolean;
+  /** 脚注标签 -> ProseMirror 定义节点。 */
+  footnoteDefinitions: Map<string, PMNode>;
+  /** 文档中实际被引用的脚注标签，用于阻止定义内容重复进入正文。 */
+  referencedFootnoteLabels: Set<string>;
+  /** 按正文引用顺序生成的 Word 脚注编号。 */
+  footnoteReferences: { id: number; label: string }[];
+  nextFootnoteId: number;
+  /** 转换脚注定义时，正文段落应改用 Footnote Text。 */
+  inFootnote: boolean;
 };
 
 export interface DocxExportSource {
@@ -239,8 +339,19 @@ export async function buildDocx(
     horizontalRulePlaceholders: [],
     viewDom: viewDom ?? null,
     hasCodeBlock: false,
+    nextParagraphIsFirst: true,
+    footnoteDefinitions: new Map(),
+    referencedFootnoteLabels: new Set(),
+    footnoteReferences: [],
+    nextFootnoteId: FIRST_FOOTNOTE_ID,
+    inFootnote: false,
   };
-  const children = await convertBlocks(doc, ctx);
+  collectFootnoteMetadata(doc, ctx);
+  const children = [
+    ...buildAbstractParagraphs(doc),
+    ...(await convertBlocks(doc, ctx)),
+  ];
+  const footnotes = await convertFootnotes(ctx);
   // Word 文档至少要有一个段落，空文档补一个空段落
   if (children.length === 0) children.push(new Paragraph({ children: [] }));
   const document = new Document({
@@ -258,7 +369,7 @@ export async function buildDocx(
             spacing: {
               before: 360,
               after: 160,
-              line: 300,
+              line: 240,
               lineRule: LineRuleType.AUTO,
             },
             keepNext: true,
@@ -271,7 +382,7 @@ export async function buildDocx(
             spacing: {
               before: 280,
               after: 120,
-              line: 300,
+              line: 240,
               lineRule: LineRuleType.AUTO,
             },
             keepNext: true,
@@ -284,7 +395,7 @@ export async function buildDocx(
             spacing: {
               before: 200,
               after: 80,
-              line: 312,
+              line: 240,
               lineRule: LineRuleType.AUTO,
             },
             keepNext: true,
@@ -297,7 +408,7 @@ export async function buildDocx(
             spacing: {
               before: 160,
               after: 80,
-              line: 312,
+              line: 240,
               lineRule: LineRuleType.AUTO,
             },
             keepNext: true,
@@ -310,7 +421,7 @@ export async function buildDocx(
             spacing: {
               before: 120,
               after: 80,
-              line: 312,
+              line: 240,
               lineRule: LineRuleType.AUTO,
             },
             keepNext: true,
@@ -323,11 +434,45 @@ export async function buildDocx(
             spacing: {
               before: 120,
               after: 80,
-              line: 312,
+              line: 240,
               lineRule: LineRuleType.AUTO,
             },
             keepNext: true,
             keepLines: true,
+          },
+        },
+        footnoteReference: {
+          name: "Footnote Reference",
+          basedOn: "DefaultParagraphFont",
+          run: {
+            superScript: true,
+          },
+        },
+        footnoteText: {
+          name: "Footnote Text",
+          basedOn: "Normal",
+          next: FOOTNOTE_TEXT_STYLE,
+          uiPriority: 9,
+          unhideWhenUsed: true,
+          quickFormat: true,
+          run: {
+            font: BODY_FONTS,
+            size: ctx.base,
+          },
+          paragraph: {
+            indent: {
+              firstLineChars: 0,
+              firstLine: 0,
+            },
+            spacing: PANDOC_FOOTNOTE_TEXT_SPACING,
+          },
+        },
+        hyperlink: {
+          name: "Hyperlink",
+          basedOn: "DefaultParagraphFont",
+          run: {
+            color: HYPERLINK_COLOR,
+            underline: { type: UnderlineType.NONE },
           },
         },
       },
@@ -412,10 +557,40 @@ export async function buildDocx(
           },
         },
         {
+          id: "BodyText",
+          name: "Body Text",
+          basedOn: "Normal",
+          quickFormat: true,
+          run: { font: BODY_FONTS, size: ctx.base },
+          paragraph: {
+            spacing: PANDOC_BODY_SPACING,
+          },
+        },
+        {
+          id: "FirstParagraph",
+          name: "First Paragraph",
+          basedOn: "BodyText",
+          next: "BodyText",
+          quickFormat: true,
+        },
+        {
+          id: "Compact",
+          name: "Compact",
+          basedOn: "BodyText",
+          quickFormat: true,
+          run: { font: BODY_FONTS, size: ctx.base },
+          paragraph: {
+            indent: {
+              firstLineChars: 0,
+              firstLine: 0,
+            },
+            spacing: TABLE_CELL_SPACING,
+          },
+        },
+        {
           id: "SourceCode",
           name: "Source Code",
-          basedOn: "Normal",
-          next: "Normal",
+          basedOn: "BodyText",
           quickFormat: true,
           run: {
             font: CODE_FONTS,
@@ -423,29 +598,31 @@ export async function buildDocx(
           },
           paragraph: {
             indent: {
+              firstLineChars: 0,
+              firstLine: 0,
               left: CODE_BLOCK_HORIZONTAL_INSET_TWIPS,
               right: CODE_BLOCK_HORIZONTAL_INSET_TWIPS,
             },
             shading: { fill: "F5F5F5" },
             border: CODE_BLOCK_BORDER,
-            spacing: CODE_SPACING,
           },
         },
         {
-          id: "Blockquote",
-          name: "Blockquote",
-          basedOn: "Normal",
-          next: "Normal",
+          id: "BlockText",
+          name: "Block Text",
+          basedOn: "BodyText",
+          next: "BodyText",
+          uiPriority: 9,
+          unhideWhenUsed: true,
           quickFormat: true,
-          run: { font: BODY_FONTS, size: ctx.base },
           paragraph: {
-            indent: { left: 480 },
-            spacing: {
-              before: 0,
-              after: 0,
-              line: 240,
-              lineRule: LineRuleType.AUTO,
+            indent: {
+              firstLineChars: 0,
+              firstLine: 0,
+              left: 482,
+              right: 482,
             },
+            spacing: BLOCK_TEXT_SPACING,
             border: {
               left: {
                 style: BorderStyle.SINGLE,
@@ -474,8 +651,136 @@ export async function buildDocx(
             },
           },
         },
+        {
+          id: FOOTNOTE_BLOCK_TEXT_STYLE,
+          name: "Footnote Block Text",
+          basedOn: FOOTNOTE_TEXT_STYLE,
+          next: FOOTNOTE_TEXT_STYLE,
+          uiPriority: 9,
+          unhideWhenUsed: true,
+          quickFormat: true,
+          paragraph: {
+            indent: {
+              firstLineChars: 0,
+              firstLine: 0,
+              left: PANDOC_FOOTNOTE_BLOCK_INDENT_TWIPS,
+              right: PANDOC_FOOTNOTE_BLOCK_INDENT_TWIPS,
+            },
+            spacing: PANDOC_FOOTNOTE_BLOCK_SPACING,
+          },
+        },
+        {
+          id: CAPTION_STYLE,
+          name: "Caption",
+          basedOn: "Normal",
+          run: {
+            italics: true,
+          },
+          paragraph: {
+            spacing: {
+              before: 0,
+              after: 120,
+            },
+          },
+        },
+        {
+          id: FIGURE_STYLE,
+          name: "Figure",
+          basedOn: "Normal",
+        },
+        {
+          id: CAPTIONED_FIGURE_STYLE,
+          name: "Captioned Figure",
+          basedOn: FIGURE_STYLE,
+          paragraph: {
+            keepNext: true,
+          },
+        },
+        {
+          id: IMAGE_CAPTION_STYLE,
+          name: "Image Caption",
+          basedOn: CAPTION_STYLE,
+          run: {
+            vanish: true,
+          },
+        },
+        {
+          id: TABLE_CAPTION_STYLE,
+          name: "Table Caption",
+          basedOn: CAPTION_STYLE,
+          paragraph: {
+            keepNext: true,
+          },
+        },
+        {
+          id: DEFINITION_TERM_STYLE,
+          name: "Definition Term",
+          basedOn: "Normal",
+          next: DEFINITION_STYLE,
+          run: {
+            bold: true,
+            font: DEFINITION_TERM_FONTS,
+          },
+          paragraph: {
+            keepNext: true,
+            keepLines: true,
+            spacing: {
+              before: 0,
+              after: 0,
+            },
+          },
+        },
+        {
+          id: DEFINITION_STYLE,
+          name: "Definition",
+          basedOn: "Normal",
+        },
+        {
+          id: "AbstractTitle",
+          name: "Abstract Title",
+          basedOn: "Normal",
+          next: "Abstract",
+          run: {
+            bold: true,
+            size: 20,
+          },
+          paragraph: {
+            keepNext: true,
+            keepLines: true,
+            spacing: {
+              before: 300,
+              after: 0,
+            },
+            alignment: AlignmentType.CENTER,
+          },
+        },
+        {
+          id: "Abstract",
+          name: "Abstract",
+          basedOn: "Normal",
+          next: "BodyText",
+          run: {
+            font: ABSTRACT_FONTS,
+            size: 21,
+          },
+          paragraph: {
+            keepNext: true,
+            keepLines: true,
+            spacing: {
+              before: 100,
+              after: 300,
+            },
+          },
+        },
+        {
+          id: "Bibliography",
+          name: "Bibliography",
+          basedOn: "Normal",
+          next: "Bibliography",
+        },
       ],
     },
+    ...(Object.keys(footnotes).length > 0 ? { footnotes } : {}),
     sections: [
       {
         properties: {
@@ -511,35 +816,304 @@ export async function buildDocx(
 
 /* ============ 块级节点 ============ */
 
+function findFrontmatter(doc: PMNode): string {
+  for (let i = 0; i < doc.childCount; i += 1) {
+    const child = doc.child(i);
+    if (child.type.name === "yaml") {
+      return String((child.attrs ?? {}).value ?? "");
+    }
+  }
+  return "";
+}
+
+function unquoteYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/** 提取顶栏 YAML 的标量或 `|` / `>` 多行值；复杂对象保持不支持。 */
+function frontmatterValue(yaml: string, key: string): string | undefined {
+  const lines = yaml.replace(/\r\n?/g, "\n").split("\n");
+  const keyPattern = new RegExp(`^${escapeRegExp(key)}\\s*:\\s*(.*)$`);
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = lines[i].match(keyPattern);
+    if (!match) continue;
+    const marker = match[1].trim();
+    if (marker !== "|" && marker !== ">") {
+      return unquoteYamlScalar(marker) || undefined;
+    }
+    const block: string[] = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const line = lines[j];
+      if (line.trim() === "") {
+        block.push("");
+        continue;
+      }
+      if (!/^\s+/.test(line)) break;
+      block.push(line.replace(/^\s{1,4}/, "").trimEnd());
+    }
+    while (block[0] === "") block.shift();
+    while (block[block.length - 1] === "") block.pop();
+    if (marker === "|") return block.join("\n") || undefined;
+    return block
+      .join("\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n(?!\n)/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim() || undefined;
+  }
+  return undefined;
+}
+
+/** YAML abstract → Pandoc Abstract Title / Abstract 段落。 */
+function buildAbstractParagraphs(doc: PMNode): Paragraph[] {
+  const yaml = findFrontmatter(doc);
+  if (!yaml) return [];
+  const abstract = frontmatterValue(yaml, "abstract");
+  if (!abstract) return [];
+  const title =
+    frontmatterValue(yaml, "abstract-title") ?? DEFAULT_ABSTRACT_TITLE;
+  const paragraphs = abstract
+    .split(/\n\s*\n/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map(
+      (text) =>
+        new Paragraph({
+          style: "Abstract",
+          children: [new TextRun({ text })],
+        })
+    );
+  return [
+    new Paragraph({
+      style: "AbstractTitle",
+      children: [new TextRun({ text: title })],
+    }),
+    ...paragraphs,
+  ];
+}
+
+function footnoteLabel(node: PMNode): string {
+  return String((node.attrs ?? {}).label ?? "").trim();
+}
+
+/**
+ * 脚注定义可以在引用之前或之后出现，先完整扫描文档，保证正文按引用顺序
+ * 分配 Word 脚注编号时已经知道哪些定义有效。
+ */
+function collectFootnoteMetadata(doc: PMNode, ctx: ExportContext): void {
+  // 第一遍收集定义。
+  doc.descendants((node) => {
+    if (node.type.name === "footnote_definition") {
+      const label = footnoteLabel(node);
+      if (label && !ctx.footnoteDefinitions.has(label)) {
+        ctx.footnoteDefinitions.set(label, node);
+      }
+    }
+  });
+  // 第二遍按文档顺序记录实际引用，不能受“引用写在定义之前”影响。
+  doc.descendants((node) => {
+    if (node.type.name === "footnote_reference") {
+      const label = footnoteLabel(node);
+      if (label && ctx.footnoteDefinitions.has(label)) {
+        ctx.referencedFootnoteLabels.add(label);
+      }
+    }
+  });
+}
+
+/**
+ * 把脚注定义中的块内容转换为 docx 脚注段落。
+ * docx 只接受 Paragraph[]；脚注内表格等极少数块暂以单段文本保留，避免内容丢失。
+ */
+async function convertFootnotes(
+  ctx: ExportContext
+): Promise<Record<string, { children: Paragraph[] }>> {
+  const footnotes: Record<string, { children: Paragraph[] }> = {};
+  const previousFirstParagraph = ctx.nextParagraphIsFirst;
+  const wasInFootnote = ctx.inFootnote;
+  ctx.nextParagraphIsFirst = false;
+  ctx.inFootnote = true;
+  try {
+    // 使用正文转换阶段登记的引用快照，避免脚注定义中的循环引用导致无限生成。
+    const references = [...ctx.footnoteReferences];
+    for (const { id, label } of references) {
+      const definition = ctx.footnoteDefinitions.get(label);
+      if (!definition) continue;
+      const paragraphs: Paragraph[] = [];
+      for (let i = 0; i < definition.childCount; i += 1) {
+        const child = definition.child(i);
+        const blocks = await convertBlock(child, ctx);
+        for (const block of blocks) {
+          if (block instanceof Paragraph) {
+            paragraphs.push(block);
+          } else {
+            paragraphs.push(
+              new Paragraph({
+                style: FOOTNOTE_TEXT_STYLE,
+                children: [new TextRun({ text: child.textContent })],
+              })
+            );
+          }
+        }
+      }
+      // docx 会在首个脚注段落前自动插入 footnoteRef；空定义仍保留一个空段落。
+      if (paragraphs.length === 0) {
+        paragraphs.push(
+          new Paragraph({
+            style: FOOTNOTE_TEXT_STYLE,
+            children: [],
+          })
+        );
+      }
+      footnotes[String(id)] = { children: paragraphs };
+    }
+  } finally {
+    ctx.nextParagraphIsFirst = previousFirstParagraph;
+    ctx.inFootnote = wasInFootnote;
+  }
+  return footnotes;
+}
+
+type ImageDocProperties = {
+  name: string;
+  description?: string;
+  title?: string;
+};
+
+/** Markdown 图片的 alt/title → Word 图片对象属性；空值不生成占位属性。 */
+function imageDocProperties(node: PMNode): ImageDocProperties | undefined {
+  const description = String((node.attrs ?? {}).alt ?? "").trim();
+  const title = String((node.attrs ?? {}).title ?? "").trim();
+  if (!description && !title) return undefined;
+  return {
+    name: IMAGE_DOC_PROPERTIES_NAME,
+    ...(description ? { description } : {}),
+    ...(title ? { title } : {}),
+  };
+}
+
+/** HTML <img alt/title> → Word 图片对象属性。 */
+function htmlImageDocProperties(
+  element: Element
+): ImageDocProperties | undefined {
+  const description = (element.getAttribute("alt") ?? "").trim();
+  const title = (element.getAttribute("title") ?? "").trim();
+  if (!description && !title) return undefined;
+  return {
+    name: IMAGE_DOC_PROPERTIES_NAME,
+    ...(description ? { description } : {}),
+    ...(title ? { title } : {}),
+  };
+}
+
+/** 只包含一个图片的段落按 Pandoc 的独立 Figure 语义处理。 */
+function standaloneImage(node: PMNode): PMNode | null {
+  if (node.childCount !== 1) return null;
+  const child = node.firstChild;
+  return child?.type.name === "image" ? child : null;
+}
+
+/** Pandoc 表格题注语法：紧跟在表格后的 `: caption` 段落。 */
+function tableCaptionText(node: PMNode): string | null {
+  if (node.type.name !== "paragraph") return null;
+  const match = node.textContent.match(/^\s*:\s+(.+)$/s);
+  return match?.[1].trim() || null;
+}
+
 async function convertBlocks(parent: PMNode, ctx: ExportContext): Promise<BlockChild[]> {
+  const previousFirstParagraph = ctx.nextParagraphIsFirst;
+  ctx.nextParagraphIsFirst = true;
   const out: BlockChild[] = [];
   for (let i = 0; i < parent.childCount; i += 1) {
-    out.push(...(await convertBlock(parent.child(i), ctx)));
+    const node = parent.child(i);
+    out.push(...(await convertBlock(node, ctx)));
+    if (node.type.name !== "table" || i + 1 >= parent.childCount) continue;
+    const caption = tableCaptionText(parent.child(i + 1));
+    if (!caption) continue;
+    out.push(
+      new Paragraph({
+        style: TABLE_CAPTION_STYLE,
+        children: [new TextRun({ text: caption })],
+      })
+    );
+    i += 1;
   }
+  ctx.nextParagraphIsFirst = previousFirstParagraph;
   return out;
+}
+
+/** 消费 Pandoc 的 First Paragraph 标记，并选择正文段落样式。 */
+function takeBodyParagraphStyle(
+  ctx: ExportContext
+): "FirstParagraph" | "BodyText" | typeof FOOTNOTE_TEXT_STYLE {
+  const style = ctx.inFootnote
+    ? FOOTNOTE_TEXT_STYLE
+    : ctx.nextParagraphIsFirst
+      ? "FirstParagraph"
+      : "BodyText";
+  ctx.nextParagraphIsFirst = false;
+  return style;
 }
 
 async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChild[]> {
   switch (node.type.name) {
     case "heading": {
       const level = clampLevel(Number(node.attrs.level) || 1);
-      return [
+      const heading = [
         new Paragraph({
           heading: level,
           children: await convertInline(node, ctx),
         }),
       ];
+      ctx.nextParagraphIsFirst = true;
+      return heading;
     }
 
-    case "paragraph":
+    case "paragraph": {
+      const image = standaloneImage(node);
+      if (image) {
+        const embedded = await embedImage(
+          String(image.attrs.src ?? ""),
+          imageDocProperties(image)
+        );
+        if (embedded) {
+          const caption = String(image.attrs.alt ?? "").trim();
+          const imageParagraph = new Paragraph({
+            style: caption
+              ? CAPTIONED_FIGURE_STYLE
+              : takeBodyParagraphStyle(ctx),
+            alignment: paragraphAlignment(node),
+            children: [embedded],
+          });
+          if (!caption) return [imageParagraph];
+          ctx.nextParagraphIsFirst = false;
+          return [
+            imageParagraph,
+            new Paragraph({
+              style: IMAGE_CAPTION_STYLE,
+              children: [new TextRun({ text: caption })],
+            }),
+          ];
+        }
+      }
       return [
         new Paragraph({
+          style: takeBodyParagraphStyle(ctx),
           // 段落里嵌着 <center> 的行内 HTML 时整段居中（此前只在 default 分支
           // 判定，而 paragraph 有独立分支，导致居中判定根本执行不到）
           alignment: paragraphAlignment(node),
           children: await convertInline(node, ctx),
         }),
       ];
+    }
 
     case "blockquote": {
       const out: BlockChild[] = [];
@@ -548,7 +1122,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
         if (inline.length === 0) return;
         out.push(
           new Paragraph({
-            style: "Blockquote",
+            style: ctx.inFootnote ? FOOTNOTE_BLOCK_TEXT_STYLE : "BlockText",
             children: inline,
           })
         );
@@ -587,6 +1161,8 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       return [
         new Paragraph({
           style: "SourceCode",
+          // docx 库中 true 会写成 <w:wordWrap w:val="0"/>，即关闭自动换行。
+          wordWrap: true,
           children,
         }),
       ];
@@ -595,14 +1171,10 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     case "table": {
       const rows: TableRow[] = [];
       const columnCount = Math.max(1, node.firstChild?.childCount ?? 0);
-      const baseColumnWidth = Math.floor(PAGE_CONTENT_W / columnCount);
-      const columnWidths = Array.from(
-        { length: columnCount },
-        (_, index) =>
-          index === columnCount - 1
-            ? PAGE_CONTENT_W - baseColumnWidth * (columnCount - 1)
-            : baseColumnWidth
-      );
+      const sourceColumnWidths = explicitTableColumnWidths(node, columnCount);
+      const columnWidths = sourceColumnWidths
+        ? scaleTableColumnWidths(sourceColumnWidths, PAGE_CONTENT_W)
+        : null;
       for (let r = 0; r < node.childCount; r += 1) {
         const rowNode = node.child(r);
         const cells: TableCell[] = [];
@@ -613,12 +1185,9 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
           const paragraphNode = cellNode.firstChild;
           cells.push(
             new TableCell({
-              width: {
-                size: columnWidths[c] ?? baseColumnWidth,
-                type: WidthType.DXA,
-              },
               children: [
                 new Paragraph({
+                  style: "Compact",
                   alignment: tableCellAlignment(cellNode),
                   children:
                     paragraphNode?.type.name === "paragraph"
@@ -626,6 +1195,14 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
                       : [],
                 }),
               ],
+              ...(columnWidths
+                ? {
+                    width: {
+                      size: columnWidths[c] ?? 1,
+                      type: WidthType.DXA,
+                    },
+                  }
+                : {}),
             })
           );
         }
@@ -634,16 +1211,21 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       return [
         new Table({
           rows,
-          width: { size: PAGE_CONTENT_W, type: WidthType.DXA },
-          columnWidths,
-          layout: TableLayoutType.FIXED,
+          width: columnWidths ? WORD_TABLE_FULL_WIDTH : WORD_TABLE_AUTO_WIDTH,
+          ...(columnWidths
+            ? { columnWidths, layout: TableLayoutType.FIXED }
+            : {}),
           indent: { size: 0, type: WidthType.DXA },
+          margins: WORD_TABLE_CELL_MARGINS,
         }),
       ];
     }
 
     case "image": {
-      const embedded = await embedImage(String(node.attrs.src ?? ""));
+      const embedded = await embedImage(
+        String(node.attrs.src ?? ""),
+        imageDocProperties(node)
+      );
       if (embedded) return [new Paragraph({ children: [embedded] })];
       const label = String(node.attrs.alt ?? "") || "图片";
       return [
@@ -713,10 +1295,19 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       return await htmlBlockToParagraphs(value);
     }
 
+    case "footnote_definition": {
+      const label = footnoteLabel(node);
+      // 被引用的定义会进入 Word 原生脚注区；孤立定义继续按普通段落保留，
+      // 避免沿用编辑器“未引用定义不显示”的规则而静默丢内容。
+      if (label && ctx.referencedFootnoteLabels.has(label)) return [];
+      return convertBlocks(node, ctx);
+    }
+
     default: {
       if (node.isTextblock) {
         return [
           new Paragraph({
+            style: takeBodyParagraphStyle(ctx),
             // 段落里嵌着 <center> 的行内 HTML 时整段居中
             alignment: paragraphAlignment(node),
             children: await convertInline(node, ctx),
@@ -749,6 +1340,7 @@ type HtmlMark = {
   u?: boolean;
   s?: boolean;
   code?: boolean;
+  link?: boolean;
 };
 
 /** HtmlMark → TextRun 样式选项 */
@@ -759,6 +1351,7 @@ function htmlMarkOptions(m: HtmlMark): TextRunOptions {
     underline: m.u ? {} : undefined,
     strike: m.s || undefined,
     font: m.code ? CODE_FONTS : undefined,
+    style: m.link ? "Hyperlink" : undefined,
   };
 }
 
@@ -793,7 +1386,9 @@ async function htmlInlineChildren(node: Node, m: HtmlMark): Promise<InlineChild[
     // 节点，会被整张丢掉（Word 里只剩文字）。
     if (tag === "IMG") {
       const src = el.getAttribute("src") ?? "";
-      const embedded = src ? await embedImage(src) : null;
+      const embedded = src
+        ? await embedImage(src, htmlImageDocProperties(el))
+        : null;
       if (embedded) out.push(embedded);
       continue;
     }
@@ -811,6 +1406,7 @@ async function htmlInlineChildren(node: Node, m: HtmlMark): Promise<InlineChild[
     if (tag === "A") {
       const href = el.getAttribute("href");
       if (href) {
+        next.link = true;
         const inner = (await htmlInlineChildren(el, next)).filter(
           (c): c is TextRun => c instanceof TextRun
         );
@@ -863,6 +1459,21 @@ async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
         await walk(el, AlignmentType.CENTER);
         continue;
       }
+      if (tag === "DL") {
+        flush();
+        for (const item of Array.from(el.children)) {
+          const itemTag = item.tagName.toUpperCase();
+          if (itemTag !== "DT" && itemTag !== "DD") continue;
+          out.push(
+            new Paragraph({
+              style: itemTag === "DT" ? DEFINITION_TERM_STYLE : DEFINITION_STYLE,
+              alignment: align,
+              children: await htmlInlineChildren(item, {}),
+            })
+          );
+        }
+        continue;
+      }
       if (HTML_BLOCK_TAGS.has(tag)) {
         flush();
         await walk(el, align);
@@ -875,7 +1486,9 @@ async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
       if (tag === "IMG") {
         flush();
         const src = el.getAttribute("src") ?? "";
-        const embedded = src ? await embedImage(src) : null;
+        const embedded = src
+          ? await embedImage(src, htmlImageDocProperties(el))
+          : null;
         if (embedded) {
           out.push(new Paragraph({ alignment: align, children: [embedded] }));
         }
@@ -932,6 +1545,50 @@ function tableCellAlignment(node: PMNode): HtmlAlign {
   }
 }
 
+/** 读取表格所有 GFM 列的有效 colwidth；任一列缺失时返回 null。 */
+function explicitTableColumnWidths(
+  table: PMNode,
+  columnCount: number
+): number[] | null {
+  const widths: Array<number | null> = Array(columnCount).fill(null);
+  for (let rowIndex = 0; rowIndex < table.childCount; rowIndex += 1) {
+    const row = table.child(rowIndex);
+    for (let column = 0; column < row.childCount; column += 1) {
+      if (column >= columnCount) break;
+      const colwidth = row.child(column).attrs.colwidth;
+      const width = Array.isArray(colwidth) ? Number(colwidth[0]) : 0;
+      if (Number.isFinite(width) && width > 0) {
+        widths[column] = width;
+      }
+    }
+  }
+  return widths.every(
+    (width): width is number => width !== null && width > 0
+  )
+    ? widths
+    : null;
+}
+
+/** 保留编辑器中的列宽比例，并映射到 Word 页面内容宽度。 */
+function scaleTableColumnWidths(
+  sourceWidths: number[],
+  targetWidth: number
+): number[] {
+  const sourceTotal = sourceWidths.reduce((sum, width) => sum + width, 0);
+  let used = 0;
+  return sourceWidths.map((width, index) => {
+    if (index === sourceWidths.length - 1) {
+      return Math.max(1, targetWidth - used);
+    }
+    const scaled = Math.max(
+      1,
+      Math.floor((width / sourceTotal) * targetWidth)
+    );
+    used += scaled;
+    return scaled;
+  });
+}
+
 /** 列表缩进单位（twips，0.25"）；嵌套层级按 depth 累加 */
 const LIST_INDENT = 360;
 
@@ -985,6 +1642,8 @@ async function convertList(parent: PMNode, ctx: ExportContext, depth: number): P
       ? orderedMarker(i, depth)
       : bulletMarker(depth);
     let hasMarker = false;
+    let paragraphIndex = 0;
+    const compact = item.attrs.spread === false;
     for (let j = 0; j < item.childCount; j += 1) {
       const child = item.child(j);
       if (child.type.name === "paragraph") {
@@ -999,17 +1658,20 @@ async function convertList(parent: PMNode, ctx: ExportContext, depth: number): P
             leading.push(new TextRun({ text: marker, font: BODY_FONTS }));
           }
         }
+        const style = compact
+          ? "Compact"
+          : ctx.inFootnote
+            ? FOOTNOTE_TEXT_STYLE
+            : paragraphIndex === 0
+            ? "FirstParagraph"
+            : "BodyText";
+        paragraphIndex += 1;
         out.push(
           new Paragraph({
+            style,
             indent: {
               left: LIST_INDENT * (depth + 1),
               hanging: leading.length ? LIST_INDENT : 0,
-            },
-            spacing: {
-              before: 0,
-              after: 60,
-              line: 360,
-              lineRule: LineRuleType.AUTO,
             },
             children: [
               ...leading,
@@ -1059,8 +1721,23 @@ async function convertInline(parent: PMNode, ctx: ExportContext): Promise<Inline
         break;
       }
       case "image": {
-        const embedded = await embedImage(String(child.attrs.src ?? ""));
+        const embedded = await embedImage(
+          String(child.attrs.src ?? ""),
+          imageDocProperties(child)
+        );
         if (embedded) out.push(embedded);
+        break;
+      }
+      case "footnote_reference": {
+        const label = footnoteLabel(child);
+        if (!label || !ctx.footnoteDefinitions.has(label)) {
+          out.push(new TextRun({ text: `[^${label}]` }));
+          break;
+        }
+        const id = ctx.nextFootnoteId;
+        ctx.nextFootnoteId += 1;
+        ctx.footnoteReferences.push({ id, label });
+        out.push(new FootnoteReferenceRun(id));
         break;
       }
       // 行内 HTML 节点（milkdown 内置 html schema，源码存 attrs.value）。
@@ -1331,7 +2008,10 @@ function fitToPage(w: number, h: number): { width: number; height: number } {
 }
 
 /** 内嵌图片到 docx：位图直接内嵌，svg / webp / avif 先栅格化为 png，失败返回 null */
-async function embedImage(src: string): Promise<ImageRun | null> {
+async function embedImage(
+  src: string,
+  altText?: ImageDocProperties
+): Promise<ImageRun | null> {
   if (!src) return null;
   const loaded = await loadImageBytes(src);
   if (!loaded) return null;
@@ -1346,6 +2026,7 @@ async function embedImage(src: string): Promise<ImageRun | null> {
       type: "png",
       data: png.data,
       transformation: { width: png.width, height: png.height },
+      ...(altText ? { altText } : {}),
     });
   }
 
@@ -1360,6 +2041,7 @@ async function embedImage(src: string): Promise<ImageRun | null> {
       type: "png",
       data: png.data,
       transformation: { width, height },
+      ...(altText ? { altText } : {}),
     });
   }
 
@@ -1369,6 +2051,7 @@ async function embedImage(src: string): Promise<ImageRun | null> {
     type,
     data,
     transformation: { width, height },
+    ...(altText ? { altText } : {}),
   });
 }
 
@@ -1635,7 +2318,7 @@ export function centerSourceCodeText(styles: string): string {
 /** 引用正文在行盒内垂直居中；行距和段后已独立归零。 */
 export function centerBlockquoteText(styles: string): string {
   return styles.replace(
-    /(<w:style\b[^>]*w:styleId="Blockquote"[^>]*>[\s\S]*?<w:pPr>)([\s\S]*?)(<\/w:pPr>)/,
+    /(<w:style\b[^>]*w:styleId="BlockText"[^>]*>[\s\S]*?<w:pPr>)([\s\S]*?)(<\/w:pPr>)/,
     (_match, open: string, body: string, close: string) => {
       if (/<w:textAlignment\b/.test(body)) return `${open}${body}${close}`;
       return `${open}${body}<w:textAlignment w:val="center"/>${close}`;

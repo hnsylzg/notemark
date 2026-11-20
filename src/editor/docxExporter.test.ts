@@ -1,6 +1,6 @@
 import JSZip from "jszip";
-import { Schema } from "@milkdown/prose/model";
-import { describe, expect, it } from "vitest";
+import { Schema, type Node as PMNode } from "@milkdown/prose/model";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildDocx,
   buildHorizontalRuleXml,
@@ -214,6 +214,16 @@ describe("Word typography", () => {
     expect(styles).toContain('w:line="360"');
     expect(styles).toContain('w:lineRule="auto"');
     expect(styles).toContain('w:sz w:val="40"');
+    for (let level = 1; level <= 6; level += 1) {
+      const headingStyle =
+        styles.match(
+          new RegExp(
+            `<w:style\\b[^>]*w:styleId="Heading${level}"[^>]*>[\\s\\S]*?<\\/w:style>`
+          )
+        )?.[0] ?? "";
+      expect(headingStyle).toContain('w:line="240"');
+      expect(headingStyle).toContain('w:lineRule="auto"');
+    }
     const tocHeadingStyle =
       styles.match(
         /<w:style\b[^>]*w:styleId="TOC"[^>]*>[\s\S]*?<\/w:style>/
@@ -231,17 +241,22 @@ describe("Word typography", () => {
     expect(toc2Style).toContain('<w:tab w:val="right" w:pos="9026" w:leader="dot"/>');
     const blockquoteStyle =
       styles.match(
-        /<w:style\b[^>]*w:styleId="Blockquote"[^>]*>[\s\S]*?<\/w:style>/
+        /<w:style\b[^>]*w:styleId="BlockText"[^>]*>[\s\S]*?<\/w:style>/
       )?.[0] ?? "";
+    expect(blockquoteStyle).toContain('<w:basedOn w:val="BodyText"/>');
     expect(blockquoteStyle).toContain('<w:textAlignment w:val="center"/>');
     expect(blockquoteStyle).toContain('w:color="FFFFFF"');
     expect(blockquoteStyle).toContain('w:space="6"');
-    expect(blockquoteStyle).toContain('w:after="0"');
+    expect(blockquoteStyle).toContain('w:after="100"');
+    expect(blockquoteStyle).toContain('w:before="100"');
     expect(blockquoteStyle).toContain('w:line="240"');
+    expect(blockquoteStyle).toContain('w:left="482"');
+    expect(blockquoteStyle).toContain('w:right="482"');
+    expect(blockquoteStyle).toContain('w:firstLine="0"');
+    expect(blockquoteStyle).toContain('w:firstLineChars="0"');
 
     expect(styles).toContain('w:styleId="SourceCode"');
     expect(styles).toContain('w:ascii="Consolas"');
-    expect(styles).toContain('w:line="320"');
     expect(styles).toContain('w:lineRule="auto"');
     expect(styles).toContain('w:fill="F5F5F5"');
     expect(styles).toContain('w:space="6"');
@@ -250,11 +265,18 @@ describe("Word typography", () => {
       styles.match(
         /<w:style\b[^>]*w:styleId="SourceCode"[^>]*>[\s\S]*?<\/w:style>/
       )?.[0] ?? "";
-    expect(sourceCodeStyle).toContain('<w:ind w:left="200" w:right="200"/>');
-    expect(styles).toContain('<w:textAlignment w:val="center"/>');
+    expect(sourceCodeStyle).toContain('<w:basedOn w:val="BodyText"/>');
+    expect(sourceCodeStyle).toContain(
+      '<w:ind w:left="200" w:right="200" w:firstLine="0" w:firstLineChars="0"/>'
+    );
+    expect(sourceCodeStyle).toContain('w:firstLine="0"');
+    expect(sourceCodeStyle).toContain('w:firstLineChars="0"');
+    expect(sourceCodeStyle).not.toContain("<w:spacing");
+    expect(sourceCodeStyle).toContain('<w:textAlignment w:val="center"/>');
     expect(documentXml).toContain('<w:pStyle w:val="SourceCode"/>');
+    expect(documentXml).toContain('<w:wordWrap w:val="0"/>');
     expect(
-      documentXml.match(/<w:pStyle w:val="Blockquote"\/>/g)
+      documentXml.match(/<w:pStyle w:val="BlockText"\/>/g)
     ).toHaveLength(1);
     expect(documentXml.match(/<w:br\/>/g)).toHaveLength(2);
     expect(documentXml).toContain("<w:br/>");
@@ -266,6 +288,7 @@ describe("Word table alignment", () => {
   it("maps every GFM cell alignment to the Word paragraph", async () => {
     const cellAttrs = {
       alignment: { default: "left" },
+      colwidth: { default: null },
     };
     const schema = new Schema({
       nodes: {
@@ -301,8 +324,17 @@ describe("Word table alignment", () => {
         },
       },
     });
-    const cell = (type: "table_header" | "table_cell", text: string, alignment: string) =>
-      schema.node(type, { alignment }, schema.node("paragraph", null, schema.text(text)));
+    const cell = (
+      type: "table_header" | "table_cell",
+      text: string,
+      alignment: string,
+      colwidth: number | null = null
+    ) =>
+      schema.node(
+        type,
+        { alignment, colwidth: colwidth ? [colwidth] : null },
+        schema.node("paragraph", null, schema.text(text))
+      );
     const doc = schema.node("doc", null, [
       schema.node("table", null, [
         schema.node("table_header_row", null, [
@@ -320,18 +352,546 @@ describe("Word table alignment", () => {
     const bytes = await buildDocx({ doc, viewDom: null });
     const zip = await JSZip.loadAsync(bytes);
     const documentXml = await zip.file("word/document.xml")!.async("string");
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
 
     expect(documentXml).toContain("<w:tbl>");
-    expect(documentXml).toContain('<w:tblW w:type="dxa" w:w="9026"/>');
-    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>');
+    expect(documentXml).toContain('<w:tblW w:type="auto" w:w="0"/>');
+    expect(documentXml).not.toContain("<w:tblLayout");
+    expect(documentXml).not.toContain("<w:tcW");
+    expect(documentXml).toContain(
+      '<w:tblCellMar><w:top w:type="dxa" w:w="0"/><w:left w:type="dxa" w:w="108"/><w:bottom w:type="dxa" w:w="0"/><w:right w:type="dxa" w:w="108"/></w:tblCellMar>'
+    );
     expect(
-      documentXml.match(/<w:tcW w:type="dxa" w:w="3008"\/>/g)
-    ).toHaveLength(4);
-    expect(
-      documentXml.match(/<w:tcW w:type="dxa" w:w="3010"\/>/g)
-    ).toHaveLength(2);
+      documentXml.match(/<w:pStyle w:val="Compact"\/>/g)
+    ).toHaveLength(6);
+    const tableCellStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="Compact"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+    expect(tableCellStyle).toContain('<w:basedOn w:val="BodyText"/>');
+    expect(tableCellStyle).toContain(
+      '<w:spacing w:after="36" w:before="36" w:line="240" w:lineRule="auto"/>'
+    );
+    expect(tableCellStyle).toContain('w:firstLine="0"');
+    expect(tableCellStyle).toContain('w:firstLineChars="0"');
     expect(documentXml.match(/<w:jc w:val="left"\/>/g)).toHaveLength(2);
     expect(documentXml.match(/<w:jc w:val="center"\/>/g)).toHaveLength(2);
     expect(documentXml.match(/<w:jc w:val="right"\/>/g)).toHaveLength(2);
+  });
+
+  it("uses explicit ProseMirror column widths when all columns provide them", async () => {
+    const cellAttrs = {
+      alignment: { default: "left" },
+      colwidth: { default: null },
+    };
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        table: {
+          group: "block",
+          content: "table_header_row table_row+",
+          toDOM: () => ["table", 0],
+        },
+        table_header_row: {
+          content: "(table_header)*",
+          toDOM: () => ["tr", 0],
+        },
+        table_row: {
+          content: "(table_cell)*",
+          toDOM: () => ["tr", 0],
+        },
+        table_header: {
+          content: "paragraph",
+          attrs: cellAttrs,
+          toDOM: () => ["th", 0],
+        },
+        table_cell: {
+          content: "paragraph",
+          attrs: cellAttrs,
+          toDOM: () => ["td", 0],
+        },
+      },
+    });
+    const cell = (
+      type: "table_header" | "table_cell",
+      text: string,
+      colwidth: number
+    ) =>
+      schema.node(
+        type,
+        { alignment: "left", colwidth: [colwidth] },
+        schema.node("paragraph", null, schema.text(text))
+      );
+    const doc = schema.node("doc", null, [
+      schema.node("table", null, [
+        schema.node("table_header_row", null, [
+          cell("table_header", "短", 200),
+          cell("table_header", "长", 600),
+        ]),
+        schema.node("table_row", null, [
+          cell("table_cell", "A", 200),
+          cell("table_cell", "B", 600),
+        ]),
+      ]),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    expect(documentXml).toContain('<w:tblW w:type="pct" w:w="100%"/>');
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>');
+    expect(documentXml).toContain('<w:gridCol w:w="2256"/>');
+    expect(documentXml).toContain('<w:gridCol w:w="6770"/>');
+    expect(
+      documentXml.match(/<w:tcW w:type="dxa" w:w="2256"\/>/g)
+    ).toHaveLength(2);
+    expect(
+      documentXml.match(/<w:tcW w:type="dxa" w:w="6770"\/>/g)
+    ).toHaveLength(2);
+  });
+});
+
+describe("Word Pandoc semantic styles", () => {
+  it("uses the reference hyperlink style without an underline", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+      },
+      marks: {
+        link: {
+          attrs: { href: { default: "" } },
+          toDOM: () => ["a", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.text("示例链接", [
+          schema.marks.link.create({ href: "https://example.com" }),
+        ]),
+      ]),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    const hyperlinkStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="Hyperlink"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+
+    expect(documentXml).toContain('<w:rStyle w:val="Hyperlink"/>');
+    expect(hyperlinkStyle).toContain('<w:color w:val="156082"/>');
+    expect(hyperlinkStyle).toContain('<w:u w:val="none"/>');
+  });
+
+  it("exports YAML abstracts with Pandoc abstract styles", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        yaml: {
+          group: "block",
+          atom: true,
+          attrs: { value: { default: "" } },
+          toDOM: () => ["div"],
+        },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("yaml", {
+        value:
+          "title: 不改标题\nabstract-title: 摘要\nabstract: |\n  第一段摘要。\n\n  第二段摘要。",
+      }),
+      schema.node("paragraph", null, schema.text("正文")),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    expect(documentXml).toContain('<w:pStyle w:val="AbstractTitle"/>');
+    expect(documentXml).toContain('<w:pStyle w:val="Abstract"/>');
+    expect(documentXml).toContain("第一段摘要。");
+    expect(documentXml).toContain("第二段摘要。");
+    expect(documentXml).toContain('<w:pStyle w:val="FirstParagraph"/>');
+    expect(documentXml).not.toContain("不改标题");
+  });
+
+  it("exports standalone images with Pandoc figure and caption semantics", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        image: {
+          group: "inline",
+          inline: true,
+          atom: true,
+          attrs: {
+            src: { default: "" },
+            alt: { default: "" },
+            title: { default: "" },
+          },
+          toDOM: () => ["img"],
+        },
+      },
+    });
+    const png =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2lS8AAAAASUVORK5CYII=";
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.node("image", {
+          src: png,
+          alt: "图片说明",
+          title: "图片标题",
+        }),
+      ]),
+    ]);
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 1;
+        naturalHeight = 1;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      }
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:notemark-image");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    const imageCaptionStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="ImageCaption"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+
+    expect(documentXml).toContain('<w:pStyle w:val="CaptionedFigure"/>');
+    expect(documentXml).toContain('<w:pStyle w:val="ImageCaption"/>');
+    expect(documentXml).toContain('<w:t xml:space="preserve">图片说明</w:t>');
+    expect(documentXml).toMatch(
+      /<wp:docPr[^>]*descr="图片说明"[^>]*title="图片标题"/
+    );
+    expect(imageCaptionStyle).toContain('<w:basedOn w:val="Caption"/>');
+    expect(imageCaptionStyle).toContain("<w:vanish/>");
+  });
+
+  it("maps Pandoc table captions and HTML definition lists", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        table: {
+          group: "block",
+          content: "table_header_row table_row+",
+          toDOM: () => ["table", 0],
+        },
+        table_header_row: {
+          content: "(table_header)*",
+          toDOM: () => ["tr", 0],
+        },
+        table_row: {
+          content: "(table_cell)*",
+          toDOM: () => ["tr", 0],
+        },
+        table_header: {
+          content: "paragraph",
+          toDOM: () => ["th", 0],
+        },
+        table_cell: {
+          content: "paragraph",
+          toDOM: () => ["td", 0],
+        },
+        htmlBlock: {
+          group: "block",
+          atom: true,
+          attrs: { value: { default: "" } },
+          toDOM: () => ["div"],
+        },
+      },
+    });
+    const cell = (
+      type: "table_header" | "table_cell",
+      value: string
+    ) =>
+      schema.node(type, null, [
+        schema.node("paragraph", null, schema.text(value)),
+      ]);
+    const doc = schema.node("doc", null, [
+      schema.node("table", null, [
+        schema.node("table_header_row", null, [
+          cell("table_header", "列"),
+        ]),
+        schema.node("table_row", null, [cell("table_cell", "值")]),
+      ]),
+      schema.node("paragraph", null, schema.text(": 表格说明")),
+      schema.node("htmlBlock", {
+        value: "<dl><dt>术语</dt><dd>定义内容</dd></dl>",
+      }),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    const tableCaptionStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="TableCaption"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+    const definitionTermStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="DefinitionTerm"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+
+    expect(documentXml).toContain('<w:pStyle w:val="TableCaption"/>');
+    expect(documentXml).toContain("表格说明");
+    expect(documentXml).toContain('<w:pStyle w:val="DefinitionTerm"/>');
+    expect(documentXml).toContain('<w:pStyle w:val="Definition"/>');
+    expect(documentXml).toContain("术语");
+    expect(documentXml).toContain("定义内容");
+    expect(tableCaptionStyle).toContain('<w:basedOn w:val="Caption"/>');
+    expect(tableCaptionStyle).toContain("<w:keepNext/>");
+    expect(definitionTermStyle).toContain('<w:basedOn w:val="Normal"/>');
+    expect(definitionTermStyle).toContain("<w:b/>");
+  });
+});
+
+describe("Word footnotes", () => {
+  it("exports native footnotes with Pandoc footnote and block text styles", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        blockquote: {
+          group: "block",
+          content: "paragraph+",
+          toDOM: () => ["blockquote", 0],
+        },
+        footnote_reference: {
+          group: "inline",
+          inline: true,
+          atom: true,
+          attrs: { label: { default: "" } },
+          toDOM: () => ["sup", 0],
+        },
+        footnote_definition: {
+          group: "block",
+          content: "block+",
+          attrs: { label: { default: "" } },
+          toDOM: () => ["dl", 0],
+        },
+      },
+    });
+    const paragraph = (...children: PMNode[]) =>
+      schema.node("paragraph", null, children);
+    const text = (value: string) => schema.text(value);
+    const reference = (label: string) =>
+      schema.node("footnote_reference", { label });
+    const definition = (label: string, blocks: ReturnType<typeof paragraph>[]) =>
+      schema.node("footnote_definition", { label }, blocks);
+    const doc = schema.node("doc", null, [
+      paragraph(text("正文"), reference("first"), text(" 未定义 "), reference("missing")),
+      definition("first", [paragraph(text("普通脚注"))]),
+      paragraph(
+        text("重复引用"),
+        reference("first"),
+        text("和块级脚注"),
+        reference("blocks")
+      ),
+      definition("blocks", [
+        paragraph(text("脚注第一段")),
+        schema.node("blockquote", null, [paragraph(text("脚注引用"))]),
+        paragraph(text("脚注末段")),
+      ]),
+      definition("orphan", [paragraph(text("孤立定义仍保留"))]),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    const footnotesXml = await zip.file("word/footnotes.xml")!.async("string");
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    const footnoteBlockStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="FootnoteBlockText"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+    const footnoteTextStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="FootnoteText"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+
+    expect(documentXml.match(/<w:footnoteReference w:id="\d+"\/>/g)).toHaveLength(3);
+    expect(documentXml).toContain("[^missing]");
+    expect(documentXml).toContain("孤立定义仍保留");
+    expect(documentXml).not.toContain("普通脚注");
+    expect(documentXml).not.toContain("脚注第一段");
+    expect(documentXml).not.toContain("脚注引用");
+    expect(documentXml).not.toContain("脚注末段");
+
+    expect(footnotesXml.match(/<w:footnote w:id="[1-9]\d*">/g)).toHaveLength(3);
+    expect(footnotesXml.match(/<w:pStyle w:val="FootnoteText"\/>/g)).toHaveLength(4);
+    expect(footnotesXml.match(/<w:pStyle w:val="FootnoteBlockText"\/>/g)).toHaveLength(1);
+    expect(footnotesXml).toContain('w:rStyle w:val="FootnoteReference"');
+    expect(footnotesXml).not.toContain("孤立定义仍保留");
+
+    expect(footnoteTextStyle).toContain('<w:basedOn w:val="Normal"/>');
+    expect(footnoteTextStyle).toContain(
+      '<w:spacing w:after="200" w:before="0" w:line="240" w:lineRule="auto"/>'
+    );
+    expect(footnoteBlockStyle).toContain('<w:basedOn w:val="FootnoteText"/>');
+    expect(footnoteBlockStyle).toContain(
+      '<w:spacing w:after="100" w:before="100" w:line="240" w:lineRule="auto"/>'
+    );
+    expect(footnoteBlockStyle).toContain(
+      '<w:ind w:left="480" w:right="480" w:firstLine="0" w:firstLineChars="0"/>'
+    );
+  });
+});
+
+describe("Word body paragraph styles", () => {
+  it("uses First Paragraph at document and section starts, then Body Text", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        heading: {
+          group: "block",
+          content: "inline*",
+          attrs: { level: { default: 1 } },
+          toDOM: () => ["h1", 0],
+        },
+      },
+    });
+    const paragraph = (text: string) =>
+      schema.node("paragraph", null, schema.text(text));
+    const doc = schema.node("doc", null, [
+      paragraph("首段"),
+      paragraph("第二段"),
+      schema.node("heading", { level: 1 }, schema.text("标题")),
+      paragraph("标题后首段"),
+      paragraph("标题后第二段"),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    const paragraphStyles = [
+      ...documentXml.matchAll(/<w:pStyle w:val="([^"]+)"\/>/g),
+    ].map((match) => match[1]);
+
+    expect(paragraphStyles).toEqual([
+      "FirstParagraph",
+      "BodyText",
+      "Heading1",
+      "FirstParagraph",
+      "BodyText",
+    ]);
+    expect(stylesXml).toContain(
+      '<w:style w:type="paragraph" w:styleId="BodyText">'
+    );
+    const bodyTextStyle =
+      stylesXml.match(
+        /<w:style\b[^>]*w:styleId="BodyText"[^>]*>[\s\S]*?<\/w:style>/
+      )?.[0] ?? "";
+    expect(bodyTextStyle).toContain(
+      '<w:spacing w:after="180" w:before="180" w:line="240" w:lineRule="auto"/>'
+    );
+    expect(bodyTextStyle).not.toContain("<w:ind");
+    expect(stylesXml).toContain(
+      '<w:style w:type="paragraph" w:styleId="FirstParagraph">'
+    );
+    expect(stylesXml).toContain(
+      '<w:basedOn w:val="BodyText"/><w:next w:val="BodyText"/>'
+    );
+  });
+});
+
+describe("Word list paragraph styles", () => {
+  it("uses Compact for tight lists and body styles for loose lists", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        bullet_list: {
+          group: "block",
+          content: "list_item+",
+          toDOM: () => ["ul", 0],
+        },
+        list_item: {
+          content: "paragraph+",
+          attrs: { spread: { default: true } },
+          toDOM: () => ["li", 0],
+        },
+      },
+    });
+    const paragraph = (text: string) =>
+      schema.node("paragraph", null, schema.text(text));
+    const item = (text: string, spread: boolean) =>
+      schema.node("list_item", { spread }, paragraph(text));
+    const list = (spread: boolean) =>
+      schema.node("bullet_list", null, [
+        item("一", spread),
+        item("二", spread),
+      ]);
+    const doc = schema.node("doc", null, [list(false), list(true)]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    const paragraphStyles = [
+      ...documentXml.matchAll(/<w:pStyle w:val="([^"]+)"\/>/g),
+    ].map((match) => match[1]);
+
+    expect(paragraphStyles).toEqual([
+      "Compact",
+      "Compact",
+      "FirstParagraph",
+      "FirstParagraph",
+    ]);
   });
 });
