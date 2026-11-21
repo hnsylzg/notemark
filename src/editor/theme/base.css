@@ -147,7 +147,43 @@
   user-select: text;
   cursor: text;
 }
-
+:where(.milkdown .editor) input.mt-footnote-label-source {
+  box-sizing: border-box;
+  field-sizing: content;
+  min-width: 1ch;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+:where(.milkdown .editor)
+  dl[data-type="footnote_definition"]
+  {
+  position: relative;
+  --mt-footnote-edge-hit-inline: 0.2em;
+  --mt-footnote-edge-hit-block: 0.15em;
+}
+:where(.milkdown .editor)
+  dl[data-type="footnote_definition"]
+  dt {
+  position: relative;
+}
+:where(.milkdown .editor)
+  dl[data-type="footnote_definition"]::before {
+  content: "";
+  position: absolute;
+  cursor: text;
+  left: calc(-1 * var(--mt-footnote-edge-hit-inline));
+  width: var(--mt-footnote-edge-hit-inline);
+  top: calc(-1 * var(--mt-footnote-edge-hit-block));
+  bottom: calc(-1 * var(--mt-footnote-edge-hit-block));
+}
 .mt-inline-source-preview--strong {
   font-weight: 700;
 }

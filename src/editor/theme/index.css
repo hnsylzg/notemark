@@ -438,7 +438,7 @@ body,
 .milkdown .editor sup[data-type="footnote_reference"] {
   color: var(--mt-color-primary);
   font-weight: 600;
-  cursor: pointer;
+  cursor: text;
   padding: 0 1px;
 }
 .milkdown .editor sup[data-type="footnote_reference"]:hover {
@@ -446,7 +446,7 @@ body,
 }
 /* 覆盖上面 dt 的 color: var(--mt-text)：编号可点，跳回正文引用 */
 .milkdown .editor dl[data-type="footnote_definition"] dt {
-  cursor: pointer;
+  cursor: text;
   color: var(--mt-color-primary);
 }
 .milkdown .editor dl[data-type="footnote_definition"] dt:hover {

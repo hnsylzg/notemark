@@ -18,7 +18,11 @@
  * 重排——插入时按「全文最大编号 + 1」分配，天然不与已有脚注重复。
  */
 import { $prose, $view } from "@milkdown/utils";
-import { Plugin, TextSelection } from "@milkdown/prose/state";
+import {
+  Plugin,
+  Selection,
+  TextSelection,
+} from "@milkdown/prose/state";
 import type {
   EditorView,
   NodeViewConstructor,
@@ -32,11 +36,236 @@ import {
 /** preset-gfm 内置脚注节点在 ProseMirror schema 里的名字 */
 const REF = "footnote_reference";
 const DEF = "footnote_definition";
+const FOOTNOTE_POINTER_EDGE_EM = 0.2;
 
 /** 查找到的脚注节点（文档位置 + 节点本身） */
 interface FootnoteHit {
   pos: number;
   node: PMNode;
+}
+
+type FootnoteLabelOpener = (
+  keyboardEntry?: boolean,
+  fromLeft?: boolean
+) => void;
+
+const footnoteLabelOpeners = new WeakMap<
+  HTMLElement,
+  FootnoteLabelOpener
+>();
+
+interface ContentLineBox {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+function contentLineRects(element: HTMLElement): ContentLineBox[] {
+  const range = element.ownerDocument.createRange();
+  range.selectNodeContents(element);
+  let rects: DOMRect[] = [];
+  try {
+    rects = Array.from(range.getClientRects());
+  } catch {
+    rects = Array.from(element.getClientRects());
+  } finally {
+    range.detach();
+  }
+  if (rects.length === 0) {
+    rects = Array.from(element.getClientRects());
+  }
+  const fragments = rects
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: ContentLineBox[] = [];
+  for (const rect of fragments) {
+    const line = lines[lines.length - 1];
+    const overlap = line
+      ? Math.min(line.bottom, rect.bottom) -
+        Math.max(line.top, rect.top)
+      : 0;
+    const centerDistance = line
+      ? Math.abs(
+          (line.top + line.bottom) / 2 -
+            (rect.top + rect.bottom) / 2
+        )
+      : Number.POSITIVE_INFINITY;
+    if (
+      line &&
+      (overlap > 0 ||
+        centerDistance <
+          Math.min(line.height, rect.height) / 2)
+    ) {
+      const left = Math.min(line.left, rect.left);
+      const right = Math.max(line.right, rect.right);
+      const top = Math.min(line.top, rect.top);
+      const bottom = Math.max(line.bottom, rect.bottom);
+      Object.assign(line, {
+        left,
+        right,
+        top,
+        bottom,
+        width: right - left,
+        height: bottom - top,
+      });
+    } else {
+      lines.push({
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+  }
+  return lines;
+}
+
+function adjacentTextblockPosition(
+  view: EditorView,
+  from: number,
+  direction: -1 | 1
+): number | null {
+  const blocks: Array<{ from: number; to: number }> = [];
+  view.state.doc.descendants((node, pos) => {
+    if (node.isTextblock) {
+      blocks.push({ from: pos, to: pos + node.nodeSize });
+      return false;
+    }
+    return true;
+  });
+  const current = blocks.find(
+    (block) => block.from < from && from < block.to
+  );
+  if (current) {
+    const index = blocks.indexOf(current);
+    const target = blocks[index + direction];
+    return target ? target.from + 1 : null;
+  }
+  const target =
+    direction > 0
+      ? blocks.find((block) => block.from > from)
+      : [...blocks].reverse().find((block) => block.to < from);
+  return target ? target.from + 1 : null;
+}
+
+function selectionAtPosition(
+  view: EditorView,
+  position: number,
+  bias: -1 | 1
+): Selection {
+  const bounded = Math.max(
+    0,
+    Math.min(position, view.state.doc.content.size)
+  );
+  const $pos = view.state.doc.resolve(bounded);
+  return $pos.parent.isTextblock
+    ? TextSelection.create(view.state.doc, bounded)
+    : TextSelection.near($pos, bias);
+}
+
+function verticalTargetAt(
+  view: EditorView,
+  source: HTMLInputElement,
+  direction: -1 | 1,
+  linePos?: number
+): { position: number; bias: -1 | 1 } | null {
+  const sourceRect = source.getBoundingClientRect();
+  let lineTop = sourceRect.top;
+  let lineBottom = sourceRect.bottom;
+  let targetLine: ContentLineBox | null = null;
+  const lineBlock =
+    typeof linePos === "number"
+      ? source.closest<HTMLElement>("p, h1, h2, h3, h4, h5, h6")
+      : null;
+  if (lineBlock) {
+    const rects = contentLineRects(lineBlock);
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let currentLine = -1;
+    const sourceCenter = (sourceRect.top + sourceRect.bottom) / 2;
+    const sourceHorizontal =
+      sourceRect.left + sourceRect.width / 2;
+    rects.forEach((rect, index) => {
+      const lineCenter = (rect.top + rect.bottom) / 2;
+      const verticalDistance = Math.abs(sourceCenter - lineCenter);
+      const horizontalDistance =
+        sourceHorizontal < rect.left
+          ? rect.left - sourceHorizontal
+          : sourceHorizontal > rect.right
+            ? sourceHorizontal - rect.right
+            : 0;
+      const score = -(verticalDistance + horizontalDistance);
+      if (score > bestScore) {
+        bestScore = score;
+        currentLine = index;
+        lineTop = rect.top;
+        lineBottom = rect.bottom;
+      }
+    });
+    targetLine = rects[currentLine + direction] ?? null;
+    if (!targetLine) {
+      const sibling =
+        direction < 0
+          ? lineBlock.previousElementSibling
+          : lineBlock.nextElementSibling;
+      if (sibling instanceof HTMLElement) {
+        const siblingRects = contentLineRects(sibling);
+        targetLine =
+          direction < 0
+            ? siblingRects[siblingRects.length - 1] ?? null
+            : siblingRects[0] ?? null;
+      }
+    }
+    if (targetLine) {
+      lineTop = targetLine.top;
+      lineBottom = targetLine.bottom;
+    }
+  }
+  const styleSource = lineBlock ?? source;
+  const style =
+    source.ownerDocument.defaultView?.getComputedStyle(styleSource);
+  const parsedLineHeight = style
+    ? Number.parseFloat(style.lineHeight)
+    : Number.NaN;
+  const lineHeight =
+    Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+      ? parsedLineHeight
+      : sourceRect.height;
+  const verticalOffset = lineHeight > 0 ? lineHeight / 2 : 0;
+  const valueLength = source.value.length;
+  const caretRatio =
+    valueLength > 0
+      ? Math.max(
+          0,
+          Math.min(1, (source.selectionStart ?? valueLength) / valueLength)
+        )
+      : 0.5;
+  const rawLeft = sourceRect.left + sourceRect.width * caretRatio;
+  const probeLeft = targetLine
+    ? Math.max(targetLine.left, Math.min(rawLeft, targetLine.right))
+    : rawLeft;
+  const hit = view.posAtCoords({
+    left: probeLeft,
+    top: targetLine
+      ? targetLine.top + targetLine.height / 2
+      : direction < 0
+        ? lineTop - verticalOffset
+        : lineBottom + verticalOffset,
+  });
+  let position = hit?.pos ?? null;
+  if (
+    typeof linePos === "number" &&
+    !targetLine
+  ) {
+    position = adjacentTextblockPosition(view, linePos, direction);
+  }
+  return position == null
+    ? null
+    : { position, bias: direction };
 }
 
 function parseFootnoteLabel(source: string, definition = false): string | null {
@@ -74,11 +303,18 @@ function updateFootnoteLabels(
 
 export const createFootnoteDefinitionView: NodeViewConstructor = (
   node,
-  view
+  view,
+  getPos
 ) => {
   const dom = document.createElement("dl");
   const dt = document.createElement("dt");
   const dd = document.createElement("dd");
+  dt.tabIndex = -1;
+  const source = document.createElement("input");
+  source.className = "mt-footnote-label-source";
+  source.type = "text";
+  source.spellcheck = false;
+  source.style.display = "none";
   dom.append(dt, dd);
   let editing = false;
 
@@ -87,36 +323,35 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     dom.dataset.type = DEF;
     dom.dataset.label = label;
     if (!editing) {
-      dt.textContent = label;
-      dt.contentEditable = "false";
+      dt.replaceChildren(document.createTextNode(label));
+      source.style.display = "none";
       dt.classList.remove("mt-footnote-source-editing");
       delete dt.dataset.mtSource;
     }
   };
   updateChrome();
 
-  const startEditing = () => {
+  const startEditing = (keyboardEntry = false, fromLeft = true) => {
     if (editing) return;
     editing = true;
-    dt.textContent = `[^${String(node.attrs.label ?? "")}]:`;
-    dt.contentEditable = "plaintext-only";
+    source.value = `[^${String(node.attrs.label ?? "")}]:`;
+    source.style.display = "inline-block";
+    dt.replaceChildren(source);
     dt.dataset.mtSource = "true";
     dt.classList.add("mt-footnote-source-editing");
     document.addEventListener("mousedown", onOutsideMouseDown, true);
     document.addEventListener("pointerdown", onOutsideMouseDown, true);
-    dt.focus();
-    const selection = dt.ownerDocument.getSelection();
-    const text = dt.firstChild;
-    if (selection && text?.nodeType === Node.TEXT_NODE) {
-      const range = dt.ownerDocument.createRange();
-      range.setStart(text, 2);
-      range.setEnd(
-        text,
-        Math.max(2, (text.textContent?.length ?? 0) - 2)
-      );
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
+    source.focus();
+    const textLength = source.value.length;
+    const start = keyboardEntry
+      ? fromLeft
+        ? 0
+        : textLength
+      : 2;
+    const end = keyboardEntry
+      ? start
+      : Math.max(2, textLength - 2);
+    source.setSelectionRange(start, end);
   };
 
   const onOutsideMouseDown = (event: MouseEvent) => {
@@ -127,7 +362,7 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     if (!editing) return;
     const previous = String(node.attrs.label ?? "");
     const next = commit
-      ? parseFootnoteLabel(dt.textContent ?? "", true)
+      ? parseFootnoteLabel(source.value, true)
       : previous;
     editing = false;
     updateChrome();
@@ -138,6 +373,38 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     document.removeEventListener("pointerdown", onOutsideMouseDown, true);
   };
 
+  const startFromPointer = (event: MouseEvent) => {
+    const rect = dt.getBoundingClientRect();
+    const fromLeft =
+      rect.width > 0 &&
+      event.clientX < rect.left;
+    startEditing(fromLeft, true);
+  };
+
+  const startFromContainerEdge = (event: MouseEvent) => {
+    if (event.button !== 0 || editing) return;
+    const target = event.target as Node | null;
+    if (!target || dt.contains(target) || dd.contains(target)) {
+      return;
+    }
+    const rect = dt.getBoundingClientRect();
+    const fontSize = Number.parseFloat(
+      dt.ownerDocument.defaultView?.getComputedStyle(dt).fontSize ?? ""
+    );
+    const edgeWidth = Number.isFinite(fontSize)
+      ? fontSize * FOOTNOTE_POINTER_EDGE_EM
+      : 0;
+    if (
+      rect.width <= 0 ||
+      event.clientX > rect.left + edgeWidth
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    startEditing(true, true);
+  };
+
   dt.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
     if (editing) {
@@ -146,15 +413,90 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     }
     event.preventDefault();
     event.stopPropagation();
-    startEditing();
+    startFromPointer(event);
   });
   dt.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (!editing) startFromPointer(event);
   });
-  dt.addEventListener("keydown", (event) => {
+  dom.addEventListener("mousedown", startFromContainerEdge);
+  dom.addEventListener("click", startFromContainerEdge);
+  source.addEventListener("mousedown", (event) => {
     event.stopPropagation();
-    if (event.key === "Enter") {
+  });
+  source.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  source.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    const caret = source.selectionStart ?? 0;
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      const direction = event.key === "ArrowUp" ? -1 : 1;
+      const pos = getPos();
+      const target = verticalTargetAt(view, source, direction);
+      finishEditing(true);
+      if (target) {
+        view.dispatch(
+          view.state.tr.setSelection(
+            selectionAtPosition(
+              view,
+              target.position,
+              target.bias
+            )
+          )
+        );
+      } else if (typeof pos === "number") {
+        const exitPos =
+          direction < 0
+            ? pos
+            : firstTextPos(view.state.doc, pos, node.nodeSize ?? 1) ??
+              pos;
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.near(
+              view.state.doc.resolve(exitPos),
+              direction
+            )
+          )
+        );
+      }
+      view.focus();
+    } else if (event.key === "ArrowLeft" && caret === 0) {
+      event.preventDefault();
+      const pos = getPos();
+      finishEditing(true);
+      if (typeof pos === "number") {
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.near(view.state.doc.resolve(pos), -1)
+          )
+        );
+      }
+      view.focus();
+    } else if (
+      event.key === "ArrowRight" &&
+      caret === source.value.length
+    ) {
+      event.preventDefault();
+      const pos = getPos();
+      finishEditing(true);
+      if (typeof pos === "number") {
+        const live = view.state.doc.nodeAt(pos);
+        const caretAt = live
+          ? firstTextPos(view.state.doc, pos, live.nodeSize)
+          : null;
+        if (caretAt != null) {
+          view.dispatch(
+            view.state.tr.setSelection(
+              TextSelection.near(view.state.doc.resolve(caretAt), 1)
+            )
+          );
+        }
+      }
+      view.focus();
+    } else if (event.key === "Enter") {
       event.preventDefault();
       finishEditing(true);
     } else if (event.key === "Escape") {
@@ -162,8 +504,8 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       finishEditing(false);
     }
   });
-  dt.addEventListener("blur", () => finishEditing(true));
-  dt.addEventListener("focusout", () => finishEditing(true));
+  source.addEventListener("blur", () => finishEditing(true));
+  footnoteLabelOpeners.set(dt, startEditing);
 
   return {
     dom,
@@ -179,6 +521,7 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     },
     destroy() {
       editing = false;
+      footnoteLabelOpeners.delete(dt);
       document.removeEventListener("mousedown", onOutsideMouseDown, true);
       document.removeEventListener("pointerdown", onOutsideMouseDown, true);
     },
@@ -192,12 +535,19 @@ export const footnoteDefinitionView = $view(
 
 export const createFootnoteReferenceView: NodeViewConstructor = (
   initialNode,
-  view
+  view,
+  getPos
 ) => {
   let node = initialNode;
   let editing = false;
   const dom = document.createElement("sup");
   dom.className = "mt-footnote-reference";
+  dom.tabIndex = -1;
+  const source = document.createElement("input");
+  source.className = "mt-footnote-label-source";
+  source.type = "text";
+  source.spellcheck = false;
+  source.style.display = "none";
 
   const render = () => {
     const label = String(node.attrs.label ?? "");
@@ -205,34 +555,33 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
     dom.dataset.label = label;
     dom.title = "脚注";
     if (!editing) {
-      dom.textContent = label;
-      dom.contentEditable = "false";
+      dom.replaceChildren(document.createTextNode(label));
+      source.style.display = "none";
       dom.classList.remove("mt-footnote-source-editing");
     }
   };
   render();
 
-  const startEditing = () => {
+  const startEditing = (keyboardEntry = false, fromLeft = true) => {
     if (editing) return;
     editing = true;
-    dom.textContent = `[^${String(node.attrs.label ?? "")}]`;
-    dom.contentEditable = "plaintext-only";
+    source.value = `[^${String(node.attrs.label ?? "")}]`;
+    source.style.display = "inline-block";
+    dom.replaceChildren(source);
     dom.classList.add("mt-footnote-source-editing");
     document.addEventListener("mousedown", onOutsideMouseDown, true);
     document.addEventListener("pointerdown", onOutsideMouseDown, true);
-    dom.focus();
-    const selection = dom.ownerDocument.getSelection();
-    const text = dom.firstChild;
-    if (selection && text?.nodeType === Node.TEXT_NODE) {
-      const range = dom.ownerDocument.createRange();
-      range.setStart(text, 2);
-      range.setEnd(
-        text,
-        Math.max(2, (text.textContent?.length ?? 0) - 1)
-      );
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
+    source.focus();
+    const textLength = source.value.length;
+    const start = keyboardEntry
+      ? fromLeft
+        ? 0
+        : textLength
+      : 2;
+    const end = keyboardEntry
+      ? start
+      : Math.max(2, textLength - 1);
+    source.setSelectionRange(start, end);
   };
 
   const onOutsideMouseDown = (event: MouseEvent) => {
@@ -242,7 +591,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
   const finishEditing = (commit: boolean) => {
     if (!editing) return;
     const previous = String(node.attrs.label ?? "");
-    const next = commit ? parseFootnoteLabel(dom.textContent ?? "") : previous;
+    const next = commit ? parseFootnoteLabel(source.value) : previous;
     editing = false;
     render();
     if (next && next !== previous) {
@@ -265,10 +614,83 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
   dom.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (!editing) startEditing();
   });
-  dom.addEventListener("keydown", (event) => {
+  source.addEventListener("mousedown", (event) => {
     event.stopPropagation();
-    if (event.key === "Enter") {
+  });
+  source.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  source.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    const caret = source.selectionStart ?? 0;
+    const textLength = source.value.length;
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      const direction = event.key === "ArrowUp" ? -1 : 1;
+      const pos = getPos();
+      const target = verticalTargetAt(
+        view,
+        source,
+        direction,
+        pos
+      );
+      finishEditing(true);
+      if (target) {
+        view.dispatch(
+          view.state.tr.setSelection(
+            selectionAtPosition(
+              view,
+              target.position,
+              target.bias
+            )
+          )
+        );
+      } else if (typeof pos === "number") {
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.near(
+              view.state.doc.resolve(
+                direction < 0 ? pos : pos + node.nodeSize
+              ),
+              direction
+            )
+          )
+        );
+      }
+      view.focus();
+    } else if (event.key === "ArrowLeft" && caret === 0) {
+      event.preventDefault();
+      const pos = getPos();
+      finishEditing(true);
+      if (typeof pos === "number") {
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.near(view.state.doc.resolve(pos), -1)
+          )
+        );
+      }
+      view.focus();
+    } else if (
+      event.key === "ArrowRight" &&
+      caret === textLength
+    ) {
+      event.preventDefault();
+      const pos = getPos();
+      finishEditing(true);
+      if (typeof pos === "number") {
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.near(
+              view.state.doc.resolve(pos + node.nodeSize),
+              1
+            )
+          )
+        );
+      }
+      view.focus();
+    } else if (event.key === "Enter") {
       event.preventDefault();
       finishEditing(true);
     } else if (event.key === "Escape") {
@@ -276,8 +698,8 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
       finishEditing(false);
     }
   });
-  dom.addEventListener("blur", () => finishEditing(true));
-  dom.addEventListener("focusout", () => finishEditing(true));
+  source.addEventListener("blur", () => finishEditing(true));
+  footnoteLabelOpeners.set(dom, startEditing);
 
   return {
     dom,
@@ -293,6 +715,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
     ignoreMutation: () => true,
     destroy() {
       editing = false;
+      footnoteLabelOpeners.delete(dom);
       document.removeEventListener("mousedown", onOutsideMouseDown, true);
       document.removeEventListener("pointerdown", onOutsideMouseDown, true);
     },
@@ -461,6 +884,117 @@ export function insertFootnote(view: EditorView): boolean {
 }
 
 /** 点上标 → 跳到文末对应定义（没有定义时给提示，不静默无反应） */
+function openFootnoteLabelEditor(
+  view: EditorView,
+  pos: number,
+  keyboardEntry: boolean,
+  fromLeft: boolean
+): boolean {
+  const dom = view.nodeDOM(pos);
+  if (!(dom instanceof HTMLElement)) return false;
+  const target =
+    dom.dataset.type === REF
+      ? dom
+      : dom.dataset.type === DEF
+        ? dom.querySelector<HTMLElement>("dt")
+        : null;
+  const opener = target
+    ? footnoteLabelOpeners.get(target)
+    : undefined;
+  if (!opener) return false;
+  opener(keyboardEntry, fromLeft);
+  return true;
+}
+
+function footnoteKeyboardTarget(
+  view: EditorView,
+  direction: -1 | 1
+): { pos: number; fromLeft: boolean } | null {
+  const { selection } = view.state;
+  if (!selection.empty) return null;
+  const { $from } = selection;
+
+  if (direction > 0) {
+    if ($from.nodeAfter?.type.name === REF) {
+      return { pos: $from.pos, fromLeft: true };
+    }
+    if ($from.nodeAfter?.type.name === DEF) {
+      return { pos: $from.pos, fromLeft: true };
+    }
+    if (
+      $from.parent.isTextblock &&
+      $from.parentOffset === $from.parent.content.size
+    ) {
+      const after = $from.after($from.depth);
+      const $after = view.state.doc.resolve(after);
+      if ($after.nodeAfter?.type.name === DEF) {
+        return { pos: $after.pos, fromLeft: true };
+      }
+    }
+    return null;
+  }
+
+  if ($from.nodeBefore?.type.name === REF) {
+    return {
+      pos: $from.pos - $from.nodeBefore.nodeSize,
+      fromLeft: false,
+    };
+  }
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (node.type.name !== DEF) continue;
+    const pos = $from.before(depth);
+    const first = firstTextPos(
+      view.state.doc,
+      pos,
+      node.nodeSize
+    );
+    return first === $from.pos
+      ? { pos, fromLeft: false }
+      : null;
+  }
+  return null;
+}
+
+function footnoteClickTarget(
+  view: EditorView,
+  pos: number
+): { pos: number; fromLeft: boolean } | null {
+  for (const candidate of [
+    Math.max(0, Math.min(pos, view.state.doc.content.size)),
+    Math.max(0, Math.min(pos - 1, view.state.doc.content.size)),
+  ]) {
+    const $pos = view.state.doc.resolve(candidate);
+    if ($pos.nodeAfter?.type.name === REF) {
+      return { pos: $pos.pos, fromLeft: true };
+    }
+    if ($pos.nodeBefore?.type.name === REF) {
+      return {
+        pos: $pos.pos - $pos.nodeBefore.nodeSize,
+        fromLeft: false,
+      };
+    }
+    if ($pos.nodeAfter?.type.name === DEF) {
+      return { pos: $pos.pos, fromLeft: true };
+    }
+    for (let depth = $pos.depth; depth > 0; depth -= 1) {
+      const node = $pos.node(depth);
+      if (node.type.name !== DEF) continue;
+      const definitionPos = $pos.before(depth);
+      const first = firstTextPos(
+        view.state.doc,
+        definitionPos,
+        node.nodeSize
+      );
+      if (first === $pos.pos) {
+        return { pos: definitionPos, fromLeft: false };
+      }
+      break;
+    }
+  }
+  return null;
+}
+
 function jumpToDefinition(view: EditorView, label: string): boolean {
   const hit = findFootnote(view.state.doc, DEF, label);
   if (!hit) {
@@ -508,10 +1042,66 @@ export function createFootnoteClickPlugin(): Plugin {
             const $pos = state.doc.resolve(safePos);
             const node = $pos.nodeAfter ?? $pos.nodeBefore;
             if (node?.type.name === REF) {
-              return jumpToDefinition(view, String(node.attrs.label ?? ""));
+              const refPos =
+                $pos.nodeAfter === node
+                  ? $pos.pos
+                  : $pos.pos - node.nodeSize;
+              if (
+                openFootnoteLabelEditor(
+                  view,
+                  refPos,
+                  false,
+                  true
+                )
+              ) {
+                return true;
+              }
+              return jumpToDefinition(
+                view,
+                String(node.attrs.label ?? "")
+              );
             }
           }
+          const fallback = footnoteClickTarget(view, pos);
+          if (
+            fallback &&
+            openFootnoteLabelEditor(
+              view,
+              fallback.pos,
+              true,
+              fallback.fromLeft
+            )
+          ) {
+            event.preventDefault();
+            return true;
+          }
           return false;
+        },
+        handleKeyDown(view, event) {
+          if (event.altKey || event.ctrlKey || event.metaKey) {
+            return false;
+          }
+          if (
+            event.key !== "ArrowLeft" &&
+            event.key !== "ArrowRight"
+          ) {
+            return false;
+          }
+          const direction = event.key === "ArrowLeft" ? -1 : 1;
+          const target = footnoteKeyboardTarget(view, direction);
+          if (
+            !target ||
+            !openFootnoteLabelEditor(
+              view,
+              target.pos,
+              true,
+              target.fromLeft
+            )
+          ) {
+            return false;
+          }
+          event.preventDefault();
+          return true;
         },
       },
   });
