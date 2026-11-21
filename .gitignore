@@ -38,6 +38,7 @@ src-tauri/gen/android/
 .playwright-cli/
 tmp-edge-profile/
 tmp-*.js
+*.notemark-bak
 
 # ---------- 环境变量 ----------
 .env

@@ -28,6 +28,11 @@ describe("HTML sanitizer", () => {
     expect(result).not.toContain("allow-top-navigation");
     expect(result).not.toContain("camera");
     expect(result).toContain("referrerpolicy=\"no-referrer\"");
+    expect(result).toContain("allowfullscreen");
+    expect(result).toContain("autoplay");
+    expect(result).toContain("encrypted-media");
+    expect(result).toContain("picture-in-picture");
+    expect(result).not.toContain("allow-same-origin");
   });
 
   it("allows same-origin requests only for Python Tutor embeds", () => {
@@ -40,8 +45,29 @@ describe("HTML sanitizer", () => {
 
     expect(pythonTutor).toContain("allow-same-origin");
     expect(pythonTutor).toContain('data-md-embed-provider="pythontutor"');
-    expect(pythonTutor).toContain("--md-iframe-height: 620px");
+    expect(pythonTutor).toContain('height="620"');
     expect(untrusted).not.toContain("allow-same-origin");
+  });
+
+  it("grants explicit media hosts the permissions required for playback", () => {
+    const youtube = sanitizeHtml(
+      '<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" width="560" height="315"></iframe>'
+    );
+    const bilibili = sanitizeHtmlBlock(
+      '<iframe src="https://player.bilibili.com/player.html?bvid=BV1GJ411x7h7" width="480" height="270"></iframe>'
+    );
+
+    for (const result of [youtube, bilibili]) {
+      expect(result).toContain("allow-scripts");
+      expect(result).toContain("allow-same-origin");
+      expect(result).toContain(
+        'referrerpolicy="strict-origin-when-cross-origin"'
+      );
+      expect(result).toContain('data-md-embed-provider="media"');
+      expect(result).toContain("allowfullscreen");
+      expect(result).toContain("encrypted-media");
+      expect(result).not.toContain("no-referrer");
+    }
   });
 
   it("sanitizes block HTML with the same frame policy", () => {
@@ -50,6 +76,24 @@ describe("HTML sanitizer", () => {
     );
     expect(result).toContain("md-iframe-wrap");
     expect(result).not.toContain("top-navigation");
+  });
+
+  it("normalizes HTML table cells to the Markdown table paragraph structure", () => {
+    const result = sanitizeHtmlBlock(
+      "<table><tbody><tr><td>张三</td><td><strong>20</strong></td></tr></tbody></table>"
+    );
+
+    expect(result).toContain("<td><p>张三</p></td>");
+    expect(result).toContain("<td><p><strong>20</strong></p></td>");
+  });
+
+  it("normalizes inline HTML blockquote content without changing block structure", () => {
+    const result = sanitizeHtmlBlock(
+      "<blockquote>普通引用</blockquote><blockquote><p>已有段落</p></blockquote>"
+    );
+
+    expect(result).toContain("<blockquote><p>普通引用</p></blockquote>");
+    expect(result).toContain("<blockquote><p>已有段落</p></blockquote>");
   });
 });
 
@@ -236,6 +280,32 @@ describe("inline HTML source editing", () => {
       expect(
         view.dom.querySelector<HTMLElement>(".mt-inline-html-source")!.hidden
       ).toBe(true);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens an inline iframe source through its floating edit button", () => {
+    const value =
+      '<iframe src="https://example.com/embed" width="480" height="270"></iframe>';
+    const { view, host } = createView(value);
+
+    try {
+      const button = view.dom.querySelector<HTMLButtonElement>(
+        ".mt-inline-html-edit"
+      )!;
+      const source = view.dom.querySelector<HTMLElement>(
+        ".mt-inline-html-source"
+      )!;
+      expect(button.hidden).toBe(false);
+
+      button.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true })
+      );
+      expect(source.hidden).toBe(false);
+      expect(source.textContent).toBe(value);
+      expect(button.hidden).toBe(true);
     } finally {
       view.destroy();
       host.remove();

@@ -41,6 +41,20 @@ describe("MathML to OMML math variants", () => {
     expect(omml).not.toContain("undefined");
   });
 
+  it("keeps layout-only logotypes as editable OMML text", () => {
+    const omml = mathMlToOmml(
+      mathMl(
+        '<mrow><mi>L</mi><mspace width="-.325em"></mspace><mpadded height="+.21em" depth="-.21em" voffset="+.21em"><mi>A</mi></mpadded><mi>T</mi><mpadded height="-.5ex" depth="+.5ex" voffset="-.5ex"><mi>E</mi></mpadded><mi>X</mi></mrow>'
+      )
+    );
+
+    const text = new DOMParser()
+      .parseFromString(omml, "application/xml")
+      .documentElement.textContent;
+    expect(text).toBe("L ATEX");
+    expect(omml).not.toContain("<m:scr");
+  });
+
   it("detects layout that cannot be represented faithfully in OMML", () => {
     const latexLogo = mathMl(
       '<mrow><mi>L</mi><mspace width="-.325em"></mspace><mpadded voffset="+.21em"><mi>A</mi></mpadded></mrow>'

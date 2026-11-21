@@ -46,7 +46,7 @@ export const htmlBlockSchema = $nodeSchema("htmlBlock", () => ({
     "",
   ],
   parseMarkdown: {
-    // 块级 html（独立成行的 <center>/<div>/<img>/<hr ...>/<table> 等）在 remark 阶段
+    // 块级 html（独立成行的 <center>/<div>/<hr ...>/<table> 等）在 remark 阶段
     // 已被 htmlBlockRemark 改写为 type "htmlBlock"；行内 html（<u>/<sub>/<span> 等）
     // 仍保持 type "html"，由内置 inline htmlSchema 处理。两者类型不同，互不抢匹配。
     // 注：Milkdown parser 用 Object.values(schema.nodes).find(match) 取第一个匹配，
@@ -287,7 +287,7 @@ export const htmlBlockView = $view(
 /*
  * htmlBlockRemark — 在 mdast 阶段把「块级 HTML」与「行内 HTML」区分开。
  *
- * 背景：remark 把独立成行的 <center>/<img>/<hr ...>/<table> 与段落内的 <u>/<sub>
+ * 背景：remark 把独立成行的 <center>/<div>/<hr ...>/<table> 与段落内的 <u>/<sub>
  * 都解析成 type:"html" 的 mdast 节点。Milkdown 的 parser 用
  * Object.values(schema.nodes).find(match) 取【第一个】match 的节点，并不读
  * priority，因此块级 / 行内无法靠 priority 分流——内置 inline html 节点总会抢先
@@ -302,7 +302,31 @@ export const htmlBlockView = $view(
 // 块级 HTML 标签：命中这些起始标签的 html 节点判定为块级（改写为 htmlBlock）。
 // 直接按标签判断，避免依赖父节点类型带来的误判。
 const BLOCK_HTML_START =
-  /^\s*<\s*(center|div|p|section|article|header|footer|nav|aside|main|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|blockquote|pre|hr|figure|figcaption|details|summary|dl|dt|dd|address|iframe|img|h[1-6]|canvas)\b/i;
+  /^\s*<\s*(center|div|p|section|article|header|footer|nav|aside|main|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|blockquote|pre|hr|figure|figcaption|details|summary|dl|dt|dd|address|h[1-6])\b/i;
+
+// 这些标签在正文中属于行内内容，但独占一个段落时应作为可编辑 HTML 块。
+const EMBED_HTML_START = /^\s*<\s*(iframe|img|canvas)\b/i;
+
+export function isBlockHtmlStart(value: string): boolean {
+  return BLOCK_HTML_START.test(value);
+}
+
+function standaloneEmbedHtml(paragraph: any): any | null {
+  if (paragraph.type !== "paragraph" || !Array.isArray(paragraph.children)) {
+    return null;
+  }
+  const meaningful = paragraph.children.filter(
+    (child: any) =>
+      child.type !== "text" || String(child.value ?? "").trim() !== ""
+  );
+  if (meaningful.length !== 1) return null;
+  const child = meaningful[0];
+  return child.type === "html" &&
+    typeof child.value === "string" &&
+    EMBED_HTML_START.test(child.value)
+    ? child
+    : null;
+}
 
 const htmlBlockRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
   const root = tree as unknown as { [k: string]: any };
@@ -320,15 +344,20 @@ const htmlBlockRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
       if (child.children && Array.isArray(child.children)) {
         child.children = liftBlockHtmlOutOfParagraphs(child.children);
       }
+      const embed = standaloneEmbedHtml(child);
+      if (embed) {
+        out.push({ ...embed, type: "htmlBlock" });
+        continue;
+      }
       // 仅当 paragraph 内混有块级 html 时才需拆分
       if (child.type === "paragraph" && Array.isArray(child.children)) {
         const hasBlock = child.children.some(
-          (c: any) => c.type === "html" && typeof c.value === "string" && BLOCK_HTML_START.test(c.value)
+          (c: any) => c.type === "html" && typeof c.value === "string" && isBlockHtmlStart(c.value)
         );
         if (hasBlock) {
           let inline: any[] = [];
           for (const c of child.children) {
-            if (c.type === "html" && typeof c.value === "string" && BLOCK_HTML_START.test(c.value)) {
+            if (c.type === "html" && typeof c.value === "string" && isBlockHtmlStart(c.value)) {
               if (inline.length > 0) {
                 out.push({ type: "paragraph", children: inline });
                 inline = [];

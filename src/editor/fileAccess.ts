@@ -3,8 +3,9 @@
  *
  * Tauri dialogs add the path the user selected to the plugin scopes, but
  * command-line files, drag/drop files, persisted workspaces and recovery
- * drafts do not pass through a dialog. The backend command below grants only
- * the exact document directory that the user explicitly opened.
+ * drafts do not pass through a dialog. The backend command below grants the
+ * exact document directory that the user explicitly opened. Folder navigation
+ * can additionally authorize that path's direct parent one level at a time.
  */
 export async function grantPathAccess(
   path: string | null | undefined,
@@ -13,6 +14,13 @@ export async function grantPathAccess(
   if (!path || !("__TAURI_INTERNALS__" in window)) return;
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("grant_path_access", { path, includeParent });
+}
+
+/** Authorize a system-enumerated root such as a Windows drive or Unix `/`. */
+export async function grantRootAccess(path: string): Promise<void> {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("grant_root_access", { path });
 }
 
 /**

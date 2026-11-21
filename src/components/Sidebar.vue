@@ -18,10 +18,13 @@ import {
   type FunctionalComponent,
 } from "vue";
 import {
+  ChevronRight,
   Copy,
   FilePlus2,
   FileText,
+  Folder,
   FolderOpen,
+  HardDrive,
   PencilLine,
   RefreshCw,
   Trash2,
@@ -58,6 +61,25 @@ const ContextMenuIcon: FunctionalComponent<{ icon: IconNode }> = ({
     icon.map(([tag, attrs]) => h(tag, attrs))
   );
 
+const SidebarTreeIcon: FunctionalComponent<{ icon: IconNode }> = ({ icon }) =>
+  h(
+    "svg",
+    {
+      xmlns: "http://www.w3.org/2000/svg",
+      width: 13,
+      height: 13,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": 2,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+      class: "mt-sidebar__icon",
+    },
+    icon.map(([tag, attrs]) => h(tag, attrs))
+  );
+
 const props = defineProps<{
   /** 是否展开（false 时宽度收拢为 0） */
   open: boolean;
@@ -67,6 +89,10 @@ const props = defineProps<{
   dirs: WorkspaceItem[];
   /** 当前目录下的文本文件 */
   files: WorkspaceItem[];
+  /** 是否正在显示虚拟“此电脑”盘符列表 */
+  computerView: boolean;
+  /** 根位置名称：Windows 为此电脑，Unix 为文件系统 */
+  rootViewLabel: string;
   /** 当前正在编辑的文件路径，用于高亮 */
   currentPath: string | null;
   /** 当前文档的大纲条目 */
@@ -183,6 +209,14 @@ function shortName(path: string | null): string {
 function isActive(path: string): boolean {
   return !!props.currentPath && props.currentPath === path;
 }
+
+function openBlankMenu(event: MouseEvent): void {
+  if (!props.computerView) openMenu(event, { kind: "blank" });
+}
+
+function openDirMenu(event: MouseEvent, item: WorkspaceItem): void {
+  if (!props.computerView) openMenu(event, { kind: "dir", item });
+}
 </script>
 
 <template>
@@ -225,7 +259,7 @@ function isActive(path: string): boolean {
     <div
       v-show="tab === 'files'"
       class="mt-sidebar__body"
-      @contextmenu.prevent="openMenu($event, { kind: 'blank' })"
+      @contextmenu.prevent="openBlankMenu($event)"
     >
       <div class="mt-sidebar__toolbar">
         <button
@@ -235,15 +269,15 @@ function isActive(path: string): boolean {
           @click="emit('pick-folder')"
         >打开文件夹</button>
       </div>
-      <div class="mt-sidebar__cwd" :title="dir ?? ''">{{ shortName(dir) }}</div>
+      <div class="mt-sidebar__cwd" :title="computerView ? rootViewLabel : (dir ?? '')">
+        {{ computerView ? rootViewLabel : shortName(dir) }}
+      </div>
 
       <ul class="mt-sidebar__list">
         <!-- 返回上级 -->
         <li v-if="dir">
           <button class="mt-sidebar__row" @click="emit('go-parent')">
-            <svg class="mt-sidebar__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
+            <SidebarTreeIcon :icon="ChevronRight" />
             <span class="mt-sidebar__label">..</span>
           </button>
         </li>
@@ -253,11 +287,9 @@ function isActive(path: string): boolean {
             class="mt-sidebar__row"
             :title="d.name"
             @click="emit('enter-dir', d.path)"
-            @contextmenu.prevent.stop="openMenu($event, { kind: 'dir', item: d })"
+            @contextmenu.prevent.stop="openDirMenu($event, d)"
           >
-            <svg class="mt-sidebar__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            </svg>
+            <SidebarTreeIcon :icon="computerView ? HardDrive : Folder" />
             <span class="mt-sidebar__label">{{ d.name }}</span>
           </button>
         </li>
@@ -270,21 +302,12 @@ function isActive(path: string): boolean {
             @click="emit('open-file', f.path)"
             @contextmenu.prevent.stop="openMenu($event, { kind: 'file', item: f })"
           >
-            <svg class="mt-sidebar__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 3 14 8 19 8" />
-            </svg>
+            <SidebarTreeIcon :icon="FileText" />
             <span class="mt-sidebar__label">{{ f.name }}</span>
           </button>
         </li>
       </ul>
 
-      <p v-if="!dir" class="mt-sidebar__empty">
-        点击「打开文件夹」浏览 Markdown 文件
-      </p>
-      <p v-else-if="!dirs.length && !files.length" class="mt-sidebar__empty">
-        当前目录没有子目录或 Markdown 文件
-      </p>
     </div>
 
     <!-- 大纲面板 -->

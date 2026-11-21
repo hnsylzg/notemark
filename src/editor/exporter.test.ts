@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { htmlToPlainText } from "./exporter";
+import { buildStandaloneHtml, htmlToPlainText } from "./exporter";
+
+describe("PDF table borders", () => {
+  it("keeps standard collapsed theme borders during print layout adaptation", () => {
+    const html = buildStandaloneHtml({
+      title: "table",
+      bodyHtml: "<table><tr><th>A</th></tr><tr><td>B</td></tr></table>",
+      forPrint: true,
+    });
+
+    expect(html).toContain("border-collapse: collapse !important");
+    expect(html).toContain("border-spacing: 0 !important");
+    expect(html).toContain("break-inside: auto !important");
+    expect(html).toContain(".mt-export-body thead");
+    expect(html).toContain(".mt-export-body th,\n.mt-export-body td {");
+    expect(html).toContain("position: static !important");
+    expect(html).toContain(".mt-export-body,\n.mt-export-body * {");
+    expect(html).toContain("var(\n    --mt-hr-print-border,");
+    expect(html).toContain("print-color-adjust: exact");
+    expect(html).toContain("-webkit-print-color-adjust: exact");
+    expect(html).not.toContain("border-collapse: separate !important");
+    expect(html).not.toContain(".mt-export-body tr > :first-child");
+  });
+});
 
 describe("TXT export plain text", () => {
   it("keeps standard HTML list items from serialized selections", () => {

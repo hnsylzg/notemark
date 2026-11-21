@@ -32,6 +32,9 @@ pub struct WindowState {
   pub width: u32,
   pub height: u32,
   pub maximized: bool,
+  /// Whether x/y/width/height describe the last non-maximized window bounds.
+  #[serde(default)]
+  pub normal_bounds_valid: bool,
 }
 
 impl PersistenceDb {
@@ -640,6 +643,7 @@ mod tests {
       width: 1100,
       height: 760,
       maximized: false,
+      normal_bounds_valid: true,
     };
     db.window_state_set("main", state).unwrap();
     assert_eq!(db.window_state_get("main").unwrap(), Some(state));
@@ -665,6 +669,7 @@ mod tests {
         width: 1000,
         height: 720,
         maximized: true,
+        normal_bounds_valid: false,
       })
     );
     assert!(!file.exists());

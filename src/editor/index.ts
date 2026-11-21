@@ -28,30 +28,32 @@ import { languages } from "@codemirror/language-data";
 // 关键①：@milkdown/components/code-block 默认不启用 syntaxHighlighting，
 // 代码块一直以纯色（--mt-code-fg）渲染，tokens.css 的 --mt-token-* 变量
 // 从未被消费——这就是"导入主题后代码颜色不变"的根因，必须先启用。
-// 关键②：不能直接用 defaultHighlightStyle——它不生成 .tok-* 类名，而是
-// style-mod 混淆类名（.ͼb 等），CSS 侧无法按类名覆盖。因此这里用
-// HighlightStyle.define + CSS 变量（var(--mt-token-*)）自定义，使 CM 生成
-// 的高亮规则直接消费主题变量，用户改主题即改代码配色。
+// 关键②：不能依赖 style-mod 自动生成的混淆类名（.ͼb 等）来承载主题色，
+// 否则动态样式一旦未收集/被覆盖，所有 token 会一起回退为正文色。这里用
+// HighlightStyle.define 的 class 字段输出稳定的 .tok-* 类，由未分层的
+// code-tokens.css 消费 --mt-token-* 变量。
 // 注意：tags 由 @lezer/highlight 提供，@codemirror/language 不重新导出。
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 
 const mtHighlightStyle = HighlightStyle.define([
-  { tag: t.keyword, color: "var(--mt-token-keyword)" },
-  { tag: [t.string, t.special(t.string)], color: "var(--mt-token-string)" },
-  { tag: [t.number, t.bool, t.atom], color: "var(--mt-token-number)" },
+  { tag: t.keyword, class: "tok-keyword" },
+  { tag: [t.string, t.special(t.string)], class: "tok-string" },
+  { tag: [t.number, t.bool, t.atom], class: "tok-number" },
   // GitHub 官方观感：注释不上斜体
-  { tag: [t.comment, t.meta], color: "var(--mt-token-comment)" },
+  { tag: [t.comment, t.meta], class: "tok-comment" },
   {
     tag: [t.function(t.variableName), t.definition(t.variableName)],
-    color: "var(--mt-token-function)",
+    class: "tok-function",
   },
   // GitHub 官方观感：运算符不上色（继承 --mt-code-fg）
-  { tag: [t.variableName], color: "var(--mt-token-variable)" },
-  { tag: [t.typeName, t.className, t.namespace], color: "var(--mt-token-type)" },
+  { tag: [t.variableName], class: "tok-variable" },
+  { tag: [t.typeName, t.className, t.namespace], class: "tok-type" },
   // GitHub 官方观感：属性名蓝色、HTML 标签绿色，两者分开
-  { tag: [t.propertyName], color: "var(--mt-token-property)" },
-  { tag: [t.tagName], color: "var(--mt-token-tag)" },
+  { tag: [t.propertyName], class: "tok-property" },
+  { tag: [t.tagName], class: "tok-tag" },
+  { tag: [t.attributeName], class: "tok-attribute" },
+  { tag: [t.annotation], class: "tok-annotation" },
 ]);
 
 // remark-stringify 的默认转义表（mdast-util-to-markdown 的 unsafe 规则）会把文本
@@ -68,18 +70,26 @@ const mtHighlightStyle = HighlightStyle.define([
 const customTextHandler: Handle = (node, _, state, info) => {
   const value = (node as { value?: string }).value ?? "";
   if (!value) return value;
+  // mdast-util-to-markdown 会把段落边界处紧邻换行的空格编码为
+  // `&#x20;`。块级 HTML 被提升为独立节点、iframe 作为行内原子节点后，
+  // 正文两侧的普通空格会因此被写成实体。这里只撤销 text handler 自己
+  // 生成的空格实体；原文里手写的实体已被 safe 转义为 `\&#x20;`。
+  const safeText = () =>
+    state
+      .safe(value, { ...info, encode: [] })
+      .replace(/(?<!\\)&#x20;/g, " ");
   // 短路：文本里没有需要保护的字符时，过滤 unsafe 表与否结果完全相同，
   // 直接走默认 safe。避免对文档里每个文本节点都 filter 一遍整张 unsafe 表
   // （长文档上这是纯浪费，且反复改 state.unsafe 这种共享状态风险很高）。
   if (!/[\[\]*]/.test(value)) {
-    return state.safe(value, { ...info, encode: [] });
+    return safeText();
   }
   const original = state.unsafe;
   state.unsafe = original.filter(
     (u) => !(u.character === "[" || u.character === "]" || u.character === "*")
   );
   try {
-    return state.safe(value, { ...info, encode: [] });
+    return safeText();
   } finally {
     state.unsafe = original;
   }
@@ -1679,8 +1689,7 @@ export function createEditor(
       // 代码块配置：注入语言列表 + 启用语法高亮。
       // - languages：让语言选择器可搜索/选择 160+ 种语言。
       // - extensions: [syntaxHighlighting(mtHighlightStyle)]：启用 CM6 语法高亮，
-      //   高亮颜色直接引用 --mt-token-* / --mt-color-primary 变量，
-      //   用户主题改变量即改代码配色。
+      //   输出稳定的 .tok-* 类名，颜色由 code-tokens.css 和主题变量控制。
       // 注意：codeBlockConfig 是 $Ctx（createSlice 的封装），
       // 必须通过 .key（SliceType）传给 ctx.get/set，直接传 $Ctx 会抛 contextNotFound。
       ctx.set(codeBlockConfig.key, {

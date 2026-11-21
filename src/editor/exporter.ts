@@ -94,6 +94,45 @@ body {
 const PRINT_CSS = `
 @page { margin: 20mm 18mm; }
 .mt-export-body { max-width: none; margin: 0; padding: 0; }
+/* Keep the document theme's standard table borders in print. The only print
+   adaptation is layout: screen tables may use a scrolling block wrapper, while
+   PDF needs a real table that can break between rows. */
+.mt-export-body table {
+  display: table !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  table-layout: auto !important;
+  break-inside: auto !important;
+  page-break-inside: auto !important;
+}
+.mt-export-body thead {
+  display: table-header-group;
+}
+.mt-export-body tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.mt-export-body hr {
+  height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-top: var(
+    --mt-hr-print-border,
+    1px solid var(--mt-color-border)
+  ) !important;
+  background: none !important;
+}
+.mt-export-body th,
+.mt-export-body td {
+  position: static !important;
+}
+.mt-export-body,
+.mt-export-body * {
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
 /* 代码块 / 表格 / 图表等容器在应用内有 overflow 限制，打印时需解除，
    否则跨页部分会被裁剪 */
 .mt-export-body pre,
@@ -118,7 +157,6 @@ const PRINT_CSS = `
 }
 .mt-export-body pre,
 .mt-export-body blockquote,
-.mt-export-body table,
 .mt-export-body img { break-inside: avoid; }
 .mt-export-body h1,
 .mt-export-body h2,

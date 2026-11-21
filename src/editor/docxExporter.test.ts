@@ -232,6 +232,12 @@ describe("Word typography", () => {
         )?.[0] ?? "";
       expect(headingStyle).toContain('w:line="240"');
       expect(headingStyle).toContain('w:lineRule="auto"');
+      if (level === 4) {
+        expect(headingStyle).toContain('<w:sz w:val="26"/>');
+      }
+      if (level >= 5) {
+        expect(headingStyle).toContain('<w:sz w:val="24"/>');
+      }
     }
     const tocHeadingStyle =
       styles.match(
@@ -255,6 +261,7 @@ describe("Word typography", () => {
     expect(blockquoteStyle).toContain('<w:basedOn w:val="BodyText"/>');
     expect(blockquoteStyle).toContain('<w:textAlignment w:val="center"/>');
     expect(blockquoteStyle).toContain('w:color="FFFFFF"');
+    expect(blockquoteStyle).toContain('w:sz="16"');
     expect(blockquoteStyle).toContain('w:space="6"');
     expect(blockquoteStyle).toContain('w:after="100"');
     expect(blockquoteStyle).toContain('w:before="100"');
@@ -290,6 +297,193 @@ describe("Word typography", () => {
     expect(documentXml.match(/<w:br\/>/g)).toHaveLength(2);
     expect(documentXml).toContain("<w:br/>");
     expect(documentXml).not.toContain("<w:tbl>");
+  });
+
+  it("keeps consecutive blockquotes in one continuous border group", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        blockquote: {
+          group: "block",
+          content: "paragraph+",
+          toDOM: () => ["blockquote", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("blockquote", null, [
+        schema.node("paragraph", null, schema.text("First quote")),
+      ]),
+      schema.node("blockquote", null, [
+        schema.node("paragraph", null, schema.text("Second quote")),
+      ]),
+      schema.node("blockquote", null, [
+        schema.node("paragraph", null, schema.text("Third quote")),
+      ]),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    expect(
+      documentXml.match(/<w:pStyle w:val="BlockText"\/>/g)
+    ).toHaveLength(3);
+    expect(documentXml).not.toContain("<w:pBdr>");
+    expect(documentXml).not.toContain('w:color="FFFFFF"');
+    expect(documentXml).not.toContain('w:after="400"');
+  });
+
+  it("preserves nested blockquote levels with increasing Word indentation", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        blockquote: {
+          group: "block",
+          content: "(paragraph | blockquote)+",
+          toDOM: () => ["blockquote", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("blockquote", null, [
+        schema.node("paragraph", null, schema.text("Level one")),
+        schema.node("blockquote", null, [
+          schema.node("paragraph", null, schema.text("Level two")),
+          schema.node("blockquote", null, [
+            schema.node("paragraph", null, schema.text("Level three")),
+          ]),
+        ]),
+      ]),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    expect(
+      documentXml.match(/<w:pStyle w:val="BlockText"\/>/g)
+    ).toHaveLength(3);
+    expect(documentXml).toContain(
+      '<w:tab w:val="left" w:pos="722"/>'
+    );
+    expect(documentXml).toContain(
+      '<w:tab w:val="left" w:pos="962"/>'
+    );
+    expect(documentXml.match(/<w:tab\/>/g)).toHaveLength(2);
+  });
+});
+
+describe("Word alerts", () => {
+  it("exports paragraph-only alerts as one border-only paragraph", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        alert: {
+          group: "block",
+          content: "block+",
+          attrs: {
+            alertType: { default: "note" },
+            title: { default: "" },
+          },
+          toDOM: () => ["blockquote", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node(
+        "alert",
+        { alertType: "warning", title: "发布前检查" },
+        [
+          schema.node("paragraph", null, schema.text("正文第一段")),
+          schema.node("paragraph", null, schema.text("正文第二段")),
+        ]
+      ),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    expect(documentXml).toContain("WARNING  发布前检查");
+    expect(documentXml).toContain("正文第一段");
+    expect(documentXml).toContain("正文第二段");
+    expect(documentXml.match(/<w:p>/g)).toHaveLength(1);
+    expect(documentXml.match(/<w:pBdr>/g)).toHaveLength(1);
+    expect(documentXml.match(/<w:br\/>/g)).toHaveLength(2);
+    expect(documentXml).toContain(
+      'w:val="single" w:color="9A6700" w:sz="16" w:space="6"'
+    );
+    expect(documentXml).not.toContain("<w:keepNext/>");
+    expect(documentXml).toContain(
+      'w:after="100" w:before="100" w:line="240" w:lineRule="auto"'
+    );
+    expect(documentXml).not.toContain("<w:tbl>");
+    expect(documentXml).not.toContain("<w:shd");
+  });
+
+  it("keeps paragraph-only alerts to one two-line paragraph with 5pt after", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        alert: {
+          group: "block",
+          content: "block+",
+          attrs: {
+            alertType: { default: "note" },
+            title: { default: "" },
+          },
+          toDOM: () => ["blockquote", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("alert", { alertType: "note" }, [
+        schema.node("paragraph", null, schema.text("First alert")),
+      ]),
+      schema.node("alert", { alertType: "tip" }, [
+        schema.node("paragraph", null, schema.text("Second alert")),
+      ]),
+    ]);
+    const bytes = await buildDocx({ doc, viewDom: null });
+    const zip = await JSZip.loadAsync(bytes);
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    expect(documentXml.match(/<w:p>/g)).toHaveLength(2);
+    expect(documentXml.match(/<w:pBdr>/g)).toHaveLength(2);
+    expect(documentXml.match(/<w:br\/>/g)).toHaveLength(2);
+    expect(documentXml).not.toContain(
+      '<w:bottom w:val="single" w:color="FFFFFF"'
+    );
+    expect(documentXml).not.toContain("<w:keepNext/>");
+    expect(
+      documentXml.match(/<w:spacing w:after="100" w:before="100"/g)
+    ).toHaveLength(2);
+    expect(
+      documentXml.match(/<w:spacing w:after="360" w:before="100"/g)
+    ).toBeNull();
+    expect(documentXml).not.toContain('w:lineRule="exact"');
   });
 });
 

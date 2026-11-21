@@ -33,7 +33,11 @@ import type { HeadingItem } from "@/editor/index";
 import { commandsCtx, parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { insertHrCommand } from "@milkdown/kit/preset/commonmark";
 import { importImagePaths } from "@/editor/image-files";
-import { grantPathAccess, openAuthorizedPath } from "@/editor/fileAccess";
+import {
+  grantPathAccess,
+  grantRootAccess,
+  openAuthorizedPath,
+} from "@/editor/fileAccess";
 import {
   clearRecoveryDraft,
   loadRecoveryDraft,
@@ -43,14 +47,16 @@ import { setEditorActionHandler } from "@/editor/editor-actions";
 import { openFile, saveFile, newFile } from "@/editor/fileOps";
 import {
   clearRecentFiles,
-  clearWorkspaceDir,
+  clearWorkspaceNavigation,
   createTextFile,
   ensureMarkdownExt,
   joinPath,
   listWorkspace,
   loadRecentFiles,
   loadSidebarOpen,
-  loadWorkspaceDir,
+  loadWorkspaceNavigation,
+  isWindowsDriveRoot,
+  listRootLocations,
   parentDir,
   pathExists,
   pickFolder,
@@ -60,7 +66,9 @@ import {
   renamePath,
   revealInFileManager,
   saveSidebarOpen,
-  saveWorkspaceDir,
+  saveWorkspaceLastDir,
+  saveWorkspaceRoot,
+  saveWorkspaceView,
   trashPath,
 } from "@/editor/workspace";
 import type {
@@ -287,10 +295,54 @@ function scrollTextareaToOffset(
 const sidebarOpen = ref(false);
 /** 当前工作目录（侧边栏「文件」面板浏览的目录） */
 const workspaceDir = ref<string | null>(null);
+/** 用户明确选择的根目录；文件侧边栏可浏览到其子目录或上级 */
+const workspaceRoot = ref<string | null>(null);
+/** 侧边栏最后浏览到的真实目录 */
+const workspaceLastDir = ref<string | null>(null);
 /** 当前目录下的子目录 */
 const workspaceDirs = ref<WorkspaceItem[]>([]);
 /** 当前目录下的文本文件 */
 const workspaceFiles = ref<WorkspaceItem[]>([]);
+/** 是否正在浏览虚拟“此电脑”盘符列表 */
+const workspaceComputerView = ref(false);
+/** Windows 使用“此电脑”，Unix 使用“文件系统”。 */
+const rootViewLabel = /Windows/i.test(navigator.userAgent) ? "此电脑" : "文件系统";
+let workspaceLastDirTimer: number | null = null;
+let pendingWorkspaceLastDir: string | null = null;
+
+/** 导航类操作防抖保存最后目录；显式选择文件夹不受此延迟影响。 */
+function scheduleWorkspaceLastDirPersistence(dir: string): void {
+  workspaceLastDir.value = dir;
+  pendingWorkspaceLastDir = dir;
+  if (workspaceLastDirTimer !== null) clearTimeout(workspaceLastDirTimer);
+  workspaceLastDirTimer = window.setTimeout(() => {
+    workspaceLastDirTimer = null;
+    const target = pendingWorkspaceLastDir;
+    pendingWorkspaceLastDir = null;
+    if (target) {
+      void Promise.all([
+        saveWorkspaceLastDir(target),
+        saveWorkspaceView("directory"),
+      ]);
+    }
+  }, 300);
+}
+
+/** 卸载或切换视图前立即提交尚未写入的最后目录。 */
+async function flushWorkspaceLastDirPersistence(): Promise<void> {
+  if (workspaceLastDirTimer !== null) {
+    clearTimeout(workspaceLastDirTimer);
+    workspaceLastDirTimer = null;
+  }
+  const target = pendingWorkspaceLastDir;
+  pendingWorkspaceLastDir = null;
+  if (target) {
+    await Promise.all([
+      saveWorkspaceLastDir(target),
+      saveWorkspaceView("directory"),
+    ]);
+  }
+}
 /** 当前文档的标题列表（侧边栏「大纲」面板） */
 const headings = ref<HeadingItem[]>([]);
 /** 大纲刷新节流定时器（避免每次输入都遍历文档） */
@@ -1257,12 +1309,13 @@ function toggleSidebar() {
  * 扫描指定目录，更新侧边栏的子目录与文件列表。
  * 目录不可读（已被删除/移动/无权限）时清空面板，避免停留在无效目录上。
  */
-async function refreshWorkspace(dir: string | null) {
+async function refreshWorkspace(dir: string | null): Promise<boolean> {
+  workspaceComputerView.value = false;
   if (!dir) {
     workspaceDir.value = null;
     workspaceDirs.value = [];
     workspaceFiles.value = [];
-    return;
+    return false;
   }
   let listing: WorkspaceListing | null = null;
   try {
@@ -1275,11 +1328,13 @@ async function refreshWorkspace(dir: string | null) {
     workspaceDir.value = null;
     workspaceDirs.value = [];
     workspaceFiles.value = [];
-    return;
+    return false;
   }
   workspaceDir.value = dir;
+  workspaceLastDir.value = dir;
   workspaceDirs.value = listing.dirs;
   workspaceFiles.value = listing.files;
+  return true;
 }
 
 /** 选择要浏览的文件夹（侧边栏「打开文件夹」按钮） */
@@ -1287,24 +1342,64 @@ async function handlePickFolder() {
   try {
     const dir = await pickFolder();
     if (!dir) return; // 用户取消
-    await refreshWorkspace(dir);
-    await saveWorkspaceDir(dir);
+    if (!(await refreshWorkspace(dir))) return;
+    workspaceRoot.value = dir;
+    workspaceLastDir.value = dir;
+    await Promise.all([
+      saveWorkspaceRoot(dir),
+      saveWorkspaceLastDir(dir),
+      saveWorkspaceView("directory"),
+    ]);
   } catch (err) {
     console.error("[NoteMark] pick folder failed:", err);
     alert(`打开文件夹失败：${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
+/** 打开虚拟“此电脑”盘符列表。 */
+async function showWorkspaceComputer(persist = true): Promise<boolean> {
+  try {
+    await flushWorkspaceLastDirPersistence();
+    const roots = await listRootLocations();
+    if (roots.length === 0) return false;
+    workspaceComputerView.value = true;
+    workspaceDir.value = null;
+    workspaceDirs.value = roots;
+    workspaceFiles.value = [];
+    if (persist) await saveWorkspaceView("computer");
+    return true;
+  } catch (err) {
+    console.warn("[NoteMark] list root locations failed:", err);
+    return false;
+  }
+}
+
 /** 进入某个子目录 */
 async function handleEnterDir(path: string) {
-  await refreshWorkspace(path);
+  if (workspaceComputerView.value) {
+    try {
+      await grantRootAccess(path);
+    } catch (err) {
+      alert(`打开盘符失败：${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+  }
+  if (await refreshWorkspace(path)) {
+    scheduleWorkspaceLastDirPersistence(path);
+  }
 }
 
 /** 返回上级目录 */
 async function handleGoParent() {
   if (!workspaceDir.value) return;
+  if (isWindowsDriveRoot(workspaceDir.value)) {
+    await showWorkspaceComputer();
+    return;
+  }
   const parent = parentDir(workspaceDir.value);
-  if (parent) await refreshWorkspace(parent);
+  if (parent && (await refreshWorkspace(parent))) {
+    scheduleWorkspaceLastDirPersistence(parent);
+  }
 }
 
 /** 从侧边栏打开文件（有未保存修改时先询问，与「打开」保持一致） */
@@ -1377,8 +1472,12 @@ async function syncWorkspaceToFile(path: string) {
   const dir = dirOfPath(path);
   if (!dir) return;
   const changed = dir !== workspaceDir.value;
-  await refreshWorkspace(dir);
-  if (changed) await saveWorkspaceDir(dir);
+  if (!(await refreshWorkspace(dir))) return;
+  if (!workspaceRoot.value) {
+    workspaceRoot.value = dir;
+    await saveWorkspaceRoot(dir);
+  }
+  if (changed) scheduleWorkspaceLastDirPersistence(dir);
 }
 
 // ==================== 侧边栏右键菜单（文件处理） ====================
@@ -2336,14 +2435,36 @@ onMounted(() => {
       if (open !== null) sidebarOpen.value = open;
     })
     .catch((e) => console.warn("[NoteMark] load sidebar state failed:", e));
-  loadWorkspaceDir()
-    .then(async (dir) => {
-      if (!dir) return;
-      await refreshWorkspace(dir);
-      // 目录已失效（被删除/移动）：清掉持久化记录，避免下次启动仍尝试恢复
-      if (!workspaceDir.value) await clearWorkspaceDir();
+  loadWorkspaceNavigation()
+    .then(async (state) => {
+      workspaceRoot.value = state.root;
+      workspaceLastDir.value = state.lastDir;
+
+      if (state.view === "computer" && (await showWorkspaceComputer(false))) {
+        return;
+      }
+
+      const candidates = [...new Set([state.lastDir, state.root])].filter(
+        (dir): dir is string => !!dir
+      );
+      for (const dir of candidates) {
+        if (await refreshWorkspace(dir)) {
+          if (state.view !== "directory" || dir !== state.lastDir) {
+            await Promise.all([
+              saveWorkspaceLastDir(dir),
+              saveWorkspaceView("directory"),
+            ]);
+          }
+          return;
+        }
+      }
+
+      // 根目录和最后目录都已失效：清掉全部导航记录。
+      await clearWorkspaceNavigation();
+      workspaceRoot.value = null;
+      workspaceLastDir.value = null;
     })
-    .catch((e) => console.warn("[NoteMark] load workspace dir failed:", e));
+    .catch((e) => console.warn("[NoteMark] load workspace navigation failed:", e));
 
   // 兜底：无论主题加载是否成功/卡住，最多 1.2s 后强制显示窗口，避免窗口永久隐藏
   setTimeout(revealWindow, 1200);
@@ -2351,6 +2472,7 @@ onMounted(() => {
 
 
 onBeforeUnmount(() => {
+  void flushWorkspaceLastDirPersistence();
   window.removeEventListener("pointerdown", markStartupInteraction, true);
   window.removeEventListener("keydown", markStartupInteraction, true);
   window.removeEventListener("contextmenu", markStartupInteraction, true);
@@ -2439,6 +2561,8 @@ onBeforeUnmount(() => {
         :dir="workspaceDir"
         :dirs="workspaceDirs"
         :files="workspaceFiles"
+        :computer-view="workspaceComputerView"
+        :root-view-label="rootViewLabel"
         :current-path="currentPath"
         :headings="headings"
         :is-tauri="isTauri"
@@ -2903,7 +3027,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: 100%;
-  overflow-y: auto;
+  overflow: hidden;
   border: none;
   outline: none;
   box-shadow: none;

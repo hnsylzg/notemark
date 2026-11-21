@@ -29,6 +29,13 @@ struct OpenDocs(Mutex<HashMap<String, String>>);
 /// 通知到 B 窗口。notify 的 watcher 被 drop 即停止监听，因此直接持有实例。
 struct DocWatchers(Mutex<HashMap<String, RecommendedWatcher>>);
 
+/// Last known non-maximized bounds for each window.
+///
+/// A maximized window reports the maximized geometry through Tauri, which is
+/// not the size Windows will restore to when the user unmaximizes it. Keep the
+/// last normal bounds separately and persist those alongside the maximized flag.
+struct WindowGeometries(Mutex<HashMap<String, persistence::WindowState>>);
+
 /// 主窗口 label。tauri.conf.json 的首个窗口未显式指定 label，Tauri 默认用 "main"。
 const MAIN_LABEL: &str = "main";
 
@@ -86,7 +93,9 @@ fn register_open_doc(path: String, label: String, state: tauri::State<OpenDocs>)
 /// protocol scope automatically. Drag/drop, command-line files, persisted
 /// workspaces and recovery drafts need the same treatment. Opening a document
 /// also grants its parent directory so Markdown-relative images and `assets/`
-/// imports remain usable without granting the entire filesystem.
+/// imports remain usable without granting the entire filesystem. Folder
+/// navigation may grant the direct parent of an already authorized path one
+/// level at a time, which keeps the file panel's ".." action functional.
 fn grant_path_access_impl(app: &tauri::AppHandle, path: &std::path::Path) -> Result<(), String> {
   if path.as_os_str().is_empty() {
     return Err("路径不能为空".to_string());
@@ -147,7 +156,9 @@ fn grant_path_access(
   include_parent: bool,
 ) -> Result<(), String> {
   let target = std::path::Path::new(&path);
-  if !is_path_allowed(&app, target) {
+  let can_navigate_parent =
+    include_parent && target.is_dir() && is_direct_parent_of_authorized_path(&app, target);
+  if !is_path_allowed(&app, target) && !can_navigate_parent {
     return Err("路径尚未获得用户授权".to_string());
   }
   if include_parent {
@@ -163,6 +174,54 @@ fn grant_path_access(
   Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct RootLocation {
+  name: String,
+  path: String,
+}
+
+#[cfg(windows)]
+fn root_locations_impl() -> Vec<RootLocation> {
+  let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+  (0..26)
+    .filter(|index| mask & (1 << index) != 0)
+    .map(|index| {
+      let letter = char::from(b'A' + index as u8);
+      RootLocation {
+        name: format!("{letter}:"),
+        path: format!("{letter}:\\"),
+      }
+    })
+    .collect()
+}
+
+#[cfg(not(windows))]
+fn root_locations_impl() -> Vec<RootLocation> {
+  vec![RootLocation {
+    name: "文件系统".to_string(),
+    path: "/".to_string(),
+  }]
+}
+
+#[tauri::command]
+fn list_root_locations() -> Vec<RootLocation> {
+  root_locations_impl()
+}
+
+#[tauri::command]
+fn grant_root_access(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let target = std::path::Path::new(&path);
+  let is_root = root_locations_impl()
+    .iter()
+    .any(|root| paths_equivalent(std::path::Path::new(&root.path), target));
+  if !is_root {
+    return Err("只能授权系统枚举到的根目录".to_string());
+  }
+  grant_path_access_impl(&app, target)?;
+  remember_authorized_path(&app, target);
+  Ok(())
+}
+
 fn is_path_allowed(app: &tauri::AppHandle, path: &std::path::Path) -> bool {
   let scope = app.fs_scope();
   if scope.is_allowed(path) {
@@ -174,10 +233,67 @@ fn is_path_allowed(app: &tauri::AppHandle, path: &std::path::Path) -> bool {
     .unwrap_or(false)
 }
 
-fn capture_window_state(window: &tauri::Window) -> Option<persistence::WindowState> {
-  if window.is_minimized().unwrap_or(false) {
-    return None;
+fn canonical_path(path: &std::path::Path) -> PathBuf {
+  path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
+  #[cfg(windows)]
+  {
+    left
+      .to_string_lossy()
+      .eq_ignore_ascii_case(&right.to_string_lossy())
   }
+  #[cfg(not(windows))]
+  {
+    left == right
+  }
+}
+
+fn is_direct_parent_path(parent: &std::path::Path, child: &std::path::Path) -> bool {
+  let parent = canonical_path(parent);
+  let child = canonical_path(child);
+  child
+    .parent()
+    .map(|child_parent| paths_equivalent(&parent, child_parent))
+    .unwrap_or(false)
+}
+
+fn is_direct_parent_of_authorized_path(app: &tauri::AppHandle, target: &std::path::Path) -> bool {
+  app
+    .state::<persistence::PersistenceDb>()
+    .authorized_paths()
+    .map(|paths| {
+      paths
+        .iter()
+        .any(|path| is_direct_parent_path(target, std::path::Path::new(path)))
+    })
+    .unwrap_or(false)
+}
+
+const DEFAULT_WINDOW_WIDTH: u32 = 1000;
+const DEFAULT_WINDOW_HEIGHT: u32 = 720;
+
+fn remembered_window_state(window: &tauri::Window) -> Option<persistence::WindowState> {
+  window
+    .state::<WindowGeometries>()
+    .0
+    .lock()
+    .ok()?
+    .get(window.label())
+    .copied()
+}
+
+fn remember_window_state(window: &tauri::Window, state: persistence::WindowState) {
+  if let Ok(mut geometries) = window.state::<WindowGeometries>().0.lock() {
+    geometries.insert(window.label().to_string(), state);
+  }
+}
+
+fn capture_current_window_state(
+  window: &tauri::Window,
+  maximized: bool,
+) -> Option<persistence::WindowState> {
   let position = window.outer_position().ok()?;
   let size = window.inner_size().ok()?;
   Some(persistence::WindowState {
@@ -185,14 +301,49 @@ fn capture_window_state(window: &tauri::Window) -> Option<persistence::WindowSta
     y: position.y,
     width: size.width,
     height: size.height,
-    maximized: window.is_maximized().unwrap_or(false),
+    maximized,
+    normal_bounds_valid: !maximized,
   })
+}
+
+fn remember_window_geometry_event(window: &tauri::Window) {
+  if window.is_minimized().unwrap_or(false) {
+    return;
+  }
+  let maximized = window.is_maximized().unwrap_or(false);
+  if maximized {
+    if let Some(mut state) = remembered_window_state(window) {
+      state.maximized = true;
+      remember_window_state(window, state);
+    } else if let Some(state) = capture_current_window_state(window, true) {
+      remember_window_state(window, state);
+    }
+    return;
+  }
+  if let Some(state) = capture_current_window_state(window, false) {
+    remember_window_state(window, state);
+  }
+}
+
+fn capture_window_state(window: &tauri::Window) -> Option<persistence::WindowState> {
+  if window.is_minimized().unwrap_or(false) {
+    return remembered_window_state(window);
+  }
+  let maximized = window.is_maximized().unwrap_or(false);
+  if maximized {
+    if let Some(mut state) = remembered_window_state(window) {
+      state.maximized = true;
+      return Some(state);
+    }
+  }
+  capture_current_window_state(window, maximized)
 }
 
 fn save_window_state(window: &tauri::Window) {
   let Some(state) = capture_window_state(window) else {
     return;
   };
+  remember_window_state(window, state);
   if let Err(error) = window
     .app_handle()
     .state::<persistence::PersistenceDb>()
@@ -215,8 +366,17 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
       return;
     }
   };
-  let width = state.width.max(480);
-  let height = state.height.max(360);
+  let normal_bounds_valid = !state.maximized || state.normal_bounds_valid;
+  let width = if normal_bounds_valid {
+    state.width.max(480)
+  } else {
+    DEFAULT_WINDOW_WIDTH
+  };
+  let height = if normal_bounds_valid {
+    state.height.max(360)
+  } else {
+    DEFAULT_WINDOW_HEIGHT
+  };
   let _ = window.set_size(PhysicalSize::new(width, height));
 
   let monitors = window.available_monitors().unwrap_or_default();
@@ -228,10 +388,29 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
       && state.y < position.y + size.height as i32
       && state.y + height as i32 > position.y
   });
-  if visible {
+  if visible && normal_bounds_valid {
     let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
   } else {
     let _ = window.center();
+  }
+  let position = window
+    .outer_position()
+    .unwrap_or(PhysicalPosition::new(state.x, state.y));
+  let size = window
+    .inner_size()
+    .unwrap_or(PhysicalSize::new(width, height));
+  if let Ok(mut geometries) = window.state::<WindowGeometries>().0.lock() {
+    geometries.insert(
+      window.label().to_string(),
+      persistence::WindowState {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        maximized: state.maximized,
+        normal_bounds_valid: true,
+      },
+    );
   }
   if state.maximized {
     let _ = window.maximize();
@@ -566,6 +745,7 @@ pub fn run() {
     .manage(PendingFiles(Mutex::new(HashMap::new())))
     .manage(OpenDocs(Mutex::new(HashMap::new())))
     .manage(DocWatchers(Mutex::new(HashMap::new())))
+    .manage(WindowGeometries(Mutex::new(HashMap::new())))
     // 第二个进程：把文件路径交给已运行的实例开新窗口，本进程随即退出。
     //
     // callback 运行在「第一个实例」的窗口过程（WndProc）里，第一个实例的 GUI
@@ -635,6 +815,12 @@ pub fn run() {
     .on_window_event(|window, event| {
       use tauri::DragDropEvent;
       use tauri::Emitter;
+      if matches!(
+        event,
+        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)
+      ) {
+        remember_window_geometry_event(window);
+      }
       if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
         save_window_state(window);
       }
@@ -708,6 +894,8 @@ pub fn run() {
       trash_delete,
       export_pdf,
       grant_path_access,
+      list_root_locations,
+      grant_root_access,
       atomic_write_text,
       atomic_write_file,
       persistence::state_get,
@@ -948,5 +1136,28 @@ mod tests {
       Some(note.to_string_lossy().to_string())
     );
     let _ = std::fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn only_the_direct_parent_matches_for_folder_navigation() {
+    let dir = unique_temp_dir("parent-navigation");
+    let child = dir.join("child");
+    let grandchild = child.join("grandchild");
+    std::fs::create_dir_all(&grandchild).unwrap();
+
+    assert!(is_direct_parent_path(&dir, &child));
+    assert!(is_direct_parent_path(&child, &grandchild));
+    assert!(!is_direct_parent_path(&dir, &grandchild));
+
+    let _ = std::fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn root_locations_are_available() {
+    let roots = root_locations_impl();
+    assert!(!roots.is_empty());
+    assert!(roots
+      .iter()
+      .all(|root| !root.name.is_empty() && !root.path.is_empty()));
   }
 }

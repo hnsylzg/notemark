@@ -350,6 +350,64 @@ describe("inline markdown autoformat integration", () => {
     }
   });
 
+  it("does not serialize paragraph-boundary spaces as HTML entities", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(
+        editor,
+        [
+          "前面 <center>居中块</center> 后面。",
+          "",
+          '前面 <iframe src="https://example.com/embed" width="480" height="270"></iframe> 后面。',
+          "",
+          "> 引用内 <center>居中块</center> 后续。",
+          "",
+          "- 列表项 <center>居中块</center> 后续。",
+        ].join("\n")
+      );
+
+      const markdown = getMarkdown(editor);
+      expect(markdown).not.toContain("&#x20;");
+      expect(markdown).toContain("前面 ");
+      expect(markdown).toContain(" 后面。");
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("keeps iframe block and inline semantics based on paragraph context", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      const iframe =
+        '<iframe src="https://example.com/embed" width="560" height="315"></iframe>';
+
+      setMarkdown(editor, iframe);
+      expect(root.querySelectorAll(".mt-html-block")).toHaveLength(1);
+      expect(root.querySelectorAll(".mt-inline-html-node")).toHaveLength(0);
+      expect(root.querySelector(".mt-html-block-edit")?.textContent).toBe(
+        "HTML </>"
+      );
+
+      setMarkdown(editor, `前文 ${iframe} 后文`);
+      expect(root.querySelectorAll(".mt-html-block")).toHaveLength(0);
+      expect(root.querySelectorAll(".mt-inline-html-node")).toHaveLength(1);
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
   it.each(["code", "sup", "strong", "em", "del"])(
     "opens the inline HTML source editor for a <%s> tag",
     async (tag) => {

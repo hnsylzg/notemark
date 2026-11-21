@@ -7,7 +7,24 @@ import {
   HTML_SOURCE_CONTEXTMENU_EVENT,
   createHtmlBlockGapGuardPlugin,
   createHtmlBlockNodeView,
+  isBlockHtmlStart,
 } from "./html-block";
+
+describe("block HTML detection", () => {
+  it.each([
+    '<img src="https://example.com/a.png" alt="小图">',
+    '<iframe src="https://example.com/embed"></iframe>',
+    "<canvas>画布</canvas>",
+  ])("keeps inline-capable HTML inline: %s", (value) => {
+    expect(isBlockHtmlStart(value)).toBe(false);
+  });
+
+  it("still recognizes block-level containers", () => {
+    expect(isBlockHtmlStart("<div>内容</div>")).toBe(true);
+    expect(isBlockHtmlStart("<table><tr><td>内容</td></tr></table>")).toBe(true);
+    expect(isBlockHtmlStart("<blockquote>引用</blockquote>")).toBe(true);
+  });
+});
 
 const schema = new Schema({
   nodes: {

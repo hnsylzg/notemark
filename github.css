@@ -1,0 +1,817 @@
+/*
+ * NoteMark 外置主题 · GitHub
+ *
+ * 使用方式：
+ *   主题 → 导入自定义主题... → 选择 github.css
+ *
+ * 版式参考 GitHub Markdown：
+ *   - 系统无衬线字体、16px 正文、1.5 行距
+ *   - 1012px 内容宽度
+ *   - H1/H2 分隔线、蓝色链接、灰色引用边线
+ *   - GitHub Alert 五色提示块
+ *   - 灰色代码块、条纹表格
+ */
+
+:root,
+.milkdown {
+  --mt-color-fg: #1f2328;
+  --mt-color-fg-soft: #59636e;
+  --mt-color-fg-muted: #6e7781;
+  --mt-color-bg: #ffffff;
+  --mt-color-bg-soft: #f6f8fa;
+  --mt-color-bg-elevated: #ffffff;
+
+  --mt-color-primary: #0969da;
+  --mt-color-primary-soft: #ddf4ff;
+  --mt-color-border: #d1d9e0;
+  --mt-color-border-strong: #818b98;
+  --mt-color-selection: rgba(9, 105, 218, 0.2);
+  --mt-color-link: #0969da;
+
+  --mt-table-stripe: #f6f8fa;
+  --github-heading-border: #d1d9e0b3;
+  --github-quote-border: #d1d9e0;
+  --github-table-row-stripe: var(--mt-table-stripe);
+  --github-table-header-bg: transparent;
+  --github-table-border-color: #d1d9e0b3;
+  /* GitHub's 1px grid can resolve to two device pixels at common zoom levels. */
+  --github-table-border-width: 0.75px;
+  --github-table-cell-padding-block: 0.4em;
+  --github-table-cell-padding-inline: 0.8em;
+  --github-inline-code-bg: rgba(129, 139, 152, 0.12);
+  --github-mark-bg: #fff8c5;
+  --github-kbd-shadow: inset 0 -1px 0 #d1d9e0;
+
+  --mt-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --mt-font-mono: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --mt-font-size-base: 16px;
+  --mt-line-height-base: 1.5;
+  --mt-content-width: 1012px;
+  --mt-content-padding: 2rem;
+
+  --mt-code-bg: #f6f8fa;
+  --mt-code-fg: #1f2328;
+  --mt-code-border: #d1d9e0;
+  --mt-code-font-size: 13.6px;
+  --mt-code-line-height: 1.45;
+  --mt-code-gutter-fg: #6e7781;
+  --mt-code-gutter-bg: #f6f8fa;
+
+  --mt-token-keyword: #cf222e;
+  --mt-token-string: #0a3069;
+  --mt-token-number: #0550ae;
+  --mt-token-comment: #6e7781;
+  --mt-token-function: #8250df;
+  --mt-token-operator: #0550ae;
+  --mt-token-variable: #953800;
+  --mt-token-type: #116329;
+  --mt-token-property: #0550ae;
+  --mt-token-tag: #116329;
+
+  --mt-alert-line-height: 1.5;
+  --mt-alert-paragraph-gap-block: 0.5em;
+  --mt-alert-paragraph-edge-gap: 0;
+
+  --mt-alert-note-fg: #0969da;
+  --mt-alert-note-bg: transparent;
+  --mt-alert-note-border: #54aeff;
+  --mt-alert-tip-fg: #1a7f37;
+  --mt-alert-tip-bg: transparent;
+  --mt-alert-tip-border: #4ac26b;
+  --mt-alert-important-fg: #8250df;
+  --mt-alert-important-bg: transparent;
+  --mt-alert-important-border: #c297ff;
+  --mt-alert-warning-fg: #9a6700;
+  --mt-alert-warning-bg: transparent;
+  --mt-alert-warning-border: #d4a72c;
+  --mt-alert-caution-fg: #d1242f;
+  --mt-alert-caution-bg: transparent;
+  --mt-alert-caution-border: #ff8182;
+
+  --mt-radius: 6px;
+  --mt-shadow: 0 1px 0 rgba(31, 35, 40, 0.04);
+
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+:root {
+  --mt-bg: #ffffff;
+  --mt-text: #1f2328;
+  --mt-toolbar-bg: #f6f8fa;
+  --mt-fg: #1f2328;
+  --mt-muted: #59636e;
+  --mt-border: #d1d9e0;
+  --mt-hover: #eef1f4;
+  --mt-active: #e6eaef;
+  --mt-accent: #0969da;
+  --mt-accent-hover: #0550ae;
+  --mt-danger: #d1242f;
+  --mt-dirty: #cf222e;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --mt-bg: #0d1117;
+  --mt-text: #f0f6fc;
+  --mt-toolbar-bg: #151b23;
+  --mt-fg: #f0f6fc;
+  --mt-muted: #9198a1;
+  --mt-border: #3d444d;
+  --mt-hover: #1f2630;
+  --mt-active: #262c36;
+  --mt-accent: #4493f8;
+  --mt-accent-hover: #58a6ff;
+  --mt-danger: #f85149;
+  --mt-dirty: #f85149;
+}
+
+.milkdown:where(html[data-theme="dark"] *) {
+  --mt-color-fg: #f0f6fc;
+  --mt-color-fg-soft: #c9d1d9;
+  --mt-color-fg-muted: #9198a1;
+  --mt-color-bg: #0d1117;
+  --mt-color-bg-soft: #151b23;
+  --mt-color-bg-elevated: #151b23;
+
+  --mt-color-primary: #4493f8;
+  --mt-color-primary-soft: #121d2f;
+  --mt-color-border: #3d444d;
+  --mt-color-border-strong: #656c76;
+  --mt-color-selection: rgba(68, 147, 248, 0.25);
+  --mt-color-link: #4493f8;
+
+  --mt-table-stripe: #151b23;
+  --github-heading-border: #3d444db3;
+  --github-quote-border: #3d444d;
+  --github-table-row-stripe: var(--mt-table-stripe);
+  --github-table-header-bg: transparent;
+  --github-table-border-color: #3d444db3;
+  --github-inline-code-bg: rgba(101, 108, 118, 0.2);
+  --github-mark-bg: #4b3b00;
+  --github-kbd-shadow: inset 0 -1px 0 #3d444d;
+
+  --mt-code-bg: #151b23;
+  --mt-code-fg: #f0f6fc;
+  --mt-code-border: #3d444d;
+  --mt-code-gutter-fg: #9198a1;
+  --mt-code-gutter-bg: #151b23;
+
+  --mt-token-keyword: #ff7b72;
+  --mt-token-string: #a5d6ff;
+  --mt-token-number: #79c0ff;
+  --mt-token-comment: #9198a1;
+  --mt-token-function: #d2a8ff;
+  --mt-token-operator: #79c0ff;
+  --mt-token-variable: #ffa657;
+  --mt-token-type: #7ee787;
+  --mt-token-property: #79c0ff;
+  --mt-token-tag: #7ee787;
+
+  --mt-alert-note-fg: #4493f8;
+  --mt-alert-note-bg: transparent;
+  --mt-alert-note-border: #1f6feb;
+  --mt-alert-tip-fg: #3fb950;
+  --mt-alert-tip-bg: transparent;
+  --mt-alert-tip-border: #238636;
+  --mt-alert-important-fg: #ab7df8;
+  --mt-alert-important-bg: transparent;
+  --mt-alert-important-border: #8957e5;
+  --mt-alert-warning-fg: #d29922;
+  --mt-alert-warning-bg: transparent;
+  --mt-alert-warning-border: #9e6a03;
+  --mt-alert-caution-fg: #f85149;
+  --mt-alert-caution-bg: transparent;
+  --mt-alert-caution-border: #da3633;
+
+  --mt-shadow: none;
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+/* ============================================================
+ * GitHub canvas and content width
+ * ============================================================ */
+
+.milkdown {
+  color: var(--mt-color-fg);
+  background: var(--mt-color-bg);
+  font-family: var(--mt-font-sans);
+  font-size: var(--mt-font-size-base);
+  line-height: var(--mt-line-height-base);
+  word-wrap: break-word;
+}
+
+.milkdown > * {
+  max-width: var(--mt-content-width);
+}
+
+.milkdown .editor {
+  max-width: var(--mt-content-width);
+  margin: 0 auto;
+  padding: 2rem;
+  box-sizing: border-box;
+}
+
+.milkdown ::selection {
+  background: var(--mt-color-selection);
+}
+
+/* ============================================================
+ * Headings
+ * ============================================================ */
+
+.milkdown h1,
+.milkdown h2,
+.milkdown h3,
+.milkdown h4,
+.milkdown h5,
+.milkdown h6 {
+  margin: 1.5em 0 1rem;
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-sans);
+  font-weight: 600;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.milkdown h1 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--github-heading-border);
+  font-size: 2em;
+}
+
+.milkdown h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--github-heading-border);
+  font-size: 1.5em;
+}
+
+.milkdown h3 {
+  font-size: 1.25em;
+}
+
+.milkdown h4 {
+  font-size: 1em;
+}
+
+.milkdown h5 {
+  font-size: 0.875em;
+}
+
+.milkdown h6 {
+  color: var(--mt-color-fg-muted);
+  font-size: 0.85em;
+}
+
+.milkdown .editor > h1:first-child,
+.milkdown .editor > h2:first-child {
+  margin-top: 0;
+}
+
+/* ============================================================
+ * Paragraphs and inline text
+ * ============================================================ */
+
+.milkdown p {
+  margin: 0 0 1em;
+}
+
+.milkdown li > p,
+.milkdown th p,
+.milkdown td p,
+.milkdown .md-alert p,
+.milkdown figcaption p {
+  margin: 0;
+}
+
+.milkdown a {
+  color: var(--mt-color-link);
+  text-decoration: none;
+}
+
+.milkdown a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.milkdown strong,
+.milkdown b {
+  color: inherit;
+  font-weight: 600;
+}
+
+.milkdown em,
+.milkdown i {
+  font-style: italic;
+}
+
+.milkdown del,
+.milkdown s {
+  color: var(--mt-color-fg-muted);
+  text-decoration: line-through;
+}
+
+.milkdown mark {
+  padding: 0.05em 0.2em;
+  border-radius: 3px;
+  background: var(--github-mark-bg);
+  color: inherit;
+}
+
+.milkdown sup,
+.milkdown sub {
+  line-height: 0;
+  font-size: 0.75em;
+  position: relative;
+  vertical-align: baseline;
+}
+
+.milkdown sub {
+  bottom: -0.25em;
+}
+
+.milkdown sup {
+  top: -0.5em;
+}
+
+/* ============================================================
+ * Rules, images, kbd
+ * ============================================================ */
+
+.milkdown hr {
+  height: 0;
+  margin: 1.5rem 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--mt-color-border);
+  background: none;
+}
+
+.milkdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.milkdown img.mt-image-block {
+  display: block;
+  margin: 1em auto;
+}
+
+.milkdown kbd {
+  display: inline-block;
+  padding: 0.2em 0.4em;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 6px;
+  background: var(--mt-color-bg-soft);
+  box-shadow: var(--github-kbd-shadow);
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 0.85em;
+  line-height: 10px;
+  vertical-align: middle;
+}
+
+/* ============================================================
+ * Lists
+ * ============================================================ */
+
+.milkdown ul,
+.milkdown ol {
+  margin: 0 0 1em;
+  padding-left: 2em;
+}
+
+.milkdown .milkdown-list-item-block > .list-item {
+  padding-left: 2em;
+}
+
+.milkdown li + li {
+  margin-top: 0.25em;
+}
+
+.milkdown li > p {
+  margin: 0;
+}
+
+.milkdown .milkdown-list-item-block .label-wrapper .label {
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-sans);
+}
+
+.milkdown .milkdown-list-item-block .label-wrapper .label.ordered {
+  font-weight: 400;
+}
+
+/* ============================================================
+ * Quotes and alerts
+ * ============================================================ */
+
+.milkdown blockquote:not(.md-alert) {
+  margin: 0 0 1em;
+  padding: 0 1em;
+  border-left: 0.25em solid var(--github-quote-border);
+  border-radius: var(--mt-radius);
+  background: transparent;
+  color: var(--mt-color-fg-soft);
+}
+
+.milkdown blockquote:not(.md-alert) > :first-child {
+  margin-top: 0;
+}
+
+.milkdown blockquote:not(.md-alert) > :last-child {
+  margin-bottom: 0;
+}
+
+.milkdown blockquote:not(.md-alert) blockquote:not(.md-alert) {
+  margin-top: 0.75em;
+  margin-bottom: 0;
+}
+
+.milkdown .md-alert {
+  margin: 1em 0;
+  padding: 0.5rem 1rem;
+  border-left: 0.25em solid;
+  border-radius: 6px;
+}
+
+.milkdown .md-alert-title {
+  font-family: var(--mt-font-sans);
+  font-size: 0.92em;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.milkdown .md-alert-tip {
+  border-color: var(--mt-alert-tip-border);
+  background: var(--mt-alert-tip-bg);
+}
+
+.milkdown .md-alert-caution {
+  border-color: var(--mt-alert-caution-border);
+  background: var(--mt-alert-caution-bg);
+}
+
+.milkdown .md-alert-warning {
+  border-color: var(--mt-alert-warning-border);
+  background: var(--mt-alert-warning-bg);
+}
+
+.milkdown .md-alert-important {
+  border-color: var(--mt-alert-important-border);
+  background: var(--mt-alert-important-bg);
+}
+
+.milkdown .md-alert-note {
+  border-color: var(--mt-alert-note-border);
+  background: var(--mt-alert-note-bg);
+}
+
+/* ============================================================
+ * Tables — screen model
+ *
+ * Screen tables use a block wrapper for horizontal scrolling while the
+ * table itself keeps normal table layout. Shared values live in the
+ * --github-table-* theme variables above.
+ * ============================================================ */
+
+.milkdown table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 0 1em;
+  overflow: auto;
+  border: 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  border-radius: 0;
+  font-size: 1em;
+  line-height: 1.45;
+}
+
+.milkdown thead {
+  display: table-header-group;
+}
+
+.milkdown th,
+.milkdown td {
+  padding: var(--github-table-cell-padding-block)
+    var(--github-table-cell-padding-inline);
+  border: var(--github-table-border-width) solid
+    var(--github-table-border-color);
+  background: transparent;
+  text-align: left;
+  vertical-align: top;
+}
+
+.milkdown th {
+  background: var(--github-table-header-bg);
+  font-weight: 600;
+}
+
+.milkdown tr:nth-child(even) {
+  background: var(--github-table-row-stripe);
+}
+
+.milkdown tr:nth-child(odd) {
+  background: transparent;
+}
+
+/* HTML tables use a separate thead, so align their parity with Markdown tables. */
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:nth-child(odd) {
+  background: transparent;
+}
+
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:nth-child(even) {
+  background: var(--github-table-row-stripe);
+}
+
+/* ============================================================
+ * Inline code
+ * ============================================================ */
+
+.milkdown :not(pre) > code {
+  padding: 0.2em 0.4em;
+  border: 0;
+  border-radius: 6px;
+  background: var(--github-inline-code-bg);
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 0.85em;
+  white-space: break-spaces;
+}
+
+/* ============================================================
+ * Code blocks
+ * ============================================================ */
+
+.milkdown .milkdown-code-block {
+  position: relative;
+  margin: 0 0 1em;
+  padding: 1em;
+  border-radius: 0;
+  background: var(--mt-code-bg);
+}
+
+.milkdown .milkdown-code-block .language-button,
+.milkdown .milkdown-code-block .copy-button,
+.milkdown .milkdown-code-block .preview-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mt-code-gutter-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.milkdown .milkdown-code-block .language-button:hover,
+.milkdown .milkdown-code-block .copy-button:hover,
+.milkdown .milkdown-code-block .preview-toggle-button:hover {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-link);
+}
+
+.milkdown .milkdown-code-block .language-picker {
+  position: absolute;
+  z-index: 100;
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.milkdown .milkdown-code-block .list-wrapper {
+  margin-top: 4px;
+  overflow: hidden;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 6px;
+  background: var(--mt-color-bg-elevated);
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.15);
+}
+
+.milkdown .milkdown-code-block .search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mt-color-border);
+}
+
+.milkdown .milkdown-code-block .search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+}
+
+.milkdown .milkdown-code-block .search-input::placeholder {
+  color: var(--mt-code-gutter-fg);
+}
+
+.milkdown .milkdown-code-block .language-list {
+  max-height: 240px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.milkdown .milkdown-code-block .language-list-item {
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--mt-code-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.milkdown .milkdown-code-block .language-list-item:hover,
+.milkdown .milkdown-code-block .language-list-item[aria-selected="true"] {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-link);
+}
+
+.milkdown .milkdown-code-block .language-list-item.no-result {
+  padding: 16px 10px;
+  color: var(--mt-code-gutter-fg);
+  text-align: center;
+  cursor: default;
+}
+
+.milkdown .milkdown-code-block .codemirror-host {
+  overflow: hidden;
+  border-radius: 0;
+}
+
+.milkdown .cm-editor {
+  background: transparent;
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: var(--mt-code-font-size);
+  line-height: var(--mt-code-line-height);
+}
+
+.milkdown .cm-editor .cm-content {
+  padding: 0;
+  caret-color: var(--mt-color-link);
+}
+
+.milkdown .cm-editor .cm-line {
+  padding: 0 4px;
+}
+
+.milkdown .cm-editor .cm-gutters {
+  border: 0;
+  background: var(--mt-code-gutter-bg);
+  color: var(--mt-code-gutter-fg);
+  font-family: var(--mt-font-mono);
+  font-size: var(--mt-code-font-size);
+}
+
+.milkdown .cm-editor .cm-lineNumbers .cm-gutterElement {
+  min-width: 28px;
+  padding: 0 8px 0 12px;
+  text-align: right;
+}
+
+.milkdown .cm-editor .cm-activeLine {
+  background: var(--mt-color-primary-soft);
+}
+
+.milkdown .cm-editor .cm-activeLineGutter {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-link);
+}
+
+.milkdown .cm-editor .cm-selectionBackground,
+.milkdown .cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--mt-color-selection);
+}
+
+.milkdown .cm-editor .cm-cursor {
+  border-left-color: var(--mt-color-link);
+}
+
+.milkdown .cm-editor .cm-content .tok-comment {
+  font-style: italic;
+}
+
+/* ============================================================
+ * Math, diagrams, HTML preview, TOC, footnotes
+ * ============================================================ */
+
+.milkdown .katex {
+  color: var(--mt-color-fg);
+  font-size: 1.05em;
+}
+
+.milkdown .katex-display {
+  margin: 0.5em 0;
+}
+
+.milkdown div[data-type="math_block"] {
+  margin: 1em 0;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--mt-color-bg-soft);
+  text-align: center;
+}
+
+.milkdown .diagram {
+  margin: 1em 0;
+  background: transparent;
+}
+
+.milkdown .mt-html-block-preview {
+  font-size: var(--mt-font-size-base);
+  line-height: var(--mt-line-height-base);
+}
+
+.milkdown .mt-frontmatter {
+  border-left-color: var(--mt-color-border-strong);
+  border-radius: 6px;
+  background: var(--mt-color-bg-soft);
+}
+
+.milkdown .mt-toc {
+  margin: 0.8em 0 1.4em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.milkdown dl[data-type="footnote_definition"] {
+  color: var(--mt-color-fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.milkdown dl[data-type="footnote_definition"] dd {
+  margin-left: 1.5em;
+}
+
+/* ============================================================
+ * Editing affordances
+ * ============================================================ */
+
+.milkdown .mt-block-source-marker,
+.milkdown .mt-inline-html-edit {
+  color: var(--mt-color-fg-muted);
+  font-family: var(--mt-font-mono);
+}
+
+.milkdown .mt-table-selected-text {
+  border-radius: 2px;
+  background: var(--mt-color-selection);
+}
+
+/* ============================================================
+ * Print
+ * ============================================================ */
+
+@media print {
+  @page {
+    size: A4;
+    margin: 18mm;
+  }
+
+  .milkdown .editor {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .milkdown {
+    --mt-font-size-base: 11pt;
+    --mt-code-font-size: 9.5pt;
+  }
+}

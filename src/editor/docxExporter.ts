@@ -11,7 +11,7 @@
  *   svg 与 webp / avif 先栅格化成 png；远程图需要真能 fetch 到字节（被跨域
  *   策略挡住时降级为占位）；大图等比缩到内容区宽（顶到页边距），小图保持原尺寸
  * - 公式（行内/块级）：MathJax → MathML → OMML，作为 Word 原生公式注入
- *   （可在 Word 里继续编辑，与 Typora 导出一致）；转换失败时降级为
+ *   （可在 Word 里继续编辑，与 Typora 导出一致）；只有转换失败时降级为
  *   栅格化图片，再失败则退化为源码文本
  * - Mermaid 图表：SVG 矢量图内嵌，同时生成 PNG 兼容旧版 Word
  * - 嵌套表格：内层内容以段落呈现（Word 单元格内嵌表格结构复杂）
@@ -24,10 +24,7 @@
 
 import JSZip from "jszip";
 import { renderMathJaxSvg, texToMathMl } from "./mathjax";
-import {
-  mathMlRequiresRasterFallback,
-  mathMlToOmml,
-} from "./mathml-to-omml";
+import { mathMlToOmml } from "./mathml-to-omml";
 import { resolveImageSrc } from "./image-view";
 import {
   DEFAULT_MERMAID_EXPORT_BACKGROUND,
@@ -45,6 +42,8 @@ import {
   LineRuleType,
   Packer,
   Paragraph,
+  Tab,
+  TabStopType,
   Table,
   TableCell,
   TableLayoutType,
@@ -53,11 +52,15 @@ import {
   UnderlineType,
   WidthType,
 } from "docx";
-import type { IRunOptions } from "docx";
+import type { IParagraphOptions, IRunOptions } from "docx";
 import type { Node as PMNode, Mark as PMMark } from "@milkdown/kit/prose/model";
 
 /** 段落级元素（Document 的 children） */
 type BlockChild = Paragraph | Table;
+type ParagraphSpacing = NonNullable<IParagraphOptions["spacing"]>;
+type BlockConversionOptions = {
+  quoteDepth?: number;
+};
 /** 段落内联元素 */
 type InlineChild =
   | TextRun
@@ -161,6 +164,8 @@ const FIRST_FOOTNOTE_ID = 1;
 const DEFAULT_ABSTRACT_TITLE = "Abstract";
 /** OOXML twips per typographic point. */
 const TWIPS_PER_POINT = 20;
+/** OOXML stores font sizes in half-points. */
+const HALF_POINTS_PER_POINT = 2;
 /**
  * Word 内置表格样式的默认左右单元格留白。
  * OOXML 固定使用 twips；108 twips = 0.1905 cm。
@@ -205,6 +210,30 @@ const CODE_BLOCK_BORDER = {
     space: CODE_BLOCK_HORIZONTAL_SPACE_PT,
   },
 } as const;
+
+/** Alert export: type color, left rule, and content indentation in OOXML units. */
+const ALERT_EXPORT_STYLES: Record<string, { label: string; color: string }> = {
+  note: { label: "NOTE", color: "0969DA" },
+  tip: { label: "TIP", color: "1A7F37" },
+  important: { label: "IMPORTANT", color: "8250DF" },
+  warning: { label: "WARNING", color: "9A6700" },
+  caution: { label: "CAUTION", color: "CF222E" },
+};
+/** Shared 2pt rule for alerts and ordinary blockquotes. */
+const QUOTE_RULE_WIDTH = 2 * BORDER_UNITS_PER_POINT;
+const ALERT_BORDER_WIDTH = QUOTE_RULE_WIDTH;
+const ALERT_BORDER_SPACE_PT = 6;
+const ALERT_CONTENT_INDENT_TWIPS = 120;
+const BLOCK_TEXT_BORDER_RULE = {
+  style: BorderStyle.SINGLE,
+  size: QUOTE_RULE_WIDTH,
+  color: "BFBFBF",
+  space: 8,
+} as const;
+const BLOCK_TEXT_INDENT_TWIPS = 482;
+const QUOTE_LEVEL_INDENT_EM = 1;
+/** Alert body paragraphs follow the same 5pt rhythm as blockquotes. */
+const ALERT_PARAGRAPH_SPACING = BLOCK_TEXT_SPACING;
 
 /** 标题层级映射（1~6） */
 const HEADING_LEVELS = [
@@ -253,6 +282,15 @@ const MAX_FIGURE_HEIGHT_PX = Math.floor(
  * 4 倍可覆盖打印缩放，单张图的逻辑尺寸仍保持不变。
  */
 const DIAGRAM_EXPORT_RASTER_SCALE = 4;
+/** Formula PNGs need explicit print resolution; never depend on screen DPR. */
+const FORMULA_EXPORT_RASTER_SCALE = 4;
+/** Word body text is 12pt; CSS pixels use 96 DPI. */
+const WORD_BODY_FONT_SIZE_PX = 16;
+/**
+ * MathJax emits SVG dimensions in `ex`. At the Word body font, one ex is
+ * approximately 0.45em for the MathJax fonts used by the editor.
+ */
+const MATHJAX_EX_TO_EM = 0.45;
 
 /** 对齐 Word 手动插表使用的默认单元格内边距；上下为 0，左右为 0.1905 cm。 */
 const WORD_TABLE_CELL_MARGINS = {
@@ -323,6 +361,8 @@ type ExportContext = {
   nextFootnoteId: number;
   /** 转换脚注定义时，正文段落应改用 Footnote Text。 */
   inFootnote: boolean;
+  /** 当前正在导出的 Alert 类型色；普通文档内容为 null。 */
+  alertStyle: { color: string } | null;
 };
 
 export interface DocxExportSource {
@@ -355,6 +395,7 @@ export async function buildDocx(
     footnoteReferences: [],
     nextFootnoteId: FIRST_FOOTNOTE_ID,
     inFootnote: false,
+    alertStyle: null,
   };
   collectFootnoteMetadata(doc, ctx);
   const children = [
@@ -413,7 +454,7 @@ export async function buildDocx(
           },
         },
         heading4: {
-          run: { size: 24, bold: true, font: BODY_FONTS },
+          run: { size: 26, bold: true, font: BODY_FONTS },
           paragraph: {
             spacing: {
               before: 160,
@@ -426,7 +467,7 @@ export async function buildDocx(
           },
         },
         heading5: {
-          run: { size: 22, bold: true, font: BODY_FONTS },
+          run: { size: 24, bold: true, font: BODY_FONTS },
           paragraph: {
             spacing: {
               before: 120,
@@ -439,7 +480,7 @@ export async function buildDocx(
           },
         },
         heading6: {
-          run: { size: 22, bold: true, font: BODY_FONTS },
+          run: { size: 24, bold: true, font: BODY_FONTS },
           paragraph: {
             spacing: {
               before: 120,
@@ -629,17 +670,12 @@ export async function buildDocx(
             indent: {
               firstLineChars: 0,
               firstLine: 0,
-              left: 482,
-              right: 482,
+              left: BLOCK_TEXT_INDENT_TWIPS,
+              right: BLOCK_TEXT_INDENT_TWIPS,
             },
             spacing: BLOCK_TEXT_SPACING,
             border: {
-              left: {
-                style: BorderStyle.SINGLE,
-                size: 12,
-                color: "BFBFBF",
-                space: 8,
-              },
+              left: BLOCK_TEXT_BORDER_RULE,
               top: {
                 style: BorderStyle.SINGLE,
                 size: 2,
@@ -1049,7 +1085,7 @@ async function convertBlocks(parent: PMNode, ctx: ExportContext): Promise<BlockC
     const caption = tableCaptionText(parent.child(i + 1));
     if (!caption) continue;
     out.push(
-      new Paragraph({
+      createParagraph(ctx, {
         style: TABLE_CAPTION_STYLE,
         children: [new TextRun({ text: caption })],
       })
@@ -1058,6 +1094,109 @@ async function convertBlocks(parent: PMNode, ctx: ExportContext): Promise<BlockC
   }
   ctx.nextParagraphIsFirst = previousFirstParagraph;
   return out;
+}
+
+/**
+ * Alert uses paragraph borders rather than a table or fill:
+ * every paragraph keeps the same left rule and gains a small content indent.
+ */
+function createParagraph(
+  ctx: ExportContext,
+  options: IParagraphOptions,
+  spacing: ParagraphSpacing = ALERT_PARAGRAPH_SPACING
+): Paragraph {
+  if (!ctx.alertStyle) return new Paragraph(options);
+  const existingLeft =
+    typeof options.indent?.left === "number" ? options.indent.left : 0;
+  return new Paragraph({
+    ...options,
+    border: {
+      ...options.border,
+      left: {
+        style: BorderStyle.SINGLE,
+        size: ALERT_BORDER_WIDTH,
+        color: ctx.alertStyle.color,
+        space: ALERT_BORDER_SPACE_PT,
+      },
+    },
+    indent: {
+      ...options.indent,
+      left: existingLeft + ALERT_CONTENT_INDENT_TWIPS,
+    },
+    spacing,
+  });
+}
+
+async function convertAlert(
+  node: PMNode,
+  ctx: ExportContext
+): Promise<BlockChild[]> {
+  const type = String((node.attrs ?? {}).alertType ?? "note").toLowerCase();
+  const style = ALERT_EXPORT_STYLES[type] ?? ALERT_EXPORT_STYLES.note;
+  const customTitle = String((node.attrs ?? {}).title ?? "").trim();
+  const previous = ctx.alertStyle;
+  ctx.alertStyle = { color: style.color };
+  try {
+    const titleRun = new TextRun({
+      text: customTitle ? `${style.label}  ${customTitle}` : style.label,
+      bold: true,
+      color: style.color,
+    });
+    const bodyParagraphs = paragraphOnlyAlertBody(node);
+    if (bodyParagraphs) {
+      const bodyRuns: InlineChild[] = [];
+      for (const paragraph of bodyParagraphs) {
+        if (bodyRuns.length > 0) bodyRuns.push(new TextRun({ break: 1 }));
+        bodyRuns.push(...(await convertInline(paragraph, ctx)));
+      }
+      return [
+        createParagraph(
+          ctx,
+          {
+            style: "BodyText",
+            children: [
+              titleRun,
+              new TextRun({ break: 1 }),
+              ...bodyRuns,
+            ],
+          },
+          {
+            ...ALERT_PARAGRAPH_SPACING,
+          }
+        ),
+      ];
+    }
+    const title = createParagraph(ctx, {
+      style: "BodyText",
+      keepNext: true,
+      children: [titleRun],
+    });
+    const body = await convertBlocks(node, ctx);
+    return [title, ...body];
+  } finally {
+    ctx.alertStyle = previous;
+  }
+}
+
+/** Paragraph-only alerts merge into one Word paragraph, like blockquotes. */
+function paragraphOnlyAlertBody(node: PMNode): PMNode[] | null {
+  const paragraphs: PMNode[] = [];
+  for (let i = 0; i < node.childCount; i += 1) {
+    const child = node.child(i);
+    if (child.type.name !== "paragraph") return null;
+    paragraphs.push(child);
+  }
+  return paragraphs.length > 0 ? paragraphs : null;
+}
+
+/** Each nested quote adds one body-font em to both sides of the text area. */
+function quoteLevelIndentTwips(ctx: ExportContext, depth: number): number {
+  return Math.round(
+    (ctx.base / HALF_POINTS_PER_POINT) *
+      TWIPS_PER_POINT *
+      QUOTE_LEVEL_INDENT_EM *
+      depth
+  );
 }
 
 /** 消费 Pandoc 的 First Paragraph 标记，并选择正文段落样式。 */
@@ -1073,12 +1212,16 @@ function takeBodyParagraphStyle(
   return style;
 }
 
-async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChild[]> {
+async function convertBlock(
+  node: PMNode,
+  ctx: ExportContext,
+  options: BlockConversionOptions = {}
+): Promise<BlockChild[]> {
   switch (node.type.name) {
     case "heading": {
       const level = clampLevel(Number(node.attrs.level) || 1);
       const heading = [
-        new Paragraph({
+        createParagraph(ctx, {
           heading: level,
           children: await convertInline(node, ctx),
         }),
@@ -1096,7 +1239,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
         );
         if (embedded) {
           const caption = String(image.attrs.alt ?? "").trim();
-          const imageParagraph = new Paragraph({
+          const imageParagraph = createParagraph(ctx, {
             style: caption
               ? CAPTIONED_FIGURE_STYLE
               : takeBodyParagraphStyle(ctx),
@@ -1107,7 +1250,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
           ctx.nextParagraphIsFirst = false;
           return [
             imageParagraph,
-            new Paragraph({
+            createParagraph(ctx, {
               style: IMAGE_CAPTION_STYLE,
               children: [new TextRun({ text: caption })],
             }),
@@ -1115,7 +1258,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
         }
       }
       return [
-        new Paragraph({
+        createParagraph(ctx, {
           style: takeBodyParagraphStyle(ctx),
           // 段落里嵌着 <center> 的行内 HTML 时整段居中（此前只在 default 分支
           // 判定，而 paragraph 有独立分支，导致居中判定根本执行不到）
@@ -1125,14 +1268,29 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       ];
     }
 
+    case "alert":
+      return convertAlert(node, ctx);
+
     case "blockquote": {
       const out: BlockChild[] = [];
       let inline: InlineChild[] = [];
+      const quoteDepth = Math.max(0, options.quoteDepth ?? 0);
+      const nestedIndent = quoteLevelIndentTwips(ctx, quoteDepth);
       const flushParagraph = () => {
         if (inline.length === 0) return;
         out.push(
-          new Paragraph({
+          createParagraph(ctx, {
             style: ctx.inFootnote ? FOOTNOTE_BLOCK_TEXT_STYLE : "BlockText",
+            ...(nestedIndent > 0
+              ? {
+                  tabStops: [
+                    {
+                      type: TabStopType.LEFT,
+                      position: BLOCK_TEXT_INDENT_TWIPS + nestedIndent,
+                    },
+                  ],
+                }
+              : {}),
             children: inline,
           })
         );
@@ -1144,11 +1302,22 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
           const paragraph = await convertInline(child, ctx);
           if (paragraph.length === 0) continue;
           if (inline.length > 0) inline.push(new TextRun({ break: 1 }));
+          if (quoteDepth > 0) {
+            inline.push(new TextRun({ children: [new Tab()] }));
+          }
           inline.push(...paragraph);
         } else {
           // 引用块内的列表/代码块等：递归处理（缩进样式不再叠加）
           flushParagraph();
-          out.push(...(await convertBlock(child, ctx)));
+          out.push(
+            ...(await convertBlock(
+              child,
+              ctx,
+              child.type.name === "blockquote"
+                ? { quoteDepth: quoteDepth + 1 }
+                : {}
+            ))
+          );
         }
       }
       flushParagraph();
@@ -1169,7 +1338,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
         if (i < lines.length - 1) children.push(new TextRun({ break: 1 }));
       }
       return [
-        new Paragraph({
+        createParagraph(ctx, {
           style: "SourceCode",
           // docx 库中 true 会写成 <w:wordWrap w:val="0"/>，即关闭自动换行。
           wordWrap: true,
@@ -1236,10 +1405,10 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
         String(node.attrs.src ?? ""),
         imageDocProperties(node)
       );
-      if (embedded) return [new Paragraph({ children: [embedded] })];
+      if (embedded) return [createParagraph(ctx, { children: [embedded] })];
       const label = String(node.attrs.alt ?? "") || "图片";
       return [
-        new Paragraph({
+        createParagraph(ctx, {
           children: [new TextRun({ text: `[${label}]`, italics: true, color: "888888" })],
         }),
       ];
@@ -1249,7 +1418,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     case "horizontal_rule": {
       const token = nextHorizontalRuleToken(ctx);
       ctx.horizontalRulePlaceholders.push({ token });
-      return [new Paragraph({ children: [new TextRun({ text: token })] })];
+      return [createParagraph(ctx, { children: [new TextRun({ text: token })] })];
     }
 
     // 块级数学公式：先尝试转 Word 原生 OMML，失败再降级为栅格图片，再失败为源码
@@ -1260,11 +1429,14 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
         const token = nextToken(ctx);
         ctx.placeholders.push({ token, omml });
         return [
-          new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: token })] }),
+          createParagraph(ctx, {
+            spacing: { after: 120 },
+            children: [new TextRun({ text: token })],
+          }),
         ];
       }
       const img = await formulaToImage(tex, true);
-      if (img) return [new Paragraph({ children: [img] })];
+      if (img) return [createParagraph(ctx, { children: [img] })];
       return [sourceParagraph(tex, ctx)];
     }
 
@@ -1275,7 +1447,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
       const diagram = await diagramToImage(code, identity, ctx.viewDom);
       if (diagram) {
         return [
-          new Paragraph({
+          createParagraph(ctx, {
             children: [
               new ImageRun({
                 type: "svg",
@@ -1301,7 +1473,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     case "toc": {
       const token = nextTocToken(ctx);
       ctx.tocPlaceholders.push({ token, xml: buildTocFieldXml() });
-      return [new Paragraph({ children: [new TextRun({ text: token })] })];
+      return [createParagraph(ctx, { children: [new TextRun({ text: token })] })];
     }
 
     // 块级 HTML：htmlBlock 是 atom 节点（HTML 源码存 attrs.value、无子节点）。
@@ -1309,7 +1481,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     // 时若落到 default 分支「递归子节点」，原子节点没有子节点 → 内容直接丢失。
     case "htmlBlock": {
       const value = String((node.attrs ?? {}).value ?? "");
-      return await htmlBlockToParagraphs(value);
+      return await htmlBlockToParagraphs(value, ctx);
     }
 
     case "footnote_definition": {
@@ -1323,7 +1495,7 @@ async function convertBlock(node: PMNode, ctx: ExportContext): Promise<BlockChil
     default: {
       if (node.isTextblock) {
         return [
-          new Paragraph({
+          createParagraph(ctx, {
             style: takeBodyParagraphStyle(ctx),
             // 段落里嵌着 <center> 的行内 HTML 时整段居中
             alignment: paragraphAlignment(node),
@@ -1448,7 +1620,10 @@ async function htmlInlineChildren(node: Node, m: HtmlMark): Promise<InlineChild[
  *
  * 支持：块级标签分段、<br> 软换行、b/strong/i/em/u/s/del/code、<a> 外链、<center> 居中。
  */
-async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
+async function htmlBlockToParagraphs(
+  html: string,
+  ctx: ExportContext
+): Promise<Paragraph[]> {
   if (!html || !html.trim()) return [];
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const out: Paragraph[] = [];
@@ -1457,7 +1632,7 @@ async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
     let pending: InlineChild[] = [];
     const flush = () => {
       if (pending.length > 0) {
-        out.push(new Paragraph({ alignment: align, children: pending }));
+        out.push(createParagraph(ctx, { alignment: align, children: pending }));
         pending = [];
       }
     };
@@ -1482,7 +1657,7 @@ async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
           const itemTag = item.tagName.toUpperCase();
           if (itemTag !== "DT" && itemTag !== "DD") continue;
           out.push(
-            new Paragraph({
+            createParagraph(ctx, {
               style: itemTag === "DT" ? DEFINITION_TERM_STYLE : DEFINITION_STYLE,
               alignment: align,
               children: await htmlInlineChildren(item, {}),
@@ -1507,7 +1682,9 @@ async function htmlBlockToParagraphs(html: string): Promise<Paragraph[]> {
           ? await embedImage(src, htmlImageDocProperties(el))
           : null;
         if (embedded) {
-          out.push(new Paragraph({ alignment: align, children: [embedded] }));
+          out.push(
+            createParagraph(ctx, { alignment: align, children: [embedded] })
+          );
         }
         continue;
       }
@@ -1684,7 +1861,7 @@ async function convertList(parent: PMNode, ctx: ExportContext, depth: number): P
             : "BodyText";
         paragraphIndex += 1;
         out.push(
-          new Paragraph({
+          createParagraph(ctx, {
             style,
             indent: {
               left: LIST_INDENT * (depth + 1),
@@ -1832,7 +2009,6 @@ async function latexToOmml(tex: string, displayMode: boolean): Promise<string | 
   try {
     if (!tex || !tex.trim()) return null;
     const mathml = await texToMathMl(tex, displayMode);
-    if (mathMlRequiresRasterFallback(mathml)) return null;
     let omml = mathMlToOmml(mathml);
     if (!omml || !omml.includes("<m:")) return null;
     if (displayMode) omml = `<m:oMathPara>${omml}</m:oMathPara>`;
@@ -1849,7 +2025,12 @@ async function formulaToImage(tex: string, displayMode: boolean): Promise<ImageR
     const container = await renderMathJaxSvg(tex, displayMode);
     const svg = container.querySelector("svg")?.outerHTML;
     if (!svg) return null;
-    const png = await svgToPng(svg);
+    const png = await svgToPng(
+      svg,
+      MAX_IMAGE_WIDTH,
+      displayMode ? MAX_FIGURE_HEIGHT_PX : undefined,
+      FORMULA_EXPORT_RASTER_SCALE
+    );
     if (!png) return null;
     return new ImageRun({
       type: "png",
@@ -1925,11 +2106,28 @@ function parseSvgSize(svg: string): { w: number; h: number } {
    */
   const attr = (name: string): number => {
     const m = tag.match(
-      new RegExp(`\\b${name}\\s*=\\s*["']?\\s*([\\d.]+)\\s*(px|pt|em|rem|%)?`, "i")
+      new RegExp(
+        `\\b${name}\\s*=\\s*["']?\\s*([\\d.]+)\\s*(px|pt|em|rem|ex|%)?`,
+        "i"
+      )
     );
     if (!m) return NaN;
     if (m[2] === "%") return NaN;
-    return num(m[1]);
+    const value = num(m[1]);
+    switch ((m[2] ?? "").toLowerCase()) {
+      case "":
+      case "px":
+        return value;
+      case "pt":
+        return (value * 96) / 72;
+      case "em":
+      case "rem":
+        return value * WORD_BODY_FONT_SIZE_PX;
+      case "ex":
+        return value * WORD_BODY_FONT_SIZE_PX * MATHJAX_EX_TO_EM;
+      default:
+        return NaN;
+    }
   };
   const w = attr("width");
   const h = attr("height");
@@ -2295,7 +2493,7 @@ function nextToken(ctx: ExportContext): string {
 
 /** 公式/图表渲染失败时的源码占位段落 */
 function sourceParagraph(tex: string, ctx: ExportContext): Paragraph {
-  return new Paragraph({
+  return createParagraph(ctx, {
     children: [
       new TextRun({ text: tex, font: CODE_FONTS, color: "666666", size: ctx.code }),
     ],

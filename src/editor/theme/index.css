@@ -96,6 +96,38 @@
   list-style: none; /* 关闭原生 <li> marker，避免与 .label-wrapper 重复 */
 }
 
+/* HTML 块预览渲染的是 HTML 内容，而不是 ProseMirror 的源码文本。
+   ProseMirror 的 white-space: pre-wrap 会把源码缩进/换行保留成空白行；
+   这里只恢复正常 HTML 空白折叠，并去掉根元素首尾排版外边距。 */
+.milkdown .editor .mt-html-block-preview {
+  white-space: normal;
+}
+.milkdown .editor .mt-html-block-preview > :first-child {
+  margin-block-start: 0;
+}
+.milkdown .editor .mt-html-block-preview > :last-child {
+  margin-block-end: 0;
+}
+
+/* Markdown 表格的表头和数据行同属 tbody，斑马纹从完整表格的第 2 行开始。
+   HTML 表格的 thead/tbody 分开计算 nth-child；这里把带 thead 的 HTML
+   表格数据行整体后移一位，保持与 Markdown 表格相同的条纹顺序。 */
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:nth-child(odd) {
+  background: transparent;
+}
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:nth-child(even) {
+  background: var(--mt-table-stripe, var(--mt-color-bg-soft));
+}
 /* ============================================================
  * 标题行距基线——必须未分层
  *
@@ -210,27 +242,108 @@ body,
      避免可用宽度变化后，居中的正文列随滚动条整体左右跳动。 */
   scrollbar-gutter: stable;
 }
-.milkdown::-webkit-scrollbar {
-  /* 内置主题与 CSS 外置主题必须使用同一槽宽；否则即使保留槽位，
-     切换时可用宽度仍会变化，居中正文列会轻微横移。 */
-  width: var(--mt-scrollbar-size, 10px);
-  height: var(--mt-scrollbar-size, 10px);
+:root {
+  --mt-scrollbar-size: 0.5rem;
+  --mt-scrollbar-min-length: 2.5rem;
+  --mt-scrollbar-thumb: var(--mt-border, #cdd2d8);
+  --mt-scrollbar-thumb-hover: var(--mt-muted, #8a98a8);
 }
-.milkdown::-webkit-scrollbar-track {
+
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar {
+  width: var(--mt-scrollbar-size);
+  height: var(--mt-scrollbar-size);
+}
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar-track,
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar-track-piece {
   background: transparent;
 }
-.milkdown::-webkit-scrollbar-thumb {
-  min-height: 2.5rem;
-  border: 2px solid transparent;
-  border-radius: calc(var(--mt-scrollbar-size, 10px) / 2);
-  background: var(--mt-color-border-strong);
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar-thumb {
+  min-height: var(--mt-scrollbar-min-length);
+  border: calc(var(--mt-scrollbar-size) / 8) solid transparent;
+  border-radius: calc(var(--mt-scrollbar-size) / 2);
+  background: var(--mt-scrollbar-thumb);
   background-clip: padding-box;
 }
-.milkdown::-webkit-scrollbar-thumb:hover {
-  background: var(--mt-color-fg-muted);
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar-thumb:hover {
+  background: var(--mt-scrollbar-thumb-hover);
   background-clip: padding-box;
 }
-.milkdown::-webkit-scrollbar-corner {
+:where(
+  .milkdown,
+  .milkdown .cm-scroller,
+  .milkdown .diagram,
+  .milkdown .language-list,
+  .milkdown div[data-type="math_block"],
+  .milkdown .mt-html-block-preview *,
+  .milkdown textarea.mt-html-block-body,
+  .mt-source,
+  .mt-sidebar__body
+)::-webkit-scrollbar-corner {
   background: transparent;
 }
 

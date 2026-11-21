@@ -25,7 +25,6 @@
  *   12. 代码语法高亮 token
  *   13. 数学公式（KaTeX）
  *   14. Mermaid 图表（默认继承，可选覆盖）
- *   15. 滚动条
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -362,12 +361,19 @@
   font-weight: bold;          /* 表头仅加粗，不另设底色/文字色 */
 }
 /* 斑马纹从表头（首行）起即开始交替，表头也参与条纹。
-   表头用 th 覆盖、奇数数据行用 tr:nth-child(odd) 覆盖（共用 --mt-table-stripe）。 */
-.milkdown th,
-.milkdown tr:nth-child(odd) > td {
+   条纹绘制在行上，单元格只保留边框，避免背景遮住折叠边框（共用 --mt-table-stripe）。 */
+.milkdown tr:nth-child(odd) {
   background: var(--mt-table-stripe);
 }
-.milkdown tr:hover td {
+.milkdown tbody tr:hover {
+  background: var(--mt-color-primary-soft);
+}
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:hover {
   background: var(--mt-color-primary-soft);
 }
 
@@ -588,26 +594,3 @@
 }
  * ═══════════════════════════════════════════════════════════════ */
 
-/* ═══════════════════════════════════════════════════════════════
- * 15. 滚动条
- *     三个滚动容器用 :where() 合并成一个选择器（零特异性，后续主题可覆盖）：
- *     - .milkdown 自身（主滚动条）
- *     - .cm-scroller（代码块内部）
- *     - .diagram（图表横向）
- *     注意：-webkit-scrollbar 只对「真正产生滚动条的元素」生效；
- *     track 默认透明，无需单独声明。
- * ═══════════════════════════════════════════════════════════════ */
-:where(.milkdown, .milkdown .cm-scroller, .milkdown .diagram)::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-:where(.milkdown, .milkdown .cm-scroller, .milkdown .diagram)::-webkit-scrollbar-thumb {
-  background: var(--mt-color-border-strong);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  border-radius: 5px;
-}
-:where(.milkdown, .milkdown .cm-scroller, .milkdown .diagram)::-webkit-scrollbar-thumb:hover {
-  background: var(--mt-color-primary);
-  background-clip: padding-box;
-}

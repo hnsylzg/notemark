@@ -201,16 +201,19 @@
 :where(.milkdown .editor) img {
   max-width: 100%;
   border-radius: 0; /* 图片保持直角，不切圆角 */
-  /* 不设置 vertical-align：沿用 CSS 初始值 baseline（浏览器默认，
-     Milkdown 也未覆盖），即图片底边落在文字基线上。
-     这里保持与外部 Markdown 渲染（GitHub 等）一致，不做主观调整。 */
+  vertical-align: middle;
 }
 
-/* 图片源码态：节点本身仍是行内 image，不转换成表单或属性面板。 */
+/* 图片源码态：节点本身仍是行内 image，不转换成表单或属性面板。
+   与文字混排时按行内媒体元素处理，垂直居中对齐两侧文字。 */
 :where(.milkdown .editor) .mt-image-node {
   display: inline-block;
   max-width: 100%;
-  vertical-align: baseline;
+  vertical-align: middle;
+}
+
+:where(.milkdown .editor) .mt-image-node > img {
+  display: block;
 }
 
 :where(.milkdown .editor) .mt-image-node.ProseMirror-selectednode > img {
@@ -370,6 +373,12 @@
      此处必须用 !important 才能保证引用块内段落不被撑大、与 .md-alert 对齐 */
   margin: 4px 0 !important;
 }
+:where(.milkdown .editor) blockquote > p:first-child {
+  margin-top: 0 !important;
+}
+:where(.milkdown .editor) blockquote > p:last-child {
+  margin-bottom: 0 !important;
+}
 /* 嵌套引用保留每层左边框与缩进，但递减内部空白，避免多层后正文过窄、
    上下间距层层叠加。使用非 :where() 选择器，主题仍可通过同名变量调整。 */
 .milkdown .editor blockquote blockquote:not(.md-alert) {
@@ -412,6 +421,7 @@
   border-left: 4px solid var(--mt-alert-border);
   background: var(--mt-alert-bg);
   border-radius: 0.1px;
+  line-height: var(--mt-alert-line-height, var(--mt-line-height-base));
 }
 /* 图标（octicon，mask 裁剪 + 背景色跟随 --mt-alert-fg） */
 :where(.milkdown .editor) blockquote.md-alert::before {
@@ -460,7 +470,13 @@
   min-width: 0;
 }
 :where(.milkdown .editor) blockquote.md-alert .md-alert-content > p {
-  margin: 4px 0 !important;
+  margin: var(--mt-alert-paragraph-gap-block, 4px) 0 !important;
+}
+:where(.milkdown .editor) blockquote.md-alert .md-alert-content > p:first-child {
+  margin-top: var(--mt-alert-paragraph-edge-gap, 0) !important;
+}
+:where(.milkdown .editor) blockquote.md-alert .md-alert-content > p:last-child {
+  margin-bottom: var(--mt-alert-paragraph-edge-gap, 0) !important;
 }
 /* 各类型：仅定义局部变量与图标，颜色统一走全局变量（亮/暗各一套） */
 :where(.milkdown .editor) blockquote.md-alert-note {
@@ -521,6 +537,16 @@
   line-height: 1.2; /* 表格行高紧凑，避免继承正文 1.75 */
   text-align: left;
 }
+/* HTML 块预览默认字号略小；表格跟随正文基准字号，与 Markdown 表格一致。 */
+:where(.milkdown .editor) .mt-html-block-preview table {
+  font-size: var(--mt-font-size-base);
+}
+/* HTML 块预览不会自动像 Markdown 一样把引用内容解析成段落；
+   补齐段落结构后，这里使用正文基准字号和行高，使两种引用高度一致。 */
+:where(.milkdown .editor) .mt-html-block-preview blockquote {
+  font-size: var(--mt-font-size-base);
+  line-height: var(--mt-line-height-base);
+}
 :where(.milkdown .editor) .mt-table-selected-text {
   background: var(--mt-color-selection);
   border-radius: 0.15em;
@@ -531,8 +557,8 @@
   background: var(--mt-color-bg-soft);
   font-weight: 600;
 }
-/* 斑马纹从表头（首行）之后开始：奇数数据行（第 3、5、7… 行）与表头同色 */
-:where(.milkdown .editor) tr:nth-child(odd) td {
+/* 斑马纹绘制在行上，单元格只保留边框，避免背景遮住折叠边框。 */
+:where(.milkdown .editor) tr:nth-child(odd) {
   background: var(--mt-color-bg-soft);
 }
 
@@ -685,15 +711,20 @@
 :where(.milkdown .editor) .milkdown-math-inline {
   display: inline;
   cursor: pointer; /* 提示可点击进入编辑 */
+  /* Paragraph themes may indent the first line. Keep that block-level
+     indentation out of the inline formula's internal layout. */
+  text-indent: 0;
 }
 :where(.milkdown .editor) .milkdown-math-inline-display {
   display: inline;
+  text-indent: 0;
 }
 :where(.milkdown .editor) .milkdown-math-inline-display mjx-container[jax="SVG"] {
   display: inline-block;
   margin: 0;
   color: var(--mt-text);
   font-size: 1em;
+  text-indent: 0;
   pointer-events: none;
 }
 :where(.milkdown .editor) .milkdown-math-inline-display mjx-container svg {
@@ -793,9 +824,6 @@
 /* 与公式块一致：默认直接显示渲染对象（无外框，融入文档）；点对象进入「HTML 代码
    编辑框」（带框的 textarea），输完失焦编辑框消失、对象重新显示 */
 :where(.milkdown .editor) .mt-html-block {
-  --md-iframe-max-width: calc(
-    var(--mt-content-width, 100%) - 2 * var(--mt-content-padding, 0px)
-  );
   position: relative;
   /* 为上方 18px 的 HTML </> 工具行预留空间，避免与上一段文字重叠。 */
   margin: 18px 0 16px;
@@ -812,13 +840,6 @@
   );
 }
 
-/* iframe 预览宽度有上限时，HTML 块本身也跟随该宽度，悬停底色和右上标签
-   不再铺满正文列；普通 HTML 块仍按内容自然全宽显示。 */
-:where(.milkdown .editor) .mt-html-block:has(.md-iframe-wrap) {
-  width: min(100%, var(--md-iframe-max-width));
-  margin-left: auto;
-  margin-right: auto;
-}
 :where(.milkdown .editor) .mt-html-block .mt-html-block-body::placeholder {
   color: var(--mt-color-fg-muted, #9aa0a6);
 }
@@ -887,6 +908,55 @@
   display: inline;
 }
 
+:where(.milkdown .editor) .mt-inline-html-node--embed {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+:where(.milkdown .editor)
+  .mt-inline-html-node--embed
+  > .mt-inline-html-preview
+  > img {
+  display: block;
+}
+
+:where(.milkdown .editor) .mt-inline-html-edit {
+  position: absolute;
+  top: 0.35em;
+  right: 0.35em;
+  z-index: 2;
+  padding: 0 0.3em;
+  border: 0;
+  border-radius: 0.25em;
+  background: color-mix(
+    in srgb,
+    var(--mt-color-bg-elevated) 82%,
+    transparent
+  );
+  color: var(--mt-color-fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+:where(.milkdown .editor) .mt-inline-html-node--embed:hover
+  > .mt-inline-html-edit,
+:where(.milkdown .editor) .mt-inline-html-node--embed:focus-within
+  > .mt-inline-html-edit {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+:where(.milkdown .editor) .mt-inline-html-edit:hover {
+  color: var(--mt-color-fg);
+}
+
 :where(.milkdown .editor) .mt-inline-html-preview.mt-inline-html-literal {
   color: var(--mt-color-fg-soft);
   font-family: var(--mt-font-mono, monospace);
@@ -929,10 +999,14 @@
 :where(.milkdown .editor) span[data-type="html"] u {
   text-decoration: underline;
 }
-:where(.milkdown .editor) span[data-type="html"] mark {
+:where(.milkdown .editor) mark[data-inline-html-mark="true"],
+:where(.milkdown .editor) span[data-type="html"] mark,
+:where(.milkdown .editor) .mt-html-block-preview mark {
   background-color: rgba(255, 213, 79, 0.35);
 }
-:where(.milkdown .editor) span[data-type="html"] kbd {
+:where(.milkdown .editor) kbd[data-inline-html-mark="true"],
+:where(.milkdown .editor) span[data-type="html"] kbd,
+:where(.milkdown .editor) .mt-html-block-preview kbd {
   padding: 1px 4px;
   border: 1px solid var(--mt-color-border-strong);
   border-bottom-width: 2px;
@@ -941,25 +1015,36 @@
   font-family: var(--mt-font-mono, monospace);
   font-size: 0.9em;
 }
-/* iframe 嵌入（如 YouTube / B 站 / 地图等）：默认 16:9 自适应，保留页面自身交互。
+/* iframe 嵌入（如 YouTube / B 站 / 地图等）：不强制宽高比，保留 HTML 声明与页面自身交互。
    同时覆盖行内 HTML（span[data-type="html"]）与块级 HTML（div[data-type="htmlblock"]），
-   否则被提升为块级 htmlBlock 的 iframe 会丢失 16:9 样式 */
+   否则被提升为块级 htmlBlock 的 iframe 会丢失统一的宽度与交互样式。 */
 :where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap,
 :where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap {
-  max-width: var(--md-iframe-max-width, 100%);
   margin: 0.5em auto;
+}
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0 0.15em;
+  vertical-align: middle;
+}
+:where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap {
+  width: 100%;
 }
 :where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap iframe,
 :where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap iframe {
   display: block;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 16 / 9;
-  min-height: 240px;
+  max-width: 100%;
   border: 1px solid var(--mt-color-border-strong);
   border-radius: var(--mt-radius, 8px);
   background: var(--mt-color-bg-soft);
   pointer-events: auto;
+}
+:where(.milkdown .editor) span[data-type="html"] .md-iframe-wrap iframe {
+  width: auto;
+}
+:where(.milkdown .editor) div[data-type="htmlblock"] .md-iframe-wrap iframe {
+  width: 100%;
 }
 
 /* Typora 的 HTML 块默认与页面同底色，不额外描边。 */
@@ -971,21 +1056,6 @@
   background: transparent;
 }
 
-/* 仅 Python Tutor 使用嵌入代码声明的高度，避免其内容被 16:9 压缩后
-   在 iframe 中间出现内部滚动条。选择器必须覆盖上面的 16:9 通用规则，
-   否则 height:auto 因 specificity 更高而继续生效。 */
-:where(.milkdown .editor)
-  span[data-type="html"]
-  .md-iframe-wrap
-  iframe[data-md-embed-provider="pythontutor"],
-:where(.milkdown .editor)
-  div[data-type="htmlblock"]
-  .md-iframe-wrap
-  iframe[data-md-embed-provider="pythontutor"] {
-  height: var(--md-iframe-height, 620px);
-  aspect-ratio: auto;
-  max-height: none;
-}
 /* ============ [toc] 活的目录 ============ */
 :where(.milkdown .editor) .mt-toc {
   padding: 0.75em 1em;

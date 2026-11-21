@@ -21,6 +21,7 @@
 
   --mt-color-border: #e3e6ea;
   --mt-color-border-strong: #cdd2d8;
+  --mt-hr-print-border: 1px solid var(--mt-color-border);
 
   --mt-color-selection: rgba(66, 133, 244, 0.18);
   --mt-color-link: #2b6cb0;
@@ -42,8 +43,11 @@
   --mt-heading-6-size: 1em;
   --mt-content-width: 800px;
   --mt-content-padding: 48px;
-  /* 主滚动条宽度：所有主题共用，避免切换主题时稳定槽位宽度变化。 */
-  --mt-scrollbar-size: 10px;
+  /* 滚动条统一尺寸：所有主题和滚动容器共用，避免切换时槽宽变化。 */
+  --mt-scrollbar-size: 0.5rem;
+  --mt-scrollbar-min-length: 2.5rem;
+  --mt-scrollbar-thumb: var(--mt-color-border-strong);
+  --mt-scrollbar-thumb-hover: var(--mt-color-fg-muted);
 
   /* ============ 代码块 ============ */
   --mt-code-bg: #f6f8fa;
@@ -84,6 +88,9 @@
   --mt-quote-heading-gap: 0.375em;
 
   /* ============ Alert 引用块（> [!NOTE] 等，各类型原配色：fg 图标/标题，bg 底色，border 左竖线） ============ */
+  --mt-alert-line-height: var(--mt-line-height-base);
+  --mt-alert-paragraph-gap-block: 4px;
+  --mt-alert-paragraph-edge-gap: 0px;
   --mt-alert-tip-fg: #1f883d;
   --mt-alert-tip-bg: #e8f4eb90;
   --mt-alert-tip-border: #1f883d;

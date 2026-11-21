@@ -1,0 +1,833 @@
+/*
+ * NoteMark 外置主题 · LaTeX Paper
+ *
+ * 参考 LaTeX article 类默认排版：
+ *   - Computer Modern / Latin Modern 衬线字体
+ *   - 首行缩进 2em，段间不额外留白
+ *   - ctex 风格 1.55 行距，两端对齐
+ *   - A4 + 2.5cm 页边距换算的版心
+ *   - 标题黑色衬线加粗，无装饰线
+ *   - quote 环境左右对称缩进、无边框和底色
+ *   - verbatim 等宽代码、booktabs 三线表
+ *
+ * 使用方式：主题 → 导入自定义主题... → 选择 latex.css
+ */
+
+:root,
+.milkdown {
+  --mt-color-fg: #000000;
+  --mt-color-fg-soft: #33312d;
+  --mt-color-fg-muted: #706a60;
+  --mt-color-bg: #ffffff;
+  --mt-color-bg-soft: #f7f5f0;
+  --mt-color-bg-elevated: #ffffff;
+
+  --mt-color-primary: #000000;
+  --mt-color-primary-soft: #f0eee8;
+  --mt-color-border: #d8d3c8;
+  --mt-color-border-strong: #000000;
+  --mt-hr-print-border: 0.04em solid var(--latex-rule);
+  --mt-color-selection: rgba(0, 0, 0, 0.12);
+  --mt-color-link: #000000;
+
+  --mt-table-stripe: transparent;
+
+  /* Official TeX fonts first, then compatible serif and CJK fallbacks. */
+  --mt-font-sans: "Latin Modern Roman", "Latin Modern Roman10",
+    "Latin Modern Serif", "CMU Serif", "Computer Modern Roman",
+    "CMU Serif Roman", "TeX Gyre Termes", "TeX Gyre Pagella", "Nimbus Roman",
+    "Nimbus Roman No9 L", "Times New Roman", "Noto Serif CJK SC",
+    "Noto Serif SC", "Source Han Serif SC", SimSun, "Songti SC", serif;
+  --mt-font-mono: "Latin Modern Mono", "Latin Modern Mono 10",
+    "CMU Typewriter Text", "TeX Gyre Cursor", "Nimbus Mono PS", "Courier New",
+    Consolas, FangSong, "Noto Sans Mono CJK SC", monospace;
+
+  --mt-font-size-base: 16px;
+  --mt-line-height-base: 1.55;
+  --mt-content-width: calc(16cm + 2 * 2.5cm);
+  --mt-content-padding: 2.5cm;
+
+  --mt-code-bg: transparent;
+  --mt-code-fg: #000000;
+  --mt-code-border: #d8d3c8;
+  --mt-code-font-size: 16px;
+  --mt-code-line-height: 1.25;
+  --mt-code-gutter-fg: #706a60;
+  --mt-code-gutter-bg: transparent;
+
+  /* LaTeX default output is monochrome; comments remain distinguishable. */
+  --mt-token-keyword: #000000;
+  --mt-token-string: #000000;
+  --mt-token-number: #000000;
+  --mt-token-comment: #706a60;
+  --mt-token-function: #000000;
+  --mt-token-operator: #000000;
+  --mt-token-variable: #000000;
+  --mt-token-type: #000000;
+  --mt-token-property: #000000;
+  --mt-token-tag: #000000;
+
+  --mt-alert-line-height: 1.55;
+  --mt-alert-paragraph-gap-block: 0;
+  --mt-alert-paragraph-edge-gap: 0;
+
+  --mt-alert-note-fg: #000000;
+  --mt-alert-note-bg: transparent;
+  --mt-alert-note-border: #000000;
+  --mt-alert-tip-fg: #000000;
+  --mt-alert-tip-bg: transparent;
+  --mt-alert-tip-border: #000000;
+  --mt-alert-important-fg: #000000;
+  --mt-alert-important-bg: transparent;
+  --mt-alert-important-border: #000000;
+  --mt-alert-warning-fg: #000000;
+  --mt-alert-warning-bg: transparent;
+  --mt-alert-warning-border: #000000;
+  --mt-alert-caution-fg: #000000;
+  --mt-alert-caution-bg: transparent;
+  --mt-alert-caution-border: #000000;
+
+  --mt-radius: 0px;
+  --mt-shadow: none;
+
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+
+  --latex-rule: #000000;
+  --latex-parindent: 2em;
+  --latex-mark-bg: rgba(0, 0, 0, 0.09);
+}
+
+:root {
+  --mt-bg: #ffffff;
+  --mt-text: #000000;
+  --mt-toolbar-bg: #f6f4ef;
+  --mt-fg: #000000;
+  --mt-muted: #706a60;
+  --mt-border: #d8d3c8;
+  --mt-hover: #f0eee8;
+  --mt-active: #e7e3da;
+  --mt-accent: #000000;
+  --mt-accent-hover: #33312d;
+  --mt-danger: #7a2424;
+  --mt-dirty: #7a2424;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --mt-bg: #1b1b1a;
+  --mt-text: #ddd9d0;
+  --mt-toolbar-bg: #232322;
+  --mt-fg: #ddd9d0;
+  --mt-muted: #8c867b;
+  --mt-border: #3b3a37;
+  --mt-hover: #2b2b2a;
+  --mt-active: #333331;
+  --mt-accent: #ddd9d0;
+  --mt-accent-hover: #ffffff;
+  --mt-danger: #d7a09a;
+  --mt-dirty: #d7a09a;
+}
+
+.milkdown:where(html[data-theme="dark"] *) {
+  --mt-color-fg: #ddd9d0;
+  --mt-color-fg-soft: #b8b2a6;
+  --mt-color-fg-muted: #8c867b;
+  --mt-color-bg: #1b1b1a;
+  --mt-color-bg-soft: #232322;
+  --mt-color-bg-elevated: #292927;
+
+  --mt-color-primary: #ddd9d0;
+  --mt-color-primary-soft: #2b2b2a;
+  --mt-color-border: #3b3a37;
+  --mt-color-border-strong: #ddd9d0;
+  --mt-color-selection: rgba(221, 217, 208, 0.22);
+  --mt-color-link: #ddd9d0;
+
+  --mt-code-fg: #ddd9d0;
+  --mt-code-border: #3b3a37;
+  --mt-code-gutter-fg: #8c867b;
+
+  --mt-token-keyword: #ddd9d0;
+  --mt-token-string: #ddd9d0;
+  --mt-token-number: #ddd9d0;
+  --mt-token-comment: #8c867b;
+  --mt-token-function: #ddd9d0;
+  --mt-token-operator: #ddd9d0;
+  --mt-token-variable: #ddd9d0;
+  --mt-token-type: #ddd9d0;
+  --mt-token-property: #ddd9d0;
+  --mt-token-tag: #ddd9d0;
+
+  --mt-alert-note-fg: #ddd9d0;
+  --mt-alert-note-bg: transparent;
+  --mt-alert-note-border: #ddd9d0;
+  --mt-alert-tip-fg: #ddd9d0;
+  --mt-alert-tip-bg: transparent;
+  --mt-alert-tip-border: #ddd9d0;
+  --mt-alert-important-fg: #ddd9d0;
+  --mt-alert-important-bg: transparent;
+  --mt-alert-important-border: #ddd9d0;
+  --mt-alert-warning-fg: #ddd9d0;
+  --mt-alert-warning-bg: transparent;
+  --mt-alert-warning-border: #ddd9d0;
+  --mt-alert-caution-fg: #ddd9d0;
+  --mt-alert-caution-bg: transparent;
+  --mt-alert-caution-border: #ddd9d0;
+
+  --latex-rule: #cfc9bb;
+  --latex-mark-bg: rgba(221, 217, 208, 0.14);
+  --mt-bg: var(--mt-color-bg);
+  --mt-text: var(--mt-color-fg);
+}
+
+/* ============================================================
+ * Article page and typography
+ * ============================================================ */
+
+.milkdown {
+  color: var(--mt-color-fg);
+  background: var(--mt-color-bg);
+  font-family: var(--mt-font-sans);
+  font-size: var(--mt-font-size-base);
+  line-height: var(--mt-line-height-base);
+  text-align: justify;
+  text-justify: inter-ideograph;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures;
+  text-rendering: optimizeLegibility;
+  tab-size: 4;
+}
+
+.milkdown .editor {
+  max-width: var(--mt-content-width);
+  margin: 0 auto;
+  padding: var(--mt-content-padding);
+  padding-bottom: 4rem;
+  box-sizing: border-box;
+}
+
+.milkdown ::selection {
+  background: var(--mt-color-selection);
+}
+
+/* LaTeX paragraphs are separated by indentation, not blank space. */
+.milkdown .editor p {
+  margin: 0;
+  text-indent: var(--latex-parindent);
+  orphans: 3;
+  widows: 3;
+}
+
+.milkdown .editor h1 + p,
+.milkdown .editor h2 + p,
+.milkdown .editor h3 + p,
+.milkdown .editor h4 + p,
+.milkdown .editor h5 + p,
+.milkdown .editor h6 + p,
+.milkdown .editor hr + p,
+.milkdown .editor li p,
+.milkdown .editor th p,
+.milkdown .editor td p,
+.milkdown .editor figcaption p,
+.milkdown .editor blockquote p,
+.milkdown .editor .md-alert p,
+.milkdown .editor .mt-html-block-preview p,
+.milkdown .editor > p:first-child,
+.milkdown .editor p:has(> img.mt-image-block) {
+  text-indent: 0;
+}
+
+/* ============================================================
+ * Headings — article.cls proportions
+ * ============================================================ */
+
+.milkdown h1,
+.milkdown h2,
+.milkdown h3,
+.milkdown h4,
+.milkdown h5,
+.milkdown h6 {
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-sans);
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1.25;
+  letter-spacing: 0;
+  text-align: left;
+  text-indent: 0;
+  hyphens: manual;
+}
+
+.milkdown h1 {
+  margin: 1.5em 0 1em;
+  padding: 0;
+  border: 0;
+  font-size: 1.44em;
+}
+
+.milkdown .editor > h1:first-child {
+  margin: 0 0 1.5em;
+  font-size: 1.73em;
+  text-align: center;
+}
+
+.milkdown h2 {
+  margin: 1.5em 0 1em;
+  font-size: 1.44em;
+}
+
+.milkdown h3 {
+  margin: 1.4em 0 0.65em;
+  font-size: 1.2em;
+}
+
+.milkdown h4,
+.milkdown h5,
+.milkdown h6 {
+  font-size: 1em;
+}
+
+.milkdown h4 {
+  margin: 1.4em 0 0.65em;
+}
+
+.milkdown h5 {
+  margin: 1.4em 0 0.4em;
+}
+
+.milkdown h6 {
+  margin: 1.2em 0 0.3em;
+}
+
+/* ============================================================
+ * Inline text
+ * ============================================================ */
+
+.milkdown a {
+  color: var(--mt-color-fg);
+  text-decoration: underline;
+  text-decoration-thickness: 0.05em;
+  text-underline-offset: 0.18em;
+}
+
+.milkdown a:hover {
+  text-decoration-thickness: 0.11em;
+}
+
+.milkdown a:focus-visible {
+  outline: 1px solid var(--mt-color-fg);
+  outline-offset: 2px;
+}
+
+.milkdown strong,
+.milkdown b {
+  color: inherit;
+  font-weight: 700;
+}
+
+.milkdown em,
+.milkdown i {
+  font-style: italic;
+}
+
+.milkdown del,
+.milkdown s {
+  color: var(--mt-color-fg-muted);
+  text-decoration: line-through;
+}
+
+.milkdown mark {
+  padding: 0;
+  border-radius: 0;
+  background: var(--latex-mark-bg);
+  color: inherit;
+}
+
+.milkdown sup,
+.milkdown sub {
+  line-height: 0;
+  font-size: 0.75em;
+}
+
+/* ============================================================
+ * Lists
+ * ============================================================ */
+
+.milkdown ul,
+.milkdown ol {
+  margin: 0.8em 0;
+  padding-left: 2.5em;
+}
+
+.milkdown .milkdown-list-item-block > .list-item {
+  padding-left: 2.5em;
+}
+
+.milkdown li {
+  margin: 0.28em 0;
+  text-indent: 0;
+}
+
+.milkdown li > p {
+  margin: 0;
+}
+
+.milkdown .milkdown-list-item-block .label-wrapper .label {
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-sans);
+}
+
+.milkdown .milkdown-list-item-block .label-wrapper .label.ordered {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+ * Quote and alerts
+ * ============================================================ */
+
+.milkdown blockquote:not(.md-alert) {
+  margin: 0.8em 2.5em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+  font-style: normal;
+  text-align: inherit;
+}
+
+.milkdown blockquote:not(.md-alert) p {
+  margin: 0;
+  text-indent: 0;
+}
+
+.milkdown blockquote:not(.md-alert) blockquote:not(.md-alert) {
+  margin: 0.55em 0 0.55em 1.6em;
+}
+
+.milkdown .md-alert {
+  margin: 0.8em 0;
+  padding: 0.35em 0 0.35em 0.9em;
+  border-left: 0.06em solid var(--mt-color-fg);
+  border-radius: 0;
+  background: transparent;
+  color: var(--mt-color-fg);
+}
+
+.milkdown .md-alert::before {
+  width: 0.85em;
+  height: 0.85em;
+}
+
+.milkdown .md-alert-title {
+  color: var(--mt-color-fg);
+  font-family: var(--mt-font-sans);
+  font-size: 0.82em;
+  font-weight: 700;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+}
+
+.milkdown .md-alert-content p {
+  margin: 0 !important;
+  text-indent: 0;
+}
+
+/* ============================================================
+ * Code — \ttfamily / verbatim
+ * ============================================================ */
+
+.milkdown :not(pre) > code,
+.milkdown kbd,
+.milkdown samp,
+.milkdown tt {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-family: var(--mt-font-mono);
+  font-size: 1em;
+  letter-spacing: 0;
+}
+
+.milkdown .milkdown-code-block {
+  position: relative;
+  margin: 0.8em 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.milkdown .milkdown-code-block .language-button,
+.milkdown .milkdown-code-block .copy-button,
+.milkdown .milkdown-code-block .preview-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--mt-color-fg-muted);
+  font-family: var(--mt-font-mono);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.milkdown .milkdown-code-block .language-button:hover,
+.milkdown .milkdown-code-block .copy-button:hover,
+.milkdown .milkdown-code-block .preview-toggle-button:hover {
+  color: var(--mt-color-fg);
+}
+
+.milkdown .milkdown-code-block .language-picker {
+  position: absolute;
+  z-index: 100;
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.milkdown .milkdown-code-block .list-wrapper {
+  margin-top: 4px;
+  overflow: hidden;
+  border: 1px solid var(--mt-color-border);
+  border-radius: 0;
+  background: var(--mt-color-bg-elevated);
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+}
+
+.milkdown .milkdown-code-block .search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mt-color-border);
+}
+
+.milkdown .milkdown-code-block .search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: 12px;
+}
+
+.milkdown .milkdown-code-block .search-input::placeholder {
+  color: var(--mt-code-gutter-fg);
+}
+
+.milkdown .milkdown-code-block .language-list {
+  max-height: 240px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.milkdown .milkdown-code-block .language-list-item {
+  padding: 6px 10px;
+  border-radius: 0;
+  color: var(--mt-code-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.milkdown .milkdown-code-block .language-list-item:hover,
+.milkdown .milkdown-code-block .language-list-item[aria-selected="true"] {
+  background: var(--mt-color-primary-soft);
+  color: var(--mt-color-fg);
+}
+
+.milkdown .milkdown-code-block .language-list-item.no-result {
+  padding: 16px 10px;
+  color: var(--mt-code-gutter-fg);
+  text-align: center;
+  cursor: default;
+}
+
+.milkdown .milkdown-code-block .codemirror-host {
+  overflow: hidden;
+  border-radius: 0;
+}
+
+.milkdown .cm-editor {
+  background: transparent;
+  color: var(--mt-code-fg);
+  font-family: var(--mt-font-mono);
+  font-size: var(--mt-code-font-size);
+  line-height: var(--mt-code-line-height);
+  text-align: left;
+  hyphens: none;
+}
+
+.milkdown .cm-editor .cm-content {
+  padding: 0;
+  caret-color: var(--mt-color-fg);
+}
+
+.milkdown .cm-editor .cm-line {
+  padding: 0 4px;
+}
+
+.milkdown .cm-editor .cm-gutters {
+  border: 0;
+  background: transparent;
+  color: var(--mt-code-gutter-fg);
+  font-family: var(--mt-font-mono);
+  font-size: var(--mt-code-font-size);
+}
+
+.milkdown .cm-editor .cm-lineNumbers .cm-gutterElement {
+  min-width: 28px;
+  padding: 0 8px 0 12px;
+  text-align: right;
+}
+
+.milkdown .cm-editor .cm-activeLine,
+.milkdown .cm-editor .cm-activeLineGutter {
+  background: var(--mt-color-primary-soft);
+}
+
+.milkdown .cm-editor .cm-selectionBackground,
+.milkdown .cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--mt-color-selection);
+}
+
+.milkdown .cm-editor .cm-cursor {
+  border-left-color: var(--mt-color-fg);
+}
+
+.milkdown .cm-editor .cm-content .tok-comment {
+  font-style: italic;
+}
+
+/* ============================================================
+ * Booktabs tables
+ * ============================================================ */
+
+.milkdown table {
+  width: 100%;
+  margin: 1em 0;
+  border: 0;
+  border-collapse: collapse;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  font-size: 1em;
+  line-height: 1.35;
+}
+
+.milkdown th,
+.milkdown td {
+  padding: 0.35em 0.6em;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  text-indent: 0;
+  vertical-align: top;
+}
+
+.milkdown tr {
+  background: transparent;
+}
+
+.milkdown th {
+  border-top: 0.06em solid var(--latex-rule);
+  border-bottom: 0.05em solid var(--latex-rule);
+  font-weight: 700;
+  vertical-align: bottom;
+}
+
+.milkdown tr:first-child > th {
+  border-top: 0.06em solid var(--latex-rule);
+  border-bottom: 0.05em solid var(--latex-rule);
+}
+
+.milkdown tr:last-child > td {
+  border-bottom: 0.06em solid var(--latex-rule);
+}
+
+/* HTML tables have a separate thead; keep their body parity stable. */
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:nth-child(odd)
+  > td,
+.milkdown
+  .editor
+  .mt-html-block-preview
+  table:has(> thead)
+  > tbody
+  > tr:nth-child(even)
+  > td {
+  background: transparent;
+}
+
+/* ============================================================
+ * Rules, media, math, diagrams
+ * ============================================================ */
+
+.milkdown hr {
+  height: 0;
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 0.04em solid var(--latex-rule);
+  background: none;
+}
+
+.milkdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.milkdown img.mt-image-block {
+  display: block;
+  margin: 1.5em auto;
+}
+
+.milkdown figure {
+  margin: 1.5em 0;
+}
+
+.milkdown figcaption {
+  margin-top: 0.55em;
+  color: inherit;
+  font-size: 0.9em;
+  line-height: 1.4;
+  text-align: justify;
+  text-indent: 0;
+}
+
+.milkdown .katex {
+  color: var(--mt-color-fg);
+  font-size: 1em;
+}
+
+.milkdown .katex-display {
+  margin: 0.9em 0;
+}
+
+.milkdown div[data-type="math_block"] {
+  margin: 1em 0;
+  padding: 0;
+  overflow-x: auto;
+  background: transparent;
+  text-align: center;
+}
+
+/* Prevent article spacing from leaking into Mermaid foreignObject labels. */
+.milkdown .diagram,
+.milkdown .diagram * {
+  line-height: 1.2;
+  text-indent: 0;
+  letter-spacing: 0;
+  word-spacing: normal;
+  hyphens: manual;
+}
+
+.milkdown .diagram p,
+.milkdown .diagram div {
+  margin: 0;
+}
+
+.milkdown .diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ============================================================
+ * HTML, front matter, TOC, footnotes
+ * ============================================================ */
+
+.milkdown .mt-html-block-preview {
+  font-size: var(--mt-font-size-base);
+  line-height: var(--mt-line-height-base);
+}
+
+.milkdown .mt-frontmatter {
+  border-left-color: var(--mt-color-border-strong);
+  border-radius: 0;
+  background: var(--mt-color-bg-soft);
+}
+
+.milkdown .mt-toc {
+  margin: 0.8em 0 1.4em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.milkdown dl[data-type="footnote_definition"] {
+  font-size: 0.8em;
+  line-height: 1.45;
+}
+
+.milkdown dl[data-type="footnote_definition"] dd {
+  margin-left: 2em;
+  text-indent: 0;
+}
+
+/* ============================================================
+ * Editing affordances
+ * ============================================================ */
+
+.milkdown .mt-block-source-marker,
+.milkdown .mt-inline-html-edit {
+  color: var(--mt-color-fg-muted);
+  font-family: var(--mt-font-mono);
+}
+
+.milkdown .mt-table-selected-text {
+  border-radius: 0;
+  background: var(--mt-color-selection);
+}
+
+/* ============================================================
+ * PDF / print
+ *
+ * The editor uses a 21cm page shell with 2.5cm internal padding.
+ * During PDF export the page itself already supplies margins, so
+ * retaining that padding a second time shrinks the text measure to
+ * roughly 12.4cm. Reset the editor shell and let @page define the
+ * A4 article measure.
+ * ============================================================ */
+
+@media print {
+  @page {
+    size: A4;
+    margin: 2.5cm !important;
+  }
+
+  .milkdown .editor {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .milkdown {
+    --mt-font-size-base: 10.5pt;
+    --mt-code-font-size: 10.5pt;
+  }
+}

@@ -44,6 +44,21 @@ const IFRAME_SAME_ORIGIN_HOSTS = new Set([
   "www.pythontutor.com",
 ]);
 
+/** 视频嵌入必须访问自身存储，并依赖来源信息完成防盗链校验。 */
+const IFRAME_MEDIA_HOSTS = [
+  "youtube.com",
+  "youtube-nocookie.com",
+  "bilibili.com",
+  "vimeo.com",
+] as const;
+
+const IFRAME_PLAYBACK_PERMISSIONS = [
+  "autoplay",
+  "encrypted-media",
+  "fullscreen",
+  "picture-in-picture",
+] as const;
+
 /** iframe 的 allow 属性中不允许出现的敏感权限（剥离，防止嵌入页滥用设备能力） */
 const IFRAME_DENIED_PERMISSIONS = new Set([
   "camera", "microphone", "geolocation", "payment", "usb", "midi", "serial",
@@ -58,10 +73,17 @@ const IFRAME_DENIED_PERMISSIONS = new Set([
  * permissions. A user-provided `sandbox` attribute is intentionally replaced.
  */
 function hardenIframe(el: Element): void {
+  let isPythonTutor = false;
   let needsSameOrigin = false;
+  let isMediaEmbed = false;
   try {
     const url = new URL(el.getAttribute("src") ?? "", window.location.href);
-    needsSameOrigin = IFRAME_SAME_ORIGIN_HOSTS.has(url.hostname.toLowerCase());
+    const hostname = url.hostname.toLowerCase();
+    isPythonTutor = IFRAME_SAME_ORIGIN_HOSTS.has(hostname);
+    isMediaEmbed = IFRAME_MEDIA_HOSTS.some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
+    );
+    needsSameOrigin = isPythonTutor || isMediaEmbed;
   } catch {
     // URL 已通过前面的 http(s) 校验；这里仅兜底畸形 URL。
   }
@@ -71,31 +93,38 @@ function hardenIframe(el: Element): void {
       needsSameOrigin ? " allow-same-origin" : ""
     }`
   );
-  if (needsSameOrigin) el.setAttribute("data-md-embed-provider", "pythontutor");
-  el.setAttribute("referrerpolicy", "no-referrer");
+  if (isPythonTutor) {
+    el.setAttribute("data-md-embed-provider", "pythontutor");
+  } else if (isMediaEmbed) {
+    el.setAttribute("data-md-embed-provider", "media");
+  }
+  el.setAttribute(
+    "referrerpolicy",
+    isMediaEmbed ? "strict-origin-when-cross-origin" : "no-referrer"
+  );
   el.removeAttribute("name");
   const allow = el.getAttribute("allow") ?? "";
-  if (allow) {
-    const parts = allow
-      .split(";")
-      .map((p) => p.trim())
-      .filter(Boolean);
+  const parts = allow
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const existingPermissions = new Set(
+    parts.map((part) => part.split(/\s+/)[0].toLowerCase())
+  );
+  for (const permission of IFRAME_PLAYBACK_PERMISSIONS) {
+    if (!existingPermissions.has(permission)) parts.push(permission);
+  }
+  el.setAttribute("allowfullscreen", "");
+  if (parts.length > 0) {
     el.setAttribute(
       "allow",
       parts
         .filter((p) => !IFRAME_DENIED_PERMISSIONS.has(p.split(/\s+/)[0].toLowerCase()))
         .join("; ")
     );
+  } else {
+    el.removeAttribute("allow");
   }
-}
-
-/** Python Tutor 是纵向可视化面板，保留嵌入代码声明的固定高度。 */
-function applyIframeRequestedHeight(el: Element, wrap: HTMLElement): void {
-  if (el.getAttribute("data-md-embed-provider") !== "pythontutor") return;
-  const requested = Number.parseFloat(el.getAttribute("height") ?? "");
-  if (!Number.isFinite(requested)) return;
-  const height = Math.min(1200, Math.max(240, Math.round(requested)));
-  wrap.style.setProperty("--md-iframe-height", `${height}px`);
 }
 
 /** 白名单过滤 HTML：移除危险标签、事件属性、脚本相关属性 */
@@ -157,7 +186,6 @@ export function sanitizeHtml(html: string): string {
       wrap.className = "md-iframe-wrap";
       el.replaceWith(wrap);
       wrap.appendChild(el);
-      applyIframeRequestedHeight(el, wrap);
     }
   }
   return template.innerHTML;
@@ -218,6 +246,44 @@ const SAFE_BLOCK_ATTRS = new Set([
   "referrerpolicy",
 ]);
 
+const FLOW_CONTAINER_BLOCK_CHILDREN = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "details",
+  "div",
+  "dl",
+  "figure",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "main",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "ul",
+]);
+
+function wrapInlineContentInParagraph(container: HTMLElement): void {
+  const hasBlockChild = Array.from(container.children).some((child) =>
+    FLOW_CONTAINER_BLOCK_CHILDREN.has(child.tagName.toLowerCase())
+  );
+  if (hasBlockChild) return;
+  if (!container.textContent?.trim()) return;
+  const paragraph = document.createElement("p");
+  while (container.firstChild) paragraph.appendChild(container.firstChild);
+  container.appendChild(paragraph);
+}
+
 /**
  * 块级 HTML 块的 sanitize：比行内白名单宽松，允许 div / p / h1 / table / img
  * 等常见块级标签及 class/style 等属性；仍移除 script/style/表单/SVG 等危险容器、
@@ -252,7 +318,6 @@ export function sanitizeHtmlBlock(html: string): string {
       wrap.className = "md-iframe-wrap";
       el.replaceWith(wrap);
       wrap.appendChild(el);
-      applyIframeRequestedHeight(el, wrap);
       continue;
     }
 
@@ -278,6 +343,12 @@ export function sanitizeHtmlBlock(html: string): string {
     }
     if (tag === "img") {
       ensureImgSrc(el);
+    }
+    if (tag === "td" || tag === "th") {
+      wrapInlineContentInParagraph(el);
+    }
+    if (tag === "blockquote") {
+      wrapInlineContentInParagraph(el);
     }
   }
   return template.innerHTML;
@@ -318,6 +389,8 @@ const RENDERED_NON_EDITABLE_INLINE_HTML_TAGS = new Set([
   "wbr",
 ]);
 
+const EMBED_INLINE_HTML_TAGS = new Set(["iframe", "img"]);
+
 const PAIRED_INLINE_HTML_RE =
   /^<([a-z][a-z0-9-]*)(?:\s[^>]*)?>[\s\S]*<\/\1\s*>$/i;
 
@@ -356,7 +429,15 @@ export const createInlineHtmlNodeView: NodeViewConstructor = (
   source.hidden = true;
   source.setAttribute("role", "textbox");
   source.setAttribute("aria-label", "HTML 源码");
-  wrapper.append(preview, source);
+
+  const editButton = document.createElement("button");
+  editButton.className = "mt-inline-html-edit";
+  editButton.type = "button";
+  editButton.textContent = "HTML </>";
+  editButton.title = "编辑 HTML 源码";
+  editButton.setAttribute("aria-label", "编辑 HTML 源码");
+  editButton.hidden = true;
+  wrapper.append(preview, source, editButton);
 
   let currentNode = node;
   let editing = false;
@@ -364,8 +445,12 @@ export const createInlineHtmlNodeView: NodeViewConstructor = (
 
   const renderPreview = (): void => {
     const value = rawValue();
+    const tag = inlineHtmlTag(value);
+    const isEmbed = tag !== null && EMBED_INLINE_HTML_TAGS.has(tag);
     const rendered =
       editableInlineHtmlTag(value) !== null || isNonEditableInlineHtml(value);
+    wrapper.classList.toggle("mt-inline-html-node--embed", isEmbed);
+    editButton.hidden = !isEmbed || editing;
     preview.classList.toggle("mt-inline-html-literal", !rendered);
     if (rendered) {
       preview.innerHTML = sanitizeHtml(value);
@@ -382,12 +467,13 @@ export const createInlineHtmlNodeView: NodeViewConstructor = (
     renderPreview();
   };
 
-  const activateSourceEditor = (): void => {
-    if (editing || isNonEditableInlineHtml(rawValue())) return;
+  const activateSourceEditor = (force = false): void => {
+    if (editing || (!force && isNonEditableInlineHtml(rawValue()))) return;
     editing = true;
     source.textContent = rawValue();
     source.hidden = false;
     preview.hidden = true;
+    editButton.hidden = true;
     wrapper.classList.add("mt-inline-html-source-editing");
     requestAnimationFrame(() => {
       source.focus();
@@ -477,6 +563,19 @@ export const createInlineHtmlNodeView: NodeViewConstructor = (
     }
   });
   source.addEventListener("blur", () => commitSourceEditor(false));
+  editButton.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  editButton.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  editButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    activateSourceEditor(true);
+  });
 
   renderPreview();
 
@@ -502,6 +601,7 @@ export const createInlineHtmlNodeView: NodeViewConstructor = (
     stopEvent: (event) =>
       event.target instanceof Node &&
       (source.contains(event.target) ||
+        editButton.contains(event.target) ||
         (startsSourceEditing() && preview.contains(event.target))),
   };
 };

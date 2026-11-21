@@ -6,7 +6,7 @@
  * - listWorkspace(dir)：列出目录下的子目录与 Markdown 文件（单层，不递归）
  * - readMarkdownFile(path)：读取文本文件内容（UTF-8 优先，GBK 回退）
  * - parentDir(dir)：上级目录（用于「返回上级」）
- * - load/saveWorkspaceDir：持久化当前工作目录（下次启动自动恢复）
+ * - load/saveWorkspaceNavigation：持久化根目录、最后浏览目录和文件面板视图
  * - load/saveSidebarOpen：持久化侧边栏展开状态
  * - load/push/remove/clearRecentFiles：最近打开文件的列表持久化（上限 10 条）
  *
@@ -49,10 +49,21 @@ export interface WorkspaceListing {
   files: WorkspaceItem[];
 }
 
-/** 当前工作目录的持久化 key */
-const WORKSPACE_DIR_KEY = "workspaceDir";
+/** 兼容 0.4.1 及更早版本的单一工作目录 key */
+const LEGACY_WORKSPACE_DIR_KEY = "workspaceDir";
+const WORKSPACE_ROOT_KEY = "workspaceRoot";
+const WORKSPACE_LAST_DIR_KEY = "workspaceLastDir";
+const WORKSPACE_VIEW_KEY = "workspaceView";
 /** 侧边栏展开状态的持久化 key */
 const SIDEBAR_OPEN_KEY = "sidebarOpen";
+
+export type WorkspaceView = "directory" | "computer";
+
+export interface WorkspaceNavigationState {
+  root: string | null;
+  lastDir: string | null;
+  view: WorkspaceView;
+}
 
 /**
  * 弹出目录选择对话框。
@@ -141,35 +152,84 @@ export function parentDir(dir: string): string | null {
   return /^[a-zA-Z]:$/.test(parent) ? `${parent}\\` : parent;
 }
 
-/** 读取上次的工作目录；无记录 / 非 Tauri 返回 null */
-export async function loadWorkspaceDir(): Promise<string | null> {
-  if (!isTauri) return null;
+/** 是否为 Windows 盘符根目录（C:\）。 */
+export function isWindowsDriveRoot(dir: string): boolean {
+  return /^[a-zA-Z]:[\\/]?$/.test(dir);
+}
+
+/** 枚举系统根位置：Windows 为逻辑盘符，Unix 为 `/`。 */
+export async function listRootLocations(): Promise<WorkspaceItem[]> {
+  if (!isTauri) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<WorkspaceItem[]>("list_root_locations");
+}
+
+/** 读取工作区根目录、最后浏览目录和视图；兼容旧版 workspaceDir。 */
+export async function loadWorkspaceNavigation(): Promise<WorkspaceNavigationState> {
+  if (!isTauri) {
+    return { root: null, lastDir: null, view: "directory" };
+  }
   try {
-    const value = await stateGet<string>(WORKSPACE_DIR_KEY);
-    return typeof value === "string" && value ? value : null;
+    const [legacy, root, lastDir, view] = await Promise.all([
+      stateGet<string>(LEGACY_WORKSPACE_DIR_KEY),
+      stateGet<string>(WORKSPACE_ROOT_KEY),
+      stateGet<string>(WORKSPACE_LAST_DIR_KEY),
+      stateGet<WorkspaceView>(WORKSPACE_VIEW_KEY),
+    ]);
+    const legacyDir = typeof legacy === "string" && legacy ? legacy : null;
+    return {
+      root: typeof root === "string" && root ? root : legacyDir,
+      lastDir: typeof lastDir === "string" && lastDir ? lastDir : legacyDir,
+      view: view === "computer" ? "computer" : "directory",
+    };
   } catch (err) {
-    console.warn("[NoteMark] load workspace dir failed:", err);
-    return null;
+    console.warn("[NoteMark] load workspace navigation failed:", err);
+    return { root: null, lastDir: null, view: "directory" };
   }
 }
 
-/** 清除持久化的工作目录（目录已失效时调用，避免下次启动仍尝试恢复） */
-export async function clearWorkspaceDir(): Promise<void> {
+/** 清除全部工作区导航状态（根目录和最后目录都失效时调用）。 */
+export async function clearWorkspaceNavigation(): Promise<void> {
   if (!isTauri) return;
   try {
-    await stateDelete(WORKSPACE_DIR_KEY);
+    await Promise.all([
+      stateDelete(LEGACY_WORKSPACE_DIR_KEY),
+      stateDelete(WORKSPACE_ROOT_KEY),
+      stateDelete(WORKSPACE_LAST_DIR_KEY),
+      stateDelete(WORKSPACE_VIEW_KEY),
+    ]);
   } catch (err) {
-    console.warn("[NoteMark] clear workspace dir failed:", err);
+    console.warn("[NoteMark] clear workspace navigation failed:", err);
   }
 }
 
-/** 持久化当前工作目录（失败仅告警） */
-export async function saveWorkspaceDir(dir: string): Promise<void> {
+/** 持久化用户明确选择的根目录。 */
+export async function saveWorkspaceRoot(dir: string): Promise<void> {
   if (!isTauri) return;
   try {
-    await stateSet(WORKSPACE_DIR_KEY, dir);
+    await stateSet(WORKSPACE_ROOT_KEY, dir);
   } catch (err) {
-    console.warn("[NoteMark] save workspace dir failed:", err);
+    console.warn("[NoteMark] save workspace root failed:", err);
+  }
+}
+
+/** 持久化侧边栏最后浏览到的真实目录。 */
+export async function saveWorkspaceLastDir(dir: string): Promise<void> {
+  if (!isTauri) return;
+  try {
+    await stateSet(WORKSPACE_LAST_DIR_KEY, dir);
+  } catch (err) {
+    console.warn("[NoteMark] save workspace last dir failed:", err);
+  }
+}
+
+/** 持久化侧边栏视图类型。 */
+export async function saveWorkspaceView(view: WorkspaceView): Promise<void> {
+  if (!isTauri) return;
+  try {
+    await stateSet(WORKSPACE_VIEW_KEY, view);
+  } catch (err) {
+    console.warn("[NoteMark] save workspace view failed:", err);
   }
 }
 
