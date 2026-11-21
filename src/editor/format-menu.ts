@@ -532,7 +532,8 @@ async function copySelectionAsText(view: EditorView): Promise<void> {
   if (!slice) return;
   const serialized = view.serializeForClipboard(slice);
   const { htmlToPlainText } = await import("./exporter");
-  // 与 TXT 导出共用同一套语义转换：列表项同行、表格用制表符、脚注补编号点、
+  // 与 TXT 导出共用同一套语义转换：列表项同行、表格按显示宽度对齐、
+  // 脚注补编号点、
   // 连续空行归一化等规则都与导出文件完全一致。
   await writeClipboardText(htmlToPlainText(serialized.dom.innerHTML));
 }

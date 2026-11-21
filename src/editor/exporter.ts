@@ -28,7 +28,10 @@ import { languages } from "@codemirror/language-data";
 // 用于在导出前打开 CM6 的打印模式（viewState.printing）强制全量渲染
 import { EditorView } from "@codemirror/view";
 import { writeBytesAtomic } from "./fileAccess";
-import { tableToAlignedPlainText } from "./table-clipboard";
+import {
+  normalizeTableClipboardHtml,
+  tableHtmlToAlignedPlainText,
+} from "./table-clipboard";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -597,7 +600,11 @@ function serializeNode(node: Node, inBlock = true): string {
     }
 
     if (tag === "TABLE") {
-      const tableText = tableToAlignedPlainText(el as HTMLTableElement);
+      // 与“复制为纯文本”使用同一套 HTML 规范化和列宽对齐逻辑，避免
+      // TXT 导出与剪贴板对同一张表产生不同的空格布局。
+      const tableText = tableHtmlToAlignedPlainText(
+        normalizeTableClipboardHtml(el.outerHTML)
+      );
       if (tableText) out += `\n${tableText}\n`;
       return;
     }
