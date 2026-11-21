@@ -1410,23 +1410,7 @@ async function handleSidebarOpenFile(path: string) {
     await grantPathAccess(path);
     const content = await readMarkdownFile(path);
     const name = path.split(/[\\/]/).pop() || path;
-    currentPath.value = path;
-    // 与 handleOpen 一致：必须先设置图片基准目录，再渲染文档
-    setImageBaseDir(path);
-    // 与 loadFileIntoEditor 一致：记录原文基线，保留用户排版
-    rawContent.value = content;
-    visualEdited = false;
-    await setMarkdown(editorInstance, content);
-    updateTitle(name);
-    await nextTick();
-    visualEdited = false;
-    if (editorInstance) {
-      savedContent.value = getMarkdown(editorInstance);
-      isDirty.value = false;
-      syncSourceDraft();
-      refreshHeadings();
-    }
-  await clearRecoveryDraftState();
+    await loadFileIntoEditor(path, name, content);
   } catch (err) {
     console.error("[NoteMark] sidebar open file failed:", err);
     alert(`打开失败：${err instanceof Error ? err.message : String(err)}`);
