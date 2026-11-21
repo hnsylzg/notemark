@@ -273,6 +273,17 @@ fn is_direct_parent_of_authorized_path(app: &tauri::AppHandle, target: &std::pat
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1000;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
+const MAXIMIZED_SIZE_TOLERANCE: u32 = 64;
+
+fn bounds_match_maximized_size(
+  width: u32,
+  height: u32,
+  monitor_width: u32,
+  monitor_height: u32,
+) -> bool {
+  width.abs_diff(monitor_width) <= MAXIMIZED_SIZE_TOLERANCE
+    && height.abs_diff(monitor_height) <= MAXIMIZED_SIZE_TOLERANCE
+}
 
 fn remembered_window_state(window: &tauri::Window) -> Option<persistence::WindowState> {
   window
@@ -290,7 +301,7 @@ fn remember_window_state(window: &tauri::Window, state: persistence::WindowState
   }
 }
 
-fn capture_current_window_state(
+fn capture_live_window_state(
   window: &tauri::Window,
   maximized: bool,
 ) -> Option<persistence::WindowState> {
@@ -306,21 +317,48 @@ fn capture_current_window_state(
   })
 }
 
+fn maximized_window_state() -> persistence::WindowState {
+  persistence::WindowState {
+    x: 0,
+    y: 0,
+    width: DEFAULT_WINDOW_WIDTH,
+    height: DEFAULT_WINDOW_HEIGHT,
+    maximized: true,
+    normal_bounds_valid: false,
+  }
+}
+
+fn window_geometry_is_maximized(window: &tauri::Window) -> bool {
+  if window.is_maximized().unwrap_or(false) {
+    return true;
+  }
+  let Some(size) = window.inner_size().ok() else {
+    return false;
+  };
+  window
+    .available_monitors()
+    .unwrap_or_default()
+    .iter()
+    .any(|monitor| {
+      let monitor_size = monitor.size();
+      bounds_match_maximized_size(
+        size.width,
+        size.height,
+        monitor_size.width,
+        monitor_size.height,
+      )
+    })
+}
+
 fn remember_window_geometry_event(window: &tauri::Window) {
   if window.is_minimized().unwrap_or(false) {
     return;
   }
-  let maximized = window.is_maximized().unwrap_or(false);
-  if maximized {
-    if let Some(mut state) = remembered_window_state(window) {
-      state.maximized = true;
-      remember_window_state(window, state);
-    } else if let Some(state) = capture_current_window_state(window, true) {
-      remember_window_state(window, state);
-    }
+  if window_geometry_is_maximized(window) {
+    remember_window_state(window, maximized_window_state());
     return;
   }
-  if let Some(state) = capture_current_window_state(window, false) {
+  if let Some(state) = capture_live_window_state(window, false) {
     remember_window_state(window, state);
   }
 }
@@ -329,14 +367,10 @@ fn capture_window_state(window: &tauri::Window) -> Option<persistence::WindowSta
   if window.is_minimized().unwrap_or(false) {
     return remembered_window_state(window);
   }
-  let maximized = window.is_maximized().unwrap_or(false);
-  if maximized {
-    if let Some(mut state) = remembered_window_state(window) {
-      state.maximized = true;
-      return Some(state);
-    }
+  if window_geometry_is_maximized(window) {
+    return Some(maximized_window_state());
   }
-  capture_current_window_state(window, maximized)
+  capture_live_window_state(window, false)
 }
 
 fn save_window_state(window: &tauri::Window) {
@@ -366,20 +400,19 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
       return;
     }
   };
-  let normal_bounds_valid = !state.maximized || state.normal_bounds_valid;
-  let width = if normal_bounds_valid {
-    state.width.max(480)
-  } else {
+  let monitors = window.available_monitors().unwrap_or_default();
+  let width = if state.maximized {
     DEFAULT_WINDOW_WIDTH
-  };
-  let height = if normal_bounds_valid {
-    state.height.max(360)
   } else {
+    state.width.max(480)
+  };
+  let height = if state.maximized {
     DEFAULT_WINDOW_HEIGHT
+  } else {
+    state.height.max(360)
   };
   let _ = window.set_size(PhysicalSize::new(width, height));
 
-  let monitors = window.available_monitors().unwrap_or_default();
   let visible = monitors.iter().any(|monitor| {
     let position = monitor.position();
     let size = monitor.size();
@@ -388,7 +421,7 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
       && state.y < position.y + size.height as i32
       && state.y + height as i32 > position.y
   });
-  if visible && normal_bounds_valid {
+  if visible && !state.maximized {
     let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
   } else {
     let _ = window.center();
@@ -399,18 +432,20 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
   let size = window
     .inner_size()
     .unwrap_or(PhysicalSize::new(width, height));
+  let restored_state = if state.maximized {
+    maximized_window_state()
+  } else {
+    persistence::WindowState {
+      x: position.x,
+      y: position.y,
+      width: size.width,
+      height: size.height,
+      maximized: false,
+      normal_bounds_valid: true,
+    }
+  };
   if let Ok(mut geometries) = window.state::<WindowGeometries>().0.lock() {
-    geometries.insert(
-      window.label().to_string(),
-      persistence::WindowState {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
-        maximized: state.maximized,
-        normal_bounds_valid: true,
-      },
-    );
+    geometries.insert(window.label().to_string(), restored_state);
   }
   if state.maximized {
     let _ = window.maximize();
@@ -1159,5 +1194,12 @@ mod tests {
     assert!(roots
       .iter()
       .all(|root| !root.name.is_empty() && !root.path.is_empty()));
+  }
+
+  #[test]
+  fn detects_legacy_maximized_window_bounds() {
+    assert!(bounds_match_maximized_size(1920, 1040, 1920, 1080));
+    assert!(bounds_match_maximized_size(1930, 1080, 1920, 1080));
+    assert!(!bounds_match_maximized_size(1000, 720, 1920, 1080));
   }
 }
