@@ -5,6 +5,7 @@ import {
   ref,
   computed,
   nextTick,
+  watch,
 } from "vue";
 import "@/editor/theme/index.css";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -105,6 +106,14 @@ import {
   resetToDefaultTheme,
   saveDarkModePreference,
 } from "@/editor/themeManager";
+import {
+  presentContextMenu,
+  type ContextMenuHandle,
+} from "@/editor/context-menu-controller";
+import {
+  readClipboardText,
+  writeClipboardText,
+} from "@/editor/clipboard-text";
 
 // 是否处于 Tauri 环境（纯浏览器 vite dev 下不调用 Tauri API）
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -158,6 +167,77 @@ const sourceMode = ref(false);
 const sourceDraft = ref("");
 /** 源码 textarea 元素（进入源码模式时聚焦） */
 const sourceTextarea = ref<HTMLTextAreaElement | null>(null);
+/** 源码行号槽内部容器 */
+const sourceGutterInner = ref<HTMLElement | null>(null);
+/** 与 textarea 同字体的隐藏镜像，用于测量自动换行后的逻辑行起点 */
+const sourceLineMirror = ref<HTMLElement | null>(null);
+const sourceLineMirrorInner = ref<HTMLElement | null>(null);
+const sourceLinePositions = ref<number[]>([]);
+const EMPTY_SOURCE_LINE = "\u200b";
+/** 仅非空逻辑行显示行号；空白行保留自己的高度但不出数字。 */
+const sourceLogicalLines = computed(() =>
+  sourceDraft.value.split(/\r\n|\r|\n/)
+);
+const sourceLineNumbers = computed(() =>
+  sourceLogicalLines.value.map((_line, index) => String(index + 1))
+);
+const sourceGutterWidth = computed(() => {
+  const digits = Math.max(1, String(sourceLogicalLines.value.length).length);
+  return `${Math.max(4.25, 2.25 + digits * 0.52)}em`;
+});
+
+let sourceLineResizeObserver: ResizeObserver | null = null;
+
+function syncSourceGutterScroll(): void {
+  const textarea = sourceTextarea.value;
+  if (!textarea) return;
+  const transform = `translateY(-${textarea.scrollTop}px)`;
+  if (sourceGutterInner.value) {
+    sourceGutterInner.value.style.transform = transform;
+  }
+  if (sourceLineMirrorInner.value) {
+    sourceLineMirrorInner.value.style.transform = transform;
+  }
+}
+
+async function measureSourceLinePositions(): Promise<void> {
+  await nextTick();
+  const textarea = sourceTextarea.value;
+  const mirror = sourceLineMirror.value;
+  const mirrorInner = sourceLineMirrorInner.value;
+  if (!textarea || !mirror || !mirrorInner) return;
+
+  const style = getComputedStyle(textarea);
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  mirror.style.left = `${paddingLeft}px`;
+  mirror.style.top = `${paddingTop}px`;
+  mirror.style.width = `${Math.max(
+    0,
+    textarea.clientWidth - paddingLeft - paddingRight
+  )}px`;
+  sourceLinePositions.value = Array.from(
+    mirrorInner.querySelectorAll<HTMLElement>(".mt-source-mirror-line"),
+    (line) => line.offsetTop
+  );
+  syncSourceGutterScroll();
+
+  if (!sourceLineResizeObserver && typeof ResizeObserver !== "undefined") {
+    sourceLineResizeObserver = new ResizeObserver(() => {
+      void measureSourceLinePositions();
+    });
+    sourceLineResizeObserver.observe(textarea);
+  }
+}
+
+watch(
+  sourceDraft,
+  () => {
+    void measureSourceLinePositions();
+  },
+  { flush: "post" }
+);
 
 // textarea 坐标 ⇄ 源码原文坐标 换算：
 // 浏览器对 <textarea> 的 value / selectionStart / selectionEnd 做 CRLF→LF 归一化，
@@ -596,6 +676,7 @@ function enterSourceMode() {
       } else {
         el.focus();
       }
+      void measureSourceLinePositions();
     }
     // 查找栏开着时按新模式重算（两种模式的位置体系不同，沿用会错位）
     resyncFindOnModeSwitch();
@@ -655,6 +736,110 @@ function onSourceInput(e: Event) {
   else if (recoveryArmed && savedContent.value !== null) void clearRecoveryDraftState();
   // 查找栏打开时重算匹配：以光标为锚点，边输入边跟随结果
   if (findOpen.value) syncSourceFind();
+  void nextTick(syncSourceGutterScroll);
+}
+
+let sourceContextMenu: ContextMenuHandle | null = null;
+
+function closeSourceContextMenu(): void {
+  sourceContextMenu?.close();
+  sourceContextMenu = null;
+}
+
+function applySourceTextareaChange(
+  textarea: HTMLTextAreaElement,
+  start: number,
+  end: number,
+  text: string
+): void {
+  textarea.setRangeText(text, start, end, "end");
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.focus();
+}
+
+function openSourceContextMenu(event: MouseEvent): void {
+  const textarea = sourceTextarea.value;
+  if (!textarea) return;
+  closeSourceContextMenu();
+  textarea.focus();
+  const hasSelection = textarea.selectionStart !== textarea.selectionEnd;
+  const menu = document.createElement("div");
+  menu.className =
+    "mt-context-menu mt-context-menu--compact mt-context-menu--borderless";
+  menu.setAttribute("role", "menu");
+
+  const addItem = (
+    label: string,
+    shortcut: string,
+    run: () => void | Promise<void>,
+    disabled = false
+  ): void => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mt-context-menu__item";
+    button.setAttribute("role", "menuitem");
+    button.disabled = disabled;
+    const labelElement = document.createElement("span");
+    labelElement.className = "mt-context-menu__label";
+    labelElement.textContent = label;
+    const shortcutElement = document.createElement("span");
+    shortcutElement.className = "mt-context-menu__shortcut";
+    shortcutElement.textContent = shortcut;
+    button.append(labelElement, shortcutElement);
+    button.addEventListener("mousedown", (mouseEvent) => {
+      mouseEvent.preventDefault();
+    });
+    button.addEventListener("click", () => {
+      closeSourceContextMenu();
+      void Promise.resolve(run()).catch((error) => {
+        alert(
+          `剪贴板操作失败：${error instanceof Error ? error.message : String(error)}`
+        );
+        textarea.focus();
+      });
+    });
+    menu.appendChild(button);
+  };
+
+  addItem(
+    "剪切",
+    "Ctrl+X",
+    async () => {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      if (start === end) return;
+      await writeClipboardText(textarea.value.slice(start, end));
+      applySourceTextareaChange(textarea, start, end, "");
+    },
+    !hasSelection
+  );
+  addItem(
+    "复制",
+    "Ctrl+C",
+    async () => {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      if (start === end) return;
+      await writeClipboardText(textarea.value.slice(start, end));
+      textarea.focus();
+    },
+    !hasSelection
+  );
+  addItem("粘贴", "Ctrl+V", async () => {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = await readClipboardText();
+    applySourceTextareaChange(textarea, start, end, text);
+  });
+
+  sourceContextMenu = presentContextMenu({
+    menu,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    onClose: () => {
+      sourceContextMenu = null;
+    },
+  });
 }
 
 /** 获取当前内容（用于保存到磁盘）：
@@ -2457,6 +2642,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   void flushWorkspaceLastDirPersistence();
+  sourceLineResizeObserver?.disconnect();
+  sourceLineResizeObserver = null;
   window.removeEventListener("pointerdown", markStartupInteraction, true);
   window.removeEventListener("keydown", markStartupInteraction, true);
   window.removeEventListener("contextmenu", markStartupInteraction, true);
@@ -2570,15 +2757,54 @@ onBeforeUnmount(() => {
         ></div>
         <!-- 源码模式：用 textarea 查看/编辑 Markdown 原文。
              v-show 而非 v-if，保证 editorHost 不被销毁、milkdown 视图常驻。 -->
-        <textarea
-          v-show="sourceMode"
-          ref="sourceTextarea"
-          class="mt-source"
-          :value="sourceDraft"
-          spellcheck="false"
-          placeholder="Markdown 源码"
-          @input="onSourceInput"
-        ></textarea>
+        <div v-show="sourceMode" class="mt-source-shell">
+          <div
+            class="mt-source-lines"
+            aria-hidden="true"
+            :style="{ '--mt-source-gutter-width': sourceGutterWidth }"
+          >
+            <div ref="sourceGutterInner" class="mt-source-lines__inner">
+              <template
+                v-for="(number, index) in sourceLineNumbers"
+                :key="index"
+              >
+                <span
+                  v-if="number && sourceLinePositions[index] !== undefined"
+                  class="mt-source-line"
+                  :style="{ top: `${sourceLinePositions[index]}px` }"
+                >{{ number }}</span>
+              </template>
+            </div>
+          </div>
+          <div class="mt-source-editor-column">
+            <textarea
+              ref="sourceTextarea"
+              class="mt-source"
+              :value="sourceDraft"
+              spellcheck="false"
+              wrap="soft"
+              @input="onSourceInput"
+              @scroll="syncSourceGutterScroll"
+              @contextmenu.prevent="openSourceContextMenu"
+            ></textarea>
+            <div
+              ref="sourceLineMirror"
+              class="mt-source-mirror"
+              aria-hidden="true"
+            >
+              <div
+                ref="sourceLineMirrorInner"
+                class="mt-source-mirror__inner"
+              >
+                <span
+                  v-for="(line, index) in sourceLogicalLines"
+                  :key="index"
+                  class="mt-source-mirror-line"
+                >{{ line || EMPTY_SOURCE_LINE }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
 
@@ -3022,18 +3248,17 @@ onBeforeUnmount(() => {
   display: none;
 }
 
-/* 源码模式 textarea：等宽字体、跟随主题深浅色、软换行 */
-.mt-source {
+.mt-source-shell {
+  --mt-source-padding-block: 1.5rem;
+  --mt-source-padding-inline: 2rem;
+  --mt-source-gutter-width: 4.25em;
+  --mt-source-gutter-padding-start: 0.5em;
+  --mt-source-gutter-padding-end: 1.45em;
+  --mt-source-gutter-text-gap: 0.4em;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
-  display: block;
-  box-sizing: border-box;
-  padding: 24px 32px;
-  border: none;
-  outline: none;
-  resize: none;
-  background: var(--mt-bg, #ffffff);
-  color: var(--mt-fg, #333);
   font-family: var(
     --mt-font-mono,
     "SFMono-Regular",
@@ -3046,14 +3271,82 @@ onBeforeUnmount(() => {
   );
   font-size: 14px;
   line-height: 1.7;
-  tab-size: 4;
-  overflow: auto;
+}
+
+.mt-source-lines {
+  width: var(--mt-source-gutter-width);
+  min-width: var(--mt-source-gutter-width);
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0 var(--mt-source-gutter-padding-end) 0
+    var(--mt-source-gutter-padding-start);
+  color: var(--mt-muted, #888);
+  opacity: 0.65;
+  text-align: right;
+  user-select: none;
+}
+
+.mt-source-lines__inner {
+  position: relative;
+  top: var(--mt-source-padding-block);
+  will-change: transform;
+}
+
+.mt-source-line {
+  position: absolute;
+  right: 0;
+  font-size: 0.85em;
+  line-height: 2;
+}
+
+.mt-source-editor-column {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 隐藏镜像与 textarea 使用相同排版，用于得到软换行后的逻辑行位置。 */
+.mt-source-mirror {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-.mt-source::placeholder {
-  color: var(--mt-muted, #888);
+.mt-source-mirror__inner {
+  will-change: transform;
+}
+
+.mt-source-mirror-line {
+  display: block;
+  min-height: 1.7em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* 源码模式 textarea：等宽字体、跟随主题深浅色、保留软换行 */
+.mt-source {
+  width: 100%;
+  height: 100%;
+  display: block;
+  box-sizing: border-box;
+  padding: var(--mt-source-padding-block) var(--mt-source-padding-inline)
+    var(--mt-source-padding-block) var(--mt-source-gutter-text-gap);
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--mt-bg, #ffffff);
+  color: var(--mt-fg, #333);
+  font: inherit;
+  tab-size: 4;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 窄窗口：压缩间距与内边距，让文件名尽量少被截断 */

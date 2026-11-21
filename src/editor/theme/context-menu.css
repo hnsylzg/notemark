@@ -28,6 +28,10 @@
   width: min(228px, calc(100vw - 12px));
 }
 
+.mt-context-menu--borderless {
+  border: 0;
+}
+
 .mt-context-menu--typora {
   width: min(224px, calc(100vw - 12px));
   max-height: none;
