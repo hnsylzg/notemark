@@ -29,6 +29,12 @@ import {
   EDITABLE_INLINE_HTML_MARK_TAGS,
   INLINE_HTML_MARK_NAME,
 } from "./inline-html-mark";
+import {
+  LINK_REFERENCE_DEFINITION_NAME,
+  LINK_REFERENCE_MARK_NAME,
+  linkReferenceDefinitionFromAttrs,
+  normalizeLinkReferenceIdentifier,
+} from "./link-reference-definition";
 
 export interface MarkSourceSession {
   markName: string;
@@ -62,7 +68,16 @@ interface MarkSyntax {
 }
 
 export const MARK_SOURCE_SYNTAX: Readonly<Record<string, MarkSyntax>> = {
-  link: { open: "[", close: "]", selector: "a[href]" },
+  [LINK_REFERENCE_MARK_NAME]: {
+    open: "[",
+    close: "]",
+    selector: "a[data-reference-label]",
+  },
+  link: {
+    open: "[",
+    close: "]",
+    selector: "a[href]:not([data-reference-label])",
+  },
   strong: { open: "**", close: "**", selector: "strong" },
   emphasis: { open: "*", close: "*", selector: "em" },
   strike_through: { open: "~~", close: "~~", selector: "del" },
@@ -192,12 +207,17 @@ function delimitersFor(
     const close = String(attrs?.close ?? "");
     return open && close ? { open, close } : null;
   }
+  if (markName === LINK_REFERENCE_MARK_NAME) {
+    const label = String(
+      attrs?.label ?? attrs?.identifier ?? ""
+    );
+    return label ? { open: "[", close: `][${label}]` } : null;
+  }
   if (markName !== "link") {
     const syntax = MARK_SOURCE_SYNTAX[markName];
     return syntax ? { open: syntax.open, close: syntax.close } : null;
   }
   const href = String(attrs?.href ?? "");
-  if (!href) return null;
   const title = String(attrs?.title ?? "").replaceAll('"', '\\"');
   return {
     open: "[",
@@ -317,8 +337,9 @@ export function createMarkSourceTransaction(
     const to = existing?.to ?? selection.from;
     const attrs = existing
       ? markAttrsAtRange(state.doc, type, from, to)
-      : undefined;
-    if (markName === "link" && !attrs) return null;
+      : markName === "link"
+        ? { href: "" }
+        : undefined;
     return openSourceSessionTransaction(
       state,
       markName,
@@ -400,6 +421,42 @@ function activateMarkRange(
   view.dispatch(tr);
   view.focus();
   return true;
+}
+
+function activateLinkAtPosition(
+  view: EditorView,
+  pos: number
+): boolean {
+  for (const markName of [
+    LINK_REFERENCE_MARK_NAME,
+    "link",
+  ]) {
+    const type = markTypeFor(view.state, markName);
+    if (!type) continue;
+    const range =
+      markRangeAt(view.state.doc, pos, type) ??
+      markRangeAt(view.state.doc, Math.max(1, pos - 1), type);
+    if (!range) continue;
+    const attrs = markAttrsAtRange(
+      view.state.doc,
+      type,
+      range.from,
+      range.to
+    );
+    if (!attrs) continue;
+    if (
+      activateMarkRange(
+        view,
+        markName,
+        range.from,
+        range.to,
+        pos
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function startMarkSourceRange(
@@ -490,6 +547,42 @@ function finishMarkSourceTransaction(
         (parsed.markName === session.markName
           ? session.attrs
           : undefined);
+      if (finalType.name === LINK_REFERENCE_MARK_NAME) {
+        const identifier = normalizeLinkReferenceIdentifier(
+          String(
+            attrs?.identifier ??
+              parsed.attrs?.identifier ??
+              ""
+          )
+        );
+        let definitionUrl = "";
+        let definitionTitle: string | null = null;
+        state.doc.descendants((node) => {
+          if (node.type.name !== LINK_REFERENCE_DEFINITION_NAME) {
+            return true;
+          }
+          const definition = linkReferenceDefinitionFromAttrs(node.attrs);
+          if (!definition || definition.identifier !== identifier) {
+            return true;
+          }
+          definitionUrl = definition.url;
+          definitionTitle = definition.title;
+          return false;
+        });
+        attrs = {
+          ...session.attrs,
+          ...attrs,
+          identifier,
+          label: String(attrs?.label ?? identifier),
+          url: definitionUrl || String(session.attrs?.url ?? ""),
+          title:
+            definitionTitle ??
+            (typeof session.attrs?.title === "string"
+              ? session.attrs.title
+              : null),
+          referenceType: String(attrs?.referenceType ?? "full"),
+        };
+      }
       valid = true;
     }
   }
@@ -559,6 +652,13 @@ function closeMarkSource(view: EditorView): void {
   const session = markSourceKey.getState(view.state);
   if (!session) return;
   view.dispatch(finishMarkSourceTransaction(view.state, session));
+}
+
+/** Finish the active inline source session before leaving visual editing. */
+export function closeActiveMarkSource(view: EditorView): boolean {
+  if (!markSourceKey.getState(view.state)) return false;
+  closeMarkSource(view);
+  return true;
 }
 
 export function sourceSessionBlockElement(
@@ -720,6 +820,29 @@ function findPlainInlineMatch(
       attrs: {
         href: link[2],
         title: (link[3] ?? "").replaceAll('\\"', '"'),
+      },
+    });
+  }
+  const referenceLinkPattern =
+    /(?<!!)\[([^\]\n]+)\]\[([^\]\n]*)\]/g;
+  for (const reference of text.matchAll(referenceLinkPattern)) {
+    if (reference.index == null) continue;
+    const identifier = (
+      reference[2] || reference[1]
+    ).trim();
+    if (!identifier) continue;
+    consider({
+      start: reference.index,
+      end: reference.index + reference[0].length,
+      contentStart: reference.index + 1,
+      contentEnd:
+        reference.index + 1 + reference[1].length,
+      content: reference[1],
+      markName: LINK_REFERENCE_MARK_NAME,
+      attrs: {
+        identifier: normalizeLinkReferenceIdentifier(identifier),
+        label: identifier,
+        referenceType: reference[2] ? "full" : "collapsed",
       },
     });
   }
@@ -1062,6 +1185,17 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
     appendTransaction(_transactions, _oldState, newState) {
       const session = markSourceKey.getState(newState);
       if (!session) {
+        const emptiedTextblock =
+          _transactions.some((tr) => tr.docChanged) &&
+          newState.selection.empty &&
+          newState.selection.$from.parent.isTextblock &&
+          newState.selection.$from.parent.content.size === 0;
+        if (
+          emptiedTextblock &&
+          (newState.storedMarks?.length ?? 0) > 0
+        ) {
+          return newState.tr.setStoredMarks([]);
+        }
         const selectionMoved = _transactions.some(
           (tr) =>
             tr.selectionSet &&
@@ -1305,7 +1439,7 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
         }
 
         const mark = clickedMark(event.target as Element | null);
-        if (!mark) return false;
+        if (!mark) return activateLinkAtPosition(view, pos);
         try {
           const from = view.posAtDOM(mark.element, 0, 1);
           const to = view.posAtDOM(

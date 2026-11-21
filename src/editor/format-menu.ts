@@ -7,9 +7,8 @@
  * - 有选中文字（且右键落在选区上）→ 菜单项对选区做格式 toggle；
  *   链接 = 给选中的文字加链接（只输地址，不替换文字）。
  * - 没有选中文字 → 点格式项把光标移到右键处并「开启输入」，后续输入的字
- *   自动带该格式，按 Esc 退出；点「链接」则与 /链接 完全一致：先补上占位
- *   文字「链接文本」再弹地址框（占位处于选中状态，直接打字即可替换）——
- *   空光标处没有文字，link 这个 mark 无处可挂，不补占位就建不出链接。
+ *   自动带该格式，按 Esc 退出；点「链接」直接插入可编辑源码 `[]()`，
+ *   光标停在方括号中，未输入内容就退出时自动清理。
  *
  * 实现：用 ProseMirror 插件的 handleDOMEvents.contextmenu 拦截编辑器右键。
  * 行内格式统一交给 editor-actions 的 applyFormatMark，再转由 mark-source 插件
@@ -52,7 +51,6 @@ import {
   applyBlockAction,
   applyFormatMark,
   openImagePicker,
-  promptLinkUrlDialog,
   runEditorCommand,
   type EditorBlockAction,
   type EditorInsertCommand,
@@ -97,7 +95,12 @@ import {
 } from "./mermaid-export";
 import { insertInlineMath } from "./math-view";
 import { formatImageMarkdown } from "./image-markdown";
-import { startMarkSourceRange } from "./mark-source";
+import {
+  closeActiveMarkSource,
+  startMarkSource,
+  startMarkSourceRange,
+} from "./mark-source";
+import { insertLinkReferenceDefinition } from "./link-reference-definition";
 import { normalizePastedMarkdown } from "./markdown-paste";
 import {
   normalizeClipboardPlainText,
@@ -267,13 +270,19 @@ function closeMenu(): void {
 }
 
 /** 把光标移到 pos（右键处），用于「无选区时从此处开启输入」 */
-function placeCaretAt(view: EditorView, pos: number): void {
+function placeCaretAt(
+  view: EditorView,
+  pos: number,
+  pointer = false
+): void {
   const max = view.state.doc.content.size;
   const min = max > 0 ? 1 : 0;
   const safe = Math.max(min, Math.min(pos, max));
-  view.dispatch(
-    view.state.tr.setSelection(TextSelection.create(view.state.doc, safe, safe))
+  let tr = view.state.tr.setSelection(
+    TextSelection.create(view.state.doc, safe, safe)
   );
+  if (pointer) tr = tr.setMeta("pointer", true);
+  view.dispatch(tr);
 }
 
 /** 右键是否落在当前文字选区上（决定「转换选区」还是「光标处开启输入」） */
@@ -429,8 +438,16 @@ function runLinkItem(view: EditorView, pos: number): void {
     }
     // 跨段选区：退化为普通插入
   }
-  // 无选区：与 /链接 一致，插入占位链接文本并弹地址输入框
-  promptLinkUrlDialog(view, "链接文本");
+  // 无选区：像加粗一样直接插入可编辑源码 `[]()`，光标停在方括号中。
+  // 未输入内容就退出时由 mark-source 会话自动清理。
+  if (!sel.empty) {
+    view.dispatch(
+      view.state.tr.setSelection(
+        TextSelection.create(view.state.doc, sel.to)
+      )
+    );
+  }
+  startMarkSource(view, "link");
 }
 
 function runDef(def: Def): void {
@@ -2597,9 +2614,21 @@ function openMenu(
   });
   addSeparator(inserts);
   addTextAction(inserts, "脚注", () => runFootnote());
-  addTextAction(inserts, "链接引用", () => {}, {
-    disabled: true,
-    title: "当前编辑器暂不支持引用式链接",
+  addTextAction(inserts, "链接引用", () => {
+    closeMenu();
+    closeActiveMarkSource(view);
+    // A collapsed inline source session removes temporary delimiters and
+    // shifts positions. Re-hit the original pointer coordinates so a line-start
+    // insertion still lands before the paragraph.
+    const current = view.posAtCoords({
+      left: clientX,
+      top: clientY,
+    });
+    const insertionPos = current?.pos ?? pos;
+    if (!hitOnSelection(view, insertionPos)) {
+      placeCaretAt(view, insertionPos, true);
+    }
+    insertLinkReferenceDefinition(view);
   });
   addTextAction(inserts, "水平分割线", () => runInsertCommand("hr"));
   addTextAction(inserts, "表格", () => runInsertCommand("table"), {

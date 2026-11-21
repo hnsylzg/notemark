@@ -521,6 +521,72 @@
   border: 1px solid var(--mt-color-border);
 }
 
+/* Markdown 引用式链接定义：ID、URL、title 三字段的单行编辑控件。 */
+:where(.milkdown .editor) .mt-link-reference-definition {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35em;
+  margin: 0.75em 0;
+  padding: 0.25em 0;
+  color: var(--mt-color-fg-muted);
+  font-family: var(--mt-font-mono);
+  font-size: 0.92em;
+  line-height: 1.6;
+}
+
+:where(.milkdown .editor) .mt-link-reference-definition__delimiter {
+  color: var(--mt-color-fg-muted);
+  user-select: none;
+}
+
+:where(.milkdown .editor) .mt-link-reference-definition input {
+  box-sizing: border-box;
+  min-width: 1ch;
+  max-width: 100%;
+  width: auto;
+  field-sizing: content;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--mt-color-fg);
+  font: inherit;
+  line-height: inherit;
+}
+
+:where(.milkdown .editor)
+  .mt-link-reference-definition__identifier {
+  font-weight: 600;
+}
+
+:where(.milkdown .editor) .mt-link-reference-definition__url,
+:where(.milkdown .editor) .mt-link-reference-definition__title {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+:where(.milkdown .editor) .mt-link-reference-definition input::placeholder {
+  color: var(--mt-color-fg-muted);
+  opacity: 0.62;
+}
+
+:where(.milkdown .editor) .mt-link-reference-definition__title-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2em;
+  color: var(--mt-color-fg-muted);
+}
+
+:where(.milkdown .editor)
+  .mt-link-reference-definition.is-title-empty:not(:focus-within)
+  .mt-link-reference-definition__title-group {
+  display: none;
+}
+
 /* ============ 表格 ============ */
 :where(.milkdown .editor) table {
   border-collapse: collapse;

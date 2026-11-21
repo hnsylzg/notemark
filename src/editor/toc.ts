@@ -39,20 +39,6 @@ export function findSelectionAfterToc(
   return Selection.findFrom(state.doc.resolve(pos + nodeSize), 1, true);
 }
 
-function focusAfterToc(
-  view: import("@milkdown/kit/prose/view").EditorView,
-  pos: number,
-  nodeSize: number
-): void {
-  const selection = findSelectionAfterToc(view.state, pos, nodeSize);
-  if (selection) {
-    view.dispatch(
-      view.state.tr.setSelection(selection).scrollIntoView()
-    );
-  }
-  view.focus();
-}
-
 /** 给 heading 生成 slug（与 remark-slug 规则一致：小写、空格转 -、去除标点） */
 function slugify(text: string): string {
   return text
@@ -105,9 +91,9 @@ export const tocRemark = $remark("notemark-toc", () => tocRemarkTransform);
 export const tocSchema = $nodeSchema(TOC_NAME, () => ({
   group: "block",
   atom: true,
-  // gapCursor 官方 handleClick 会在节点可选择时放弃创建 GapCursor。
-  // TOC 仍通过 NodeView 把普通点击重定向到目录后的段落。
-  selectable: true,
+  // 目录本身由链接组成，节点不参与整体选择；这样点击非链接区域时，
+  // ProseMirror 才能使用标准 GapCursor 在目录前后放置光标。
+  selectable: false,
   draggable: false,
   isolating: true,
   attrs: {},
@@ -252,7 +238,7 @@ function renderTocInner(
 }
 
 export const tocView = $view(tocSchema.node, () => {
-  const nodeView: NodeViewConstructor = (node, view, getPos) => {
+  const nodeView: NodeViewConstructor = (_node, view, getPos) => {
     const dom = document.createElement("div");
     dom.className = "mt-toc";
     dom.dataset.type = TOC_NAME;
@@ -265,17 +251,25 @@ export const tocView = $view(tocSchema.node, () => {
     render();
 
     dom.addEventListener("mousedown", (event) => {
-      const target = event.target as Element | null;
-      // 目录项链接继续执行跳转。
-      if (target?.closest("a")) return;
-      // TOC 是原子块，点击标题或内边距时 GapCursor 会出现在目录上方。
-      // 统一把非链接点击落到目录后的可编辑段落。
+      if (event.button !== 0) return;
+      if (event.ctrlKey || event.metaKey) return;
+      const pos = getPos();
+      if (typeof pos !== "number") return;
       event.preventDefault();
       event.stopPropagation();
-      const pos = getPos();
-      if (typeof pos === "number") {
-        focusAfterToc(view, pos, node.nodeSize);
+      const $pos = view.state.doc.resolve(pos);
+      let selection: GapCursor;
+      try {
+        selection = new GapCursor($pos);
+      } catch {
+        return;
       }
+      view.dispatch(
+        view.state.tr
+          .setSelection(selection)
+          .scrollIntoView()
+      );
+      view.focus();
     });
 
     // 文档变化（含标题增删/改名）后刷新目录：
@@ -334,43 +328,6 @@ export const tocPlugin = $prose(() =>
       };
     },
   }),
-);
-
-export const tocGapGuardPlugin = $prose(() =>
-  new Plugin({
-    key: new PluginKey("notemark-toc-gap-guard"),
-    filterTransaction(tr) {
-      if (!tr.selectionSet || !(tr.selection instanceof GapCursor)) return true;
-      const after = tr.selection.$from.nodeAfter;
-      return after?.type.name !== TOC_NAME;
-    },
-    props: {
-      handleDOMEvents: {
-        mousedown(view, event) {
-          if (event.button !== 0) return false;
-          const target = event.target as Element | null;
-          if (target?.closest("a")) return false;
-
-          const hit = view.posAtCoords({
-            left: event.clientX,
-            top: event.clientY,
-          });
-          if (!hit) return false;
-
-          const doc = view.state.doc;
-          for (let pos = Math.max(0, hit.pos - 1); pos <= hit.pos; pos += 1) {
-            const toc = doc.nodeAt(pos);
-            if (toc?.type.name !== TOC_NAME) continue;
-            event.preventDefault();
-            event.stopPropagation();
-            focusAfterToc(view, pos, toc.nodeSize);
-            return true;
-          }
-          return false;
-        },
-      },
-    },
-  })
 );
 
 /** 注册给 getEditorPlugins() 的插件集合 */

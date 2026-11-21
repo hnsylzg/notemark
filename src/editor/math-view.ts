@@ -515,6 +515,31 @@ function selectedInlineMathRange(
   return null;
 }
 
+function inlineMathRangeAtPosition(
+  state: EditorState,
+  pos: number
+): { from: number; to: number } | null {
+  for (const candidate of [
+    Math.max(0, Math.min(pos, state.doc.content.size)),
+    Math.max(0, Math.min(pos - 1, state.doc.content.size)),
+  ]) {
+    const $pos = state.doc.resolve(candidate);
+    if ($pos.nodeAfter?.type.name === "math_inline") {
+      return {
+        from: $pos.pos,
+        to: $pos.pos + $pos.nodeAfter.nodeSize,
+      };
+    }
+    if ($pos.nodeBefore?.type.name === "math_inline") {
+      return {
+        from: $pos.pos - $pos.nodeBefore.nodeSize,
+        to: $pos.pos,
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Keyboard navigation is handled by ProseMirror outside the NodeView. When a
  * keyboard selection enters math_inline, forward that state to the existing
@@ -525,6 +550,26 @@ export function createMathInlineCursorPlugin(): Plugin {
     | { from: number; to: number; fromLeft: boolean }
     | null = null;
   return new Plugin({
+    props: {
+      handleClick(view, pos, event) {
+        if (event.button !== 0) return false;
+        const range = inlineMathRangeAtPosition(view.state, pos);
+        if (!range) return false;
+        const dom = view.nodeDOM(range.from);
+        if (!(dom instanceof HTMLElement)) return false;
+        event.preventDefault();
+        dom.dispatchEvent(
+          new CustomEvent("mt-inline-math-edit", {
+            detail: {
+              selectAll: false,
+              keyboardEntry: false,
+              fromLeft: true,
+            },
+          })
+        );
+        return true;
+      },
+    },
     appendTransaction(transactions, oldState, newState) {
       const selectionMoved = transactions.some(
         (tr) =>

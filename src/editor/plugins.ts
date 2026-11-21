@@ -16,6 +16,7 @@ import {
   emphasisUnderscoreInputRule,
   inlineCodeInputRule,
   inlineCodeSchema,
+  linkSchema,
   strongInputRule,
 } from "@milkdown/kit/preset/commonmark";
 import {
@@ -52,14 +53,15 @@ import { htmlView } from "./html-view";
 import { htmlMergePlugins } from "./html-merge";
 import { underlinePlugins } from "./underline";
 import { inlineHtmlMarkPlugins } from "./inline-html-mark";
-import { htmlBlockGapGuardPlugin, htmlBlockPlugins } from "./html-block";
+import { htmlBlockPlugins } from "./html-block";
 import { imageView } from "./image-view";
 import { listItemPlugins } from "./list-item";
+import { frontmatterPlugins } from "./frontmatter";
+import { tocPlugins } from "./toc";
 import {
-  frontmatterGapGuardPlugin,
-  frontmatterPlugins,
-} from "./frontmatter";
-import { tocGapGuardPlugin, tocPlugins } from "./toc";
+  linkReferenceDefinitionPlugins,
+  linkReferenceDefinitionRemark,
+} from "./link-reference-definition";
 import { strongParensPlugins } from "./strong-parens";
 import { persistentCodeBlockPlugins } from "./code-block-view";
 // gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
@@ -132,6 +134,15 @@ const inlineCodeInclusiveSchema = inlineCodeSchema.extendSchema((prev) => (ctx) 
 }));
 
 /**
+ * 链接是闭合型 mark：光标停在链接文字末尾时继续输入，不应自动进入链接。
+ * CommonMark 默认 inclusive=true，会把后续文字串进链接。
+ */
+const linkExclusiveSchema = linkSchema.extendSchema((prev) => (ctx) => ({
+  ...prev(ctx),
+  inclusive: false,
+}));
+
+/**
  * 返回一组可直接传给 Milkdown 的扩展（插件）集合。
  * 各 preset/组件导出可能是单个 MilkdownPlugin 或 MilkdownPlugin[]，
  * 统一展开成扁平的 MilkdownPlugin[] 后，整体传给 Editor.use()。
@@ -144,6 +155,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // Ctrl+B/I/E are intercepted before the preset keymaps silently toggle the
     // mark. The plugin also owns delimiter decorations and click-to-edit.
     markSourcePlugin,
+    // Transform reference definitions before other remark plugins can consume
+    // CommonMark `definition` nodes as ordinary link metadata.
+    ...linkReferenceDefinitionRemark,
     // 引用第一段开头按一次 Backspace：沿用标准 lift，但同步重建原生光标，
     // 避免引用 DOM 被替换后视觉光标停在上一行。
     blockquoteBackspacePlugin,
@@ -162,6 +176,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 代码块在文末时，鼠标点其下方空白自动补空段落并进入（对齐原子块的点出来行为）
     codeBlockExitClickPlugin,
     ...commonmarkPlugins,
+    ...linkExclusiveSchema,
     // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖
     ...inlineCodeInclusiveSchema,
     // 表格 / 任务列表 / 脚注 / 删除线等 GFM 支持（remark-gfm 与删除线输入
@@ -182,9 +197,6 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...mathBlockPlugins,
     ...diagram,
     diagramView,
-    frontmatterGapGuardPlugin,
-    htmlBlockGapGuardPlugin,
-    tocGapGuardPlugin,
     gapcursorPlugin,
     formatMenuPlugin,
     findReplacePlugin,
@@ -211,6 +223,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...listItemPlugins,
     ...frontmatterPlugins,
     ...tocPlugins,
+    ...linkReferenceDefinitionPlugins,
     ...strongParensPlugins,
     ...persistentCodeBlockPlugins,
   ];

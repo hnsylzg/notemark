@@ -1,13 +1,14 @@
+import { editorViewCtx } from "@milkdown/kit/core";
 import { Schema } from "@milkdown/prose/model";
-import { EditorState, TextSelection } from "@milkdown/prose/state";
+import { EditorState } from "@milkdown/prose/state";
 import { EditorView } from "@milkdown/prose/view";
 import { GapCursor } from "@milkdown/prose/gapcursor";
 import { describe, expect, it } from "vitest";
 import {
-  createFrontmatterGapGuardPlugin,
   createFrontmatterNodeView,
   parseFrontmatterRows,
 } from "./frontmatter";
+import { createEditor, setMarkdown } from "./index";
 
 const schema = new Schema({
   nodes: {
@@ -98,20 +99,35 @@ describe("Front Matter preview", () => {
     }
   });
 
-  it("rejects a GapCursor before Front Matter", () => {
-    const yaml = schema.nodes.yaml.create({ value: "title: Test" });
-    const paragraph = schema.node("paragraph");
-    const doc = schema.node("doc", null, [yaml, paragraph]);
-    const state = EditorState.create({
-      schema,
-      doc,
-      selection: TextSelection.create(doc, 2),
-      plugins: [createFrontmatterGapGuardPlugin()],
-    });
+  it("allows the cursor before Front Matter", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
 
-    const next = state.applyTransaction(
-      state.tr.setSelection(new GapCursor(doc.resolve(0)))
-    ).state;
-    expect(next.selection).not.toBeInstanceOf(GapCursor);
+    try {
+      await editor.create();
+      setMarkdown(
+        editor,
+        "---\ntitle: Test\n---\n\n正文\n"
+      );
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      );
+
+      view.dispatch(
+        view.state.tr.setSelection(
+          new GapCursor(view.state.doc.resolve(0))
+        )
+      );
+
+      expect(view.state.selection).toBeInstanceOf(GapCursor);
+      expect(view.state.selection.$from.nodeAfter?.type.name).toBe(
+        "yaml"
+      );
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
   });
 });

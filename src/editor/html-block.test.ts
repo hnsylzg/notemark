@@ -1,14 +1,15 @@
+import { editorViewCtx } from "@milkdown/kit/core";
 import { Schema } from "@milkdown/prose/model";
-import { EditorState, TextSelection } from "@milkdown/prose/state";
+import { EditorState } from "@milkdown/prose/state";
 import { EditorView } from "@milkdown/prose/view";
 import { GapCursor } from "@milkdown/prose/gapcursor";
 import { describe, expect, it, vi } from "vitest";
 import {
   HTML_SOURCE_CONTEXTMENU_EVENT,
-  createHtmlBlockGapGuardPlugin,
   createHtmlBlockNodeView,
   isBlockHtmlStart,
 } from "./html-block";
+import { createEditor, setMarkdown } from "./index";
 
 describe("block HTML detection", () => {
   it.each([
@@ -46,21 +47,34 @@ const schema = new Schema({
 });
 
 describe("HTML block GapCursor guard", () => {
-  it("rejects a GapCursor before a block-level HTML node", () => {
-    const html = schema.nodes.htmlBlock.create({ value: "<div>x</div>" });
-    const paragraph = schema.node("paragraph");
-    const doc = schema.node("doc", null, [html, paragraph]);
-    const state = EditorState.create({
-      schema,
-      doc,
-      selection: TextSelection.create(doc, 2),
-      plugins: [createHtmlBlockGapGuardPlugin()],
-    });
+  it("allows the cursor before a block-level HTML node", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
 
-    const next = state.applyTransaction(
-      state.tr.setSelection(new GapCursor(doc.resolve(0)))
-    ).state;
-    expect(next.selection).not.toBeInstanceOf(GapCursor);
+    try {
+      await editor.create();
+      setMarkdown(editor, "<div>x</div>\n\n正文\n");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      );
+      expect(view.state.doc.firstChild?.type.name).toBe("htmlBlock");
+
+      view.dispatch(
+        view.state.tr.setSelection(
+          new GapCursor(view.state.doc.resolve(0))
+        )
+      );
+
+      expect(view.state.selection).toBeInstanceOf(GapCursor);
+      expect(view.state.selection.$from.nodeAfter?.type.name).toBe(
+        "htmlBlock"
+      );
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
   });
 });
 

@@ -374,6 +374,55 @@ describe("inline math source insertion", () => {
     }
   });
 
+  it.each([1, 4])(
+    "opens inline math when a click lands on its paragraph edge at %i",
+    (edgePos) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 3),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: {
+          math_inline: createMathInlineNodeView,
+        },
+      });
+
+      try {
+        const mathDom = view.dom.querySelector<HTMLElement>(
+          ".milkdown-math-inline"
+        )!;
+        const input = mathDom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        const clicked = view.someProp("handleClick", (handler) =>
+          handler(view, edgePos, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            preventDefault() {},
+          } as MouseEvent)
+        );
+
+        expect(clicked).toBe(true);
+        expect(input.style.display).not.toBe("none");
+        expect(mathDom.ownerDocument.activeElement).toBe(input);
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
   it("removes an inline math node when editing ends without content", () => {
     const math = schema.nodes.math_inline.create();
     const doc = schema.node("doc", null, [

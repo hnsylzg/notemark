@@ -1,6 +1,9 @@
+import { editorViewCtx } from "@milkdown/kit/core";
+import { GapCursor } from "@milkdown/kit/prose/gapcursor";
 import { Schema } from "@milkdown/prose/model";
 import { EditorState, TextSelection } from "@milkdown/prose/state";
 import { describe, expect, it } from "vitest";
+import { createEditor, setMarkdown } from "./index";
 import {
   createTocInputTransaction,
   findSelectionAfterToc,
@@ -64,5 +67,65 @@ describe("TOC input rule", () => {
 
     expect(selection).not.toBeNull();
     expect(selection!.$from.parent.type.name).toBe("paragraph");
+  });
+
+  it("allows the cursor before the TOC block", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "[toc]\n\n正文\n");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      );
+
+      view.dispatch(
+        view.state.tr.setSelection(
+          new GapCursor(view.state.doc.resolve(0))
+        )
+      );
+
+      expect(view.state.selection).toBeInstanceOf(GapCursor);
+      expect(view.state.selection.$from.nodeAfter?.type.name).toBe(
+        "toc"
+      );
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("shows the cursor before TOC on a normal click", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "[toc]\n\n正文\n");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      );
+      const toc = view.dom.querySelector<HTMLElement>(".mt-toc");
+      expect(toc).not.toBeNull();
+
+      toc!.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        })
+      );
+
+      expect(view.state.selection).toBeInstanceOf(GapCursor);
+      expect(view.state.selection.head).toBe(0);
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
   });
 });

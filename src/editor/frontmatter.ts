@@ -18,11 +18,9 @@
  *   - $view：NodeView 只读渲染，避免 ProseMirror 光标进入该原子节点。
  */
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
-import { $nodeSchema, $prose, $remark, $view } from "@milkdown/kit/utils";
+import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import type { RemarkPluginRaw } from "@milkdown/transformer";
 import remarkFrontmatter from "remark-frontmatter";
-import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
-import { GapCursor } from "@milkdown/kit/prose/gapcursor";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
 
 /** remark-frontmatter 配置：yaml 块、`---` 分隔（index.ts 重建序列化器时复用，须保持一致） */
@@ -263,20 +261,6 @@ export const createFrontmatterNodeView: NodeViewConstructor = (
 export const frontmatterView = $view(
   frontmatterSchema.node,
   () => createFrontmatterNodeView
-);
-
-export function createFrontmatterGapGuardPlugin(): Plugin {
-  return new Plugin({
-    key: new PluginKey("notemark-frontmatter-gap-guard"),
-    filterTransaction(tr) {
-      if (!tr.selectionSet || !(tr.selection instanceof GapCursor)) return true;
-      return tr.selection.$from.nodeAfter?.type.name !== "yaml";
-    },
-  });
-}
-
-export const frontmatterGapGuardPlugin = $prose(
-  createFrontmatterGapGuardPlugin
 );
 
 export const frontmatterPlugins = [

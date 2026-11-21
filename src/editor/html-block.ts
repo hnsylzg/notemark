@@ -16,9 +16,7 @@
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import type { MilkdownPlugin } from "@milkdown/ctx";
 import type { RemarkPluginRaw } from "@milkdown/transformer";
-import { $nodeSchema, $prose, $remark, $view } from "@milkdown/kit/utils";
-import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
-import { GapCursor } from "@milkdown/kit/prose/gapcursor";
+import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import { sanitizeHtmlBlock } from "./html-view";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
 
@@ -386,20 +384,6 @@ const htmlBlockRemarkTransform: RemarkPluginRaw<never[]> = () => (tree) => {
 };
 
 export const htmlBlockRemark = $remark("notemark-html-block", () => htmlBlockRemarkTransform);
-
-export function createHtmlBlockGapGuardPlugin(): Plugin {
-  return new Plugin({
-    key: new PluginKey("notemark-html-block-gap-guard"),
-    filterTransaction(tr) {
-      if (!tr.selectionSet || !(tr.selection instanceof GapCursor)) return true;
-      return tr.selection.$from.nodeAfter?.type.name !== "htmlBlock";
-    },
-  });
-}
-
-export const htmlBlockGapGuardPlugin = $prose(
-  createHtmlBlockGapGuardPlugin
-);
 
 export const htmlBlockPlugins: MilkdownPlugin[] = [
   ...htmlBlockSchema,

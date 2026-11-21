@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MARK_SOURCE_SYNTAX,
   autoFormatInlineMarkdown,
+  closeActiveMarkSource,
   createMarkSourcePlugin,
   createMarkSourceTransaction,
   markSourceKey,
@@ -15,6 +16,7 @@ import {
   startMarkSource,
   startMarkSourceRange,
 } from "./mark-source";
+import { LINK_REFERENCE_MARK_NAME } from "./link-reference-definition";
 
 const schema = new Schema({
   nodes: {
@@ -51,6 +53,24 @@ const schema = new Schema({
       toDOM: (mark) => [
         "a",
         { href: mark.attrs.href, title: mark.attrs.title },
+        0,
+      ],
+    },
+    [LINK_REFERENCE_MARK_NAME]: {
+      attrs: {
+        identifier: {},
+        label: {},
+        url: {},
+        title: { default: null },
+        referenceType: { default: "full" },
+      },
+      toDOM: (mark) => [
+        "a",
+        {
+          href: mark.attrs.url,
+          title: mark.attrs.title,
+          "data-reference-label": mark.attrs.label,
+        },
         0,
       ],
     },
@@ -510,6 +530,124 @@ describe("Typora-style mark source editing", () => {
       to: 7,
       attrs: undefined,
     });
+  });
+
+  it("opens an empty link with the caret inside the brackets", () => {
+    const state = stateWithText("", 1, 1);
+    const opened = state.applyTransaction(
+      createMarkSourceTransaction(state, "link")!
+    ).state;
+
+    expect(opened.doc.textContent).toBe("[]()");
+    expect(opened.selection.from).toBe(2);
+    expect(markSourceKey.getState(opened)).toMatchObject({
+      markName: "link",
+      from: 1,
+      to: 5,
+      attrs: { href: "" },
+    });
+  });
+
+  it("removes an untouched empty link when the source session closes", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const state = stateWithText("", 1, 1);
+    const view = new EditorView(host, { state });
+
+    try {
+      expect(startMarkSource(view, "link")).toBe(true);
+      expect(view.state.doc.textContent).toBe("[]()");
+      expect(view.state.selection.from).toBe(2);
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      expect(
+        view.someProp("handleKeyDown", (handler) =>
+          handler(view, escape)
+        )
+      ).toBe(true);
+
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.state.doc.textContent).toBe("");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("clears stored marks after deleting all text in a paragraph", () => {
+    const strong = schema.marks.strong.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("粗体", [strong])),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, doc.content.size - 1),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      view.dispatch(view.state.tr.delete(1, doc.content.size - 1));
+      expect(view.state.doc.textContent).toBe("");
+
+      view.dispatch(view.state.tr.insertText("普通", 1));
+      expect(view.state.doc.firstChild?.firstChild?.marks).toEqual([]);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("closes the active source session before leaving visual editing", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const state = stateWithText("", 1, 1);
+    const view = new EditorView(host, { state });
+
+    try {
+      expect(startMarkSource(view, "strong")).toBe(true);
+      view.dispatch(view.state.tr.insertText("粗体", 3, 3));
+      expect(view.state.doc.textContent).toBe("**粗体**");
+
+      expect(closeActiveMarkSource(view)).toBe(true);
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.state.doc.textContent).toBe("粗体");
+      expect(view.state.doc.firstChild?.firstChild?.marks[0].type.name).toBe(
+        "strong"
+      );
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not restore a deleted empty link when leaving visual editing", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, { state: stateWithText("", 1, 1) });
+
+    try {
+      expect(startMarkSource(view, "link")).toBe(true);
+      expect(view.state.doc.textContent).toBe("[]()");
+
+      view.dispatch(view.state.tr.delete(1, 5));
+      expect(view.state.doc.textContent).toBe("");
+
+      closeActiveMarkSource(view);
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.state.doc.textContent).toBe("");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
   });
 
   it("keeps source mode after deleting and restoring one delimiter character", () => {
@@ -1199,4 +1337,125 @@ describe("Typora-style mark source editing", () => {
       host.remove();
     }
   });
+
+  it("expands a reference link and renders it again after mouse exit", () => {
+    const reference = schema.marks[LINK_REFERENCE_MARK_NAME].create({
+      identifier: "site",
+      label: "site",
+      url: "https://example.com",
+      title: null,
+      referenceType: "full",
+    });
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("链接", [reference])),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      const anchor = view.dom.querySelector(
+        "a[data-reference-label]"
+      );
+      expect(anchor).not.toBeNull();
+      const handled = view.someProp("handleClick", (handler) =>
+        handler(
+          view,
+          2,
+          { button: 0, target: anchor } as MouseEvent
+        )
+      );
+      expect(handled).toBe(true);
+      expect(markSourceKey.getState(view.state)?.markName).toBe(
+        LINK_REFERENCE_MARK_NAME
+      );
+      expect(view.dom.querySelector("p")?.textContent).toBe(
+        "[链接][site]"
+      );
+
+      view.dispatch(view.state.tr.insertText("新", 2));
+      document.body.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true })
+      );
+
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.dom.querySelector("p")?.textContent).toBe("新链接");
+      expect(
+        view.state.doc.firstChild?.firstChild?.marks[0].type.name
+      ).toBe(LINK_REFERENCE_MARK_NAME);
+      expect(
+        view.dom
+          .querySelector("a[data-reference-label]")
+          ?.getAttribute("href")
+      ).toBe("https://example.com");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each([
+    [
+      "link",
+      schema.marks.link.create({ href: "https://example.com" }),
+      "[链接](https://example.com)",
+    ],
+    [
+      LINK_REFERENCE_MARK_NAME,
+      schema.marks[LINK_REFERENCE_MARK_NAME].create({
+        identifier: "site",
+        label: "site",
+        url: "https://example.com",
+        title: null,
+        referenceType: "full",
+      }),
+      "[链接][site]",
+    ],
+  ])(
+    "activates a %s when the click lands on the paragraph at its tail",
+    (markName, mark, source) => {
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, schema.text("链接", [mark])),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 2),
+          plugins: [createMarkSourcePlugin()],
+        }),
+      });
+
+      try {
+        const handled = view.someProp("handleClick", (handler) =>
+          handler(
+            view,
+            3,
+            {
+              button: 0,
+              target: view.dom.querySelector("p"),
+            } as MouseEvent
+          )
+        );
+
+        expect(handled).toBe(true);
+        expect(markSourceKey.getState(view.state)?.markName).toBe(
+          markName
+        );
+        expect(view.dom.querySelector("p")?.textContent).toBe(source);
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
 });

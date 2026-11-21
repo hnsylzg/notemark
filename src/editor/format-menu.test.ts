@@ -25,6 +25,10 @@ import {
 } from "./format-menu";
 import { createHtmlBlockNodeView } from "./html-block";
 import { IMAGE_SOURCE_CONTEXTMENU_EVENT } from "./image-view";
+import {
+  createMarkSourcePlugin,
+  markSourceKey,
+} from "./mark-source";
 import type { ObjectMenuContext } from "./object-menu-context";
 
 const schema = new Schema({
@@ -112,6 +116,17 @@ const schema = new Schema({
   },
   marks: {
     strong: { toDOM: () => ["strong", 0] },
+    link: {
+      attrs: {
+        href: { default: "" },
+        title: { default: null },
+      },
+      toDOM: (mark) => [
+        "a",
+        { href: mark.attrs.href, title: mark.attrs.title },
+        0,
+      ],
+    },
   },
 });
 
@@ -312,6 +327,67 @@ describe("right-click selection preservation", () => {
       }
       expect(copiedHtml).not.toContain("text-align: left");
       expect(clipboard.get("text/plain")).toBe("A   B\nA1  B1");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("inserts an empty link source from the paragraph menu", () => {
+    const doc = schema.node("doc", null, [schema.node("paragraph")]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 1),
+        plugins: [
+          createMarkSourcePlugin(),
+          createFormatMenuProsePlugin(),
+        ],
+      }),
+    });
+
+    try {
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 1,
+        inside: -1,
+      });
+      view.dom.querySelector("p")!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+
+      const linkButton = document.querySelector<HTMLButtonElement>(
+        '[aria-label="链接"]'
+      );
+      expect(linkButton).not.toBeNull();
+      expect(linkButton?.disabled).toBe(false);
+      linkButton?.click();
+
+      expect(view.state.doc.textContent).toBe("[]()");
+      expect(view.state.selection.from).toBe(2);
+      expect(markSourceKey.getState(view.state)?.markName).toBe("link");
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      view.someProp("handleKeyDown", (handler) =>
+        handler(view, escape)
+      );
+
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.state.doc.textContent).toBe("");
     } finally {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })

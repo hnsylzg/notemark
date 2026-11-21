@@ -31,7 +31,12 @@ import {
   cleanMarkdownBr,
 } from "@/editor/index";
 import type { HeadingItem } from "@/editor/index";
-import { commandsCtx, parserCtx, serializerCtx } from "@milkdown/kit/core";
+import {
+  commandsCtx,
+  editorViewCtx,
+  parserCtx,
+  serializerCtx,
+} from "@milkdown/kit/core";
 import { insertHrCommand } from "@milkdown/kit/preset/commonmark";
 import { importImagePaths } from "@/editor/image-files";
 import {
@@ -114,6 +119,7 @@ import {
   readClipboardText,
   writeClipboardText,
 } from "@/editor/clipboard-text";
+import { closeActiveMarkSource } from "@/editor/mark-source";
 
 // 是否处于 Tauri 环境（纯浏览器 vite dev 下不调用 Tauri API）
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -646,6 +652,11 @@ async function maybeRestoreRecoveryDraft(): Promise<void> {
 function enterSourceMode() {
   if (sourceMode.value || !editorInstance) return;
   const editor = editorInstance;
+  // Source mode must see the committed document, not temporary inline editing
+  // delimiters such as `**text**` or `[text](url)`.
+  editor.action((ctx) => {
+    closeActiveMarkSource(ctx.get(editorViewCtx));
+  });
   // 统一走 mergeMarkdown：未编辑时展示原文基线；编辑过则把改动合并回
   // 原文（只替换变化的行），避免序列化强加空行/重排表格污染源码草稿。
   const source = getVisualContent();
