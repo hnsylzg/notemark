@@ -485,13 +485,23 @@ export function docEqualsBaseline(editor: Editor, markdown: string): boolean {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx);
     const parser = ctx.get(parserCtx);
+    const serializer = ctx.get(serializerCtx);
     try {
       const source = markdown.replace(/\r\n?/g, "\n");
       const baseline = normalizeParsedDoc(
         parser(guardUnclosedFrontmatter(source)),
         view.state.schema,
       );
-      return baseline.eq(view.state.doc);
+      // Heading IDs are derived render attributes updated by Milkdown's
+      // non-history plugin after loading. Comparing ProseMirror nodes directly
+      // would treat that generated ID as a user edit and force source mode to
+      // reserialize the whole document. Markdown output is the semantic source
+      // of truth: derived attributes are ignored, while any real content or
+      // structure change still produces a different string.
+      return (
+        cleanMarkdownBr(serializer(baseline)) ===
+        cleanMarkdownBr(serializer(view.state.doc))
+      );
     } catch {
       // 解析异常时保守视为「已偏离基线」，走 mergeMarkdown 路径，
       // 至少不会丢掉用户刚输入的内容。
