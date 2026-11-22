@@ -12,6 +12,7 @@ import {
   tableEditing,
   tableNodes,
 } from "@milkdown/prose/tables";
+import type { NodeViewConstructor } from "@milkdown/prose/view";
 import { getAllCellsInTable } from "@milkdown/kit/preset/gfm";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -28,8 +29,30 @@ import { IMAGE_SOURCE_CONTEXTMENU_EVENT } from "./image-view";
 import {
   createMarkSourcePlugin,
   markSourceKey,
+  startMarkSource,
 } from "./mark-source";
+import { createMathInlineNodeView } from "./math-view";
+import {
+  createLinkReferenceDefinitionNodeView,
+  LINK_REFERENCE_MARK_NAME,
+} from "./link-reference-definition";
+import {
+  createFootnoteDefinitionView,
+  createFootnoteReferenceView,
+} from "./footnote";
 import type { ObjectMenuContext } from "./object-menu-context";
+
+vi.mock("./mathjax", () => ({
+  renderMathJaxSvg: vi.fn(async (tex: string) => {
+    const output = document.createElement("span");
+    output.textContent = tex;
+    return output;
+  }),
+}));
+
+async function flushClipboardTasks(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
 
 const schema = new Schema({
   nodes: {
@@ -65,6 +88,54 @@ const schema = new Schema({
         "div",
         { class: "milkdown-math-block" },
         "∑",
+      ],
+    },
+    math_inline: {
+      group: "inline",
+      content: "text*",
+      inline: true,
+      atom: true,
+      toDOM: () => ["span", { class: "milkdown-math-inline" }, 0],
+    },
+    yaml: {
+      group: "block",
+      atom: true,
+      attrs: { value: { default: "" } },
+      toDOM: () => ["div", { class: "mt-frontmatter" }],
+    },
+    link_reference_definition: {
+      group: "block",
+      atom: true,
+      attrs: {
+        identifier: { default: "" },
+        label: { default: "" },
+        url: { default: "" },
+        title: { default: null },
+      },
+      toDOM: () => [
+        "div",
+        { class: "mt-link-reference-definition" },
+      ],
+    },
+    footnote_reference: {
+      group: "inline",
+      inline: true,
+      atom: true,
+      attrs: { label: { default: "" } },
+      toDOM: () => [
+        "sup",
+        { class: "mt-footnote-reference", "data-type": "footnote_reference" },
+      ],
+    },
+    footnote_definition: {
+      group: "block",
+      content: "block+",
+      attrs: { label: { default: "" } },
+      toDOM: () => [
+        "dl",
+        { class: "mt-footnote-definition", "data-type": "footnote_definition" },
+        ["dt"],
+        ["dd", 0],
       ],
     },
     diagram: {
@@ -127,8 +198,61 @@ const schema = new Schema({
         0,
       ],
     },
+    inlineCode: {
+      toDOM: () => ["code", 0],
+    },
+    [LINK_REFERENCE_MARK_NAME]: {
+      attrs: {
+        identifier: { default: "" },
+        label: { default: "" },
+        url: { default: "" },
+        title: { default: null },
+        referenceType: { default: "full" },
+      },
+      toDOM: (mark) => [
+        "a",
+        {
+          href: mark.attrs.url,
+          "data-reference-label": mark.attrs.label,
+        },
+        0,
+      ],
+    },
   },
 });
+
+function createBlockSourceNodeView(
+  hostClass: string,
+  editorClass: string
+): NodeViewConstructor {
+  return (node) => {
+    const dom = document.createElement("div");
+    dom.className = hostClass;
+    let editor: HTMLTextAreaElement | null = null;
+
+    const startEditing = (): void => {
+      if (editor) return;
+      editor = document.createElement("textarea");
+      editor.className = editorClass;
+      editor.value = String(node.attrs.value ?? "x");
+      editor.addEventListener("blur", () => {
+        if (editor) editor.hidden = true;
+      });
+      dom.replaceChildren(editor);
+      editor.focus();
+      editor.setSelectionRange(0, editor.value.length);
+    };
+
+    dom.addEventListener("click", startEditing);
+    return {
+      dom,
+      update: (updatedNode) => {
+        node = updatedNode;
+        return true;
+      },
+    };
+  };
+}
 
 const tableSchema = new Schema({
   nodes: {
@@ -144,6 +268,19 @@ const tableSchema = new Schema({
       cellContent: "paragraph",
       cellAttributes: {},
     }),
+  },
+  marks: {
+    link: {
+      attrs: { href: { default: "" }, title: { default: null } },
+      toDOM: (mark) => [
+        "a",
+        { href: mark.attrs.href, title: mark.attrs.title },
+        0,
+      ],
+    },
+    inlineCode: {
+      toDOM: () => ["code", 0],
+    },
   },
 });
 
@@ -328,6 +465,10 @@ describe("right-click selection preservation", () => {
       expect(copiedHtml).not.toContain("text-align: left");
       expect(clipboard.get("text/plain")).toBe("A   B\nA1  B1");
     } finally {
+      // Clear the module-level captured right-click before the next test.
+      view.dom.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, button: 0 })
+      );
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
       );
@@ -335,6 +476,367 @@ describe("right-click selection preservation", () => {
       host.remove();
     }
   });
+
+  it("keeps a table text selection on right-button mousedown over an inline object", () => {
+    const link = tableSchema.marks.link.create({ href: "#target" });
+    const linkedCell = (text: string) =>
+      tableSchema.node(
+        "table_header",
+        null,
+        tableSchema.node(
+          "paragraph",
+          null,
+          tableSchema.text(text, [link])
+        )
+      );
+    const table = tableSchema.node("table", null, [
+      tableSchema.node("table_row", null, [linkedCell("LINK")]),
+    ]);
+    const doc = tableSchema.node("doc", null, [table]);
+    let linkFrom = -1;
+    doc.descendants((node, pos) => {
+      if (linkFrom < 0 && node.isText) {
+        linkFrom = pos;
+        return false;
+      }
+      return true;
+    });
+    expect(linkFrom).toBeGreaterThan(0);
+    const selection = TextSelection.create(doc, linkFrom, linkFrom + 2);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: tableSchema,
+        doc,
+        selection,
+        plugins: [
+          tableEditing({ allowTableNodeSelection: true }),
+          createFormatMenuProsePlugin(),
+        ],
+      }),
+    });
+
+    try {
+      const anchor = view.dom.querySelector("a");
+      expect(anchor).not.toBeNull();
+      const nativeSelection = document.getSelection()!;
+      const range = document.createRange();
+      range.selectNodeContents(anchor!);
+      nativeSelection.removeAllRanges();
+      nativeSelection.addRange(range);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: linkFrom + 3,
+        inside: -1,
+      });
+
+      const down = new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: 10,
+        clientY: 10,
+      });
+      anchor!.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      expect(view.state.selection).toBe(selection);
+    } finally {
+      view.dom.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, button: 0 })
+      );
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      document.getSelection()?.removeAllRanges();
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each(["粘贴为纯文本", "粘贴"])(
+    "places %s inside an expanded inline code source",
+    async (label) => {
+    const readText = vi.fn().mockResolvedValue("PASTE");
+    vi.stubGlobal("navigator", {
+      clipboard: { readText },
+      userAgent: "",
+    });
+    const inlineCode = schema.marks.inlineCode.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("code", [inlineCode])),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 3),
+        plugins: [
+          createMarkSourcePlugin(),
+          createFormatMenuProsePlugin(),
+        ],
+      }),
+    });
+
+    try {
+      expect(startMarkSource(view, "inlineCode")).toBe(true);
+      const session = markSourceKey.getState(view.state);
+      expect(session).not.toBeNull();
+      const pasteText = vi
+        .spyOn(view, "pasteText")
+        .mockImplementation(() => true);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: session!.from,
+        inside: -1,
+      });
+      view.dom.querySelector("p")!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+
+      const pasteItem =
+        label === "粘贴"
+          ? document.querySelector<HTMLButtonElement>(
+              '.mt-context-menu__item[aria-label="粘贴"]'
+            )
+          : Array.from(
+              document.querySelectorAll<HTMLButtonElement>(
+                ".mt-context-menu__item"
+              )
+            ).find(
+              (item) =>
+                item.querySelector(".mt-context-menu__label")
+                  ?.textContent === label
+            );
+      expect(pasteItem).not.toBeUndefined();
+      pasteItem!.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        })
+      );
+      expect(markSourceKey.getState(view.state)).not.toBeNull();
+      pasteItem!.click();
+      await flushClipboardTasks();
+
+      expect(pasteText).toHaveBeenCalledWith("PASTE");
+      expect(markSourceKey.getState(view.state)).not.toBeNull();
+      expect(view.state.selection.from).toBeGreaterThan(session!.from);
+      expect(view.state.selection.from).toBeLessThan(session!.to);
+    } finally {
+      view.dom.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, button: 0 })
+      );
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+      vi.unstubAllGlobals();
+    }
+    }
+  );
+
+  it.each(["粘贴为纯文本", "粘贴"])(
+    "keeps inline math expanded and pastes into its source with %s",
+    async (label) => {
+      const readText = vi.fn().mockResolvedValue("y");
+      vi.stubGlobal("navigator", {
+        clipboard: { readText },
+        userAgent: "",
+      });
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 3),
+          plugins: [createFormatMenuProsePlugin()],
+        }),
+        nodeViews: {
+          math_inline: createMathInlineNodeView,
+        },
+      });
+
+      try {
+        const mathDom = view.dom.querySelector<HTMLElement>(
+          ".milkdown-math-inline"
+        )!;
+        const input = mathDom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        mathDom.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(mathDom.classList.contains("is-editing")).toBe(true);
+        expect(input.value).toBe("$x$");
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: 1,
+          inside: 0,
+        });
+        input.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 10,
+            clientY: 10,
+          })
+        );
+
+        const pasteItem =
+          label === "粘贴"
+            ? document.querySelector<HTMLButtonElement>(
+                '.mt-context-menu__item[aria-label="粘贴"]'
+              )
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".mt-context-menu__item"
+                )
+              ).find(
+                (item) =>
+                  item.querySelector(".mt-context-menu__label")
+                    ?.textContent === label
+              );
+        expect(pasteItem).not.toBeUndefined();
+        pasteItem!.click();
+        await flushClipboardTasks();
+
+        expect(input.value).toBe("$y$");
+        expect(input.style.display).toBe("");
+        expect(mathDom.classList.contains("is-editing")).toBe(true);
+        expect(view.state.doc.firstChild!.firstChild!.textContent).toBe("x");
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        view.destroy();
+        host.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
+
+  const blockSourceCases = [
+    {
+      name: "math block",
+      nodeName: "mathBlock",
+      hostSelector: ".milkdown-math-block",
+      editorSelector: ".math-block-editor",
+    },
+    {
+      name: "Mermaid block",
+      nodeName: "diagram",
+      hostSelector: ".diagram",
+      editorSelector: ".diagram-editor",
+    },
+    {
+      name: "Front Matter",
+      nodeName: "yaml",
+      hostSelector: ".mt-frontmatter",
+      editorSelector: ".mt-frontmatter-body",
+    },
+  ] as const;
+
+  it.each(
+    blockSourceCases.flatMap((fixture) =>
+      ["粘贴", "粘贴为纯文本"].map((label) => ({ ...fixture, label }))
+    )
+  )(
+    "keeps $name source expanded and pastes with $label",
+    async ({ nodeName, hostSelector, editorSelector, label }) => {
+      const readText = vi.fn().mockResolvedValue("PASTE\r\n");
+      vi.stubGlobal("navigator", {
+        clipboard: { readText },
+        userAgent: "",
+      });
+      const node = schema.nodes[nodeName].create(
+        nodeName === "mathBlock" ? null : { value: "x" }
+      );
+      const doc = schema.node("doc", null, [node]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 1),
+          plugins: [createFormatMenuProsePlugin()],
+        }),
+        nodeViews: {
+          [nodeName]: createBlockSourceNodeView(
+            hostSelector.slice(1),
+            editorSelector.slice(1)
+          ),
+        },
+      });
+
+      try {
+        const block = view.dom.querySelector<HTMLElement>(hostSelector)!;
+        block.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        const editor =
+          block.querySelector<HTMLTextAreaElement>(editorSelector)!;
+        const inputEvents = vi.fn();
+        editor.addEventListener("input", inputEvents);
+        expect(document.activeElement).toBe(editor);
+        expect(editor.value).toBe("x");
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: 1,
+          inside: 0,
+        });
+        editor.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 10,
+            clientY: 10,
+          })
+        );
+
+        const pasteItem =
+          label === "粘贴"
+            ? document.querySelector<HTMLButtonElement>(
+                '.mt-context-menu__item[aria-label="粘贴"]'
+              )
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".mt-context-menu__item"
+                )
+              ).find(
+                (item) =>
+                  item.querySelector(".mt-context-menu__label")
+                    ?.textContent === label
+              );
+        expect(pasteItem).not.toBeUndefined();
+        expect(pasteItem!.disabled).toBe(false);
+        pasteItem!.click();
+        await flushClipboardTasks();
+
+        expect(editor.value).toBe("PASTE");
+        expect(editor.hidden).toBe(false);
+        expect(document.activeElement).toBe(editor);
+        expect(inputEvents).toHaveBeenCalledOnce();
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        view.destroy();
+        host.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
 
   it("inserts an empty link source from the paragraph menu", () => {
     const doc = schema.node("doc", null, [schema.node("paragraph")]);
@@ -485,6 +987,528 @@ describe("right-click selection preservation", () => {
       host.remove();
     }
   });
+});
+
+describe("link reference context menu", () => {
+  it("opens the shared menu from a reference definition input", () => {
+    const definition = schema.nodes.link_reference_definition.create({
+      identifier: "site",
+      label: "site",
+      url: "https://example.com",
+      title: null,
+    });
+    const doc = schema.node("doc", null, [definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+      nodeViews: {
+        link_reference_definition:
+          createLinkReferenceDefinitionNodeView,
+      },
+    });
+
+    try {
+      const input = view.dom.querySelector<HTMLInputElement>(
+        '.mt-link-reference-definition [data-field="url"]'
+      )!;
+      input.focus();
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 1,
+        inside: 0,
+      });
+      const event = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      });
+      input.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(
+        document.querySelector(".mt-context-menu--typora")
+      ).not.toBeNull();
+      expect(
+        Array.from(
+          document.querySelectorAll(".mt-context-menu__label")
+        ).some((label) => label.textContent === "链接引用")
+      ).toBe(true);
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens the shared menu from a rendered reference link", () => {
+    const reference = schema.marks[LINK_REFERENCE_MARK_NAME].create({
+      identifier: "site",
+      label: "site",
+      url: "https://example.com",
+      title: null,
+      referenceType: "full",
+    });
+    const doc = schema.node("doc", null, [
+      schema.node(
+        "paragraph",
+        null,
+        schema.text("引用链接", [reference])
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 2,
+        inside: 1,
+      });
+      const event = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      });
+      view.dom
+        .querySelector("a[data-reference-label]")!
+        .dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(
+        document.querySelector(".mt-context-menu--typora")
+      ).not.toBeNull();
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each(
+    ["identifier", "url", "title"].flatMap((field) =>
+      ["粘贴", "粘贴为纯文本"].map((label) => ({ field, label }))
+    )
+  )(
+    "pastes into the reference $field field with $label",
+    async ({ field, label }) => {
+      const readText = vi.fn().mockResolvedValue("PASTE");
+      vi.stubGlobal("navigator", {
+        clipboard: { readText },
+        userAgent: "",
+      });
+      const definition = schema.nodes.link_reference_definition.create({
+        identifier: "site",
+        label: "site",
+        url: "https://example.com",
+        title: "title",
+      });
+      const doc = schema.node("doc", null, [definition]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          plugins: [createFormatMenuProsePlugin()],
+        }),
+        nodeViews: {
+          link_reference_definition:
+            createLinkReferenceDefinitionNodeView,
+        },
+      });
+
+      try {
+        const input = view.dom.querySelector<HTMLInputElement>(
+          `.mt-link-reference-definition [data-field="${field}"]`
+        )!;
+        input.focus();
+        input.setSelectionRange(0, input.value.length);
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: 1,
+          inside: 0,
+        });
+        input.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 10,
+            clientY: 10,
+          })
+        );
+
+        const pasteItem =
+          label === "粘贴"
+            ? document.querySelector<HTMLButtonElement>(
+                '.mt-context-menu__item[aria-label="粘贴"]'
+              )
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".mt-context-menu__item"
+                )
+              ).find(
+                (item) =>
+                  item.querySelector(".mt-context-menu__label")
+                    ?.textContent === label
+              );
+        expect(pasteItem).not.toBeUndefined();
+        expect(pasteItem!.disabled).toBe(false);
+        pasteItem!.click();
+        await flushClipboardTasks();
+
+        expect(input.value).toBe("PASTE");
+        expect(document.activeElement).toBe(input);
+        expect(input.isConnected).toBe(true);
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        view.destroy();
+        host.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
+
+  it("pastes into the optional title when it was not focused before right-click", async () => {
+    const readText = vi.fn().mockResolvedValue("PASTE");
+    vi.stubGlobal("navigator", {
+      clipboard: { readText },
+      userAgent: "",
+    });
+    const definition = schema.nodes.link_reference_definition.create({
+      identifier: "site",
+      label: "site",
+      url: "https://example.com",
+      title: "title",
+    });
+    const doc = schema.node("doc", null, [definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+      nodeViews: {
+        link_reference_definition:
+          createLinkReferenceDefinitionNodeView,
+      },
+    });
+
+    try {
+      const input = view.dom.querySelector<HTMLInputElement>(
+        '.mt-link-reference-definition [data-field="title"]'
+      )!;
+      input.setSelectionRange(0, input.value.length);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 1,
+        inside: 0,
+      });
+      input.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+
+      const pasteItem = document.querySelector<HTMLButtonElement>(
+        '.mt-context-menu__item[aria-label="粘贴"]'
+      );
+      expect(pasteItem).not.toBeNull();
+      expect(pasteItem!.disabled).toBe(false);
+      pasteItem!.click();
+      await flushClipboardTasks();
+
+      expect(input.value).toBe("PASTE");
+      expect(document.activeElement).toBe(input);
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("footnote context menu", () => {
+  it("opens the shared menu from a footnote reference index", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const doc = schema.node("doc", null, [
+      schema.node(
+        "paragraph",
+        null,
+        [schema.text("正文"), reference]
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+      nodeViews: {
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 3,
+        inside: 1,
+      });
+      const event = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      });
+      view.dom
+        .querySelector(".mt-footnote-reference")!
+        .dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(
+        document.querySelector(".mt-context-menu--typora")
+      ).not.toBeNull();
+      expect(
+        Array.from(
+          document.querySelectorAll(".mt-context-menu__label")
+        ).some((label) => label.textContent === "脚注索引")
+      ).toBe(true);
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each(["粘贴", "粘贴为纯文本"])(
+    "keeps %s inside the footnote explanation",
+    async (label) => {
+      const readText = vi.fn().mockResolvedValue("PASTE");
+      vi.stubGlobal("navigator", {
+        clipboard: { readText },
+        userAgent: "",
+      });
+      const definition = schema.nodes.footnote_definition.create(
+        { label: "1" },
+        schema.node("paragraph", null, schema.text("note"))
+      );
+      const doc = schema.node("doc", null, [
+        definition,
+        schema.node("paragraph", null, schema.text("outside")),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 3),
+          plugins: [createFormatMenuProsePlugin()],
+        }),
+        nodeViews: {
+          footnote_definition: createFootnoteDefinitionView,
+        },
+      });
+
+      try {
+        const note = view.dom.querySelector(
+          '[data-type="footnote_definition"] dd p'
+        )!;
+        const noteContainer = note.closest("dd")!;
+        const noteStart = view.posAtDOM(note, 0, 1);
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: noteStart + 2,
+          inside: noteStart - 1,
+        });
+        const pasteText = vi
+          .spyOn(view, "pasteText")
+          .mockImplementation(() => true);
+        noteContainer.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 10,
+            clientY: 10,
+          })
+        );
+
+        const pasteItem =
+          label === "粘贴"
+            ? document.querySelector<HTMLButtonElement>(
+                '.mt-context-menu__item[aria-label="粘贴"]'
+              )
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".mt-context-menu__item"
+                )
+              ).find(
+                (item) =>
+                  item.querySelector(".mt-context-menu__label")
+                    ?.textContent === label
+              );
+        expect(pasteItem).not.toBeUndefined();
+        pasteItem!.click();
+        await flushClipboardTasks();
+
+        expect(pasteText).toHaveBeenCalledWith("PASTE");
+        expect(view.state.selection.$from.parent.textContent).toBe("note");
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        view.destroy();
+        host.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
+
+  it.each(
+    ["reference", "definition"].flatMap((kind) =>
+      ["粘贴", "粘贴为纯文本"].map((label) => ({ kind, label }))
+    )
+  )(
+    "pastes into the $kind number editor with $label",
+    async ({ kind, label }) => {
+      const readText = vi.fn().mockResolvedValue("2");
+      vi.stubGlobal("navigator", {
+        clipboard: { readText },
+        userAgent: "",
+      });
+      const reference = schema.nodes.footnote_reference.create({ label: "1" });
+      const definition = schema.nodes.footnote_definition.create(
+        { label: "1" },
+        schema.node("paragraph", null, schema.text("note"))
+      );
+      const doc = schema.node("doc", null, [
+        schema.node(
+          "paragraph",
+          null,
+          kind === "reference"
+            ? [schema.text("正文"), reference]
+            : schema.text("正文")
+        ),
+        definition,
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          plugins: [createFormatMenuProsePlugin()],
+        }),
+        nodeViews: {
+          footnote_reference: createFootnoteReferenceView,
+          footnote_definition: createFootnoteDefinitionView,
+        },
+      });
+
+      try {
+        const trigger =
+          kind === "reference"
+            ? view.dom.querySelector<HTMLElement>(
+                ".mt-footnote-reference"
+              )!
+            : view.dom.querySelector<HTMLElement>(
+                '[data-type="footnote_definition"] dt'
+              )!;
+        trigger.dispatchEvent(
+          new MouseEvent("mousedown", {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+          })
+        );
+        const source = view.dom.querySelector<HTMLInputElement>(
+          ".mt-footnote-label-source"
+        )!;
+        expect(source.style.display).toBe("inline-block");
+        source.setSelectionRange(2, 3);
+
+        const note = view.dom.querySelector(
+          '[data-type="footnote_definition"] dd p'
+        )!;
+        const noteStart = view.posAtDOM(note, 0, 1);
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: noteStart + 1,
+          inside: noteStart - 1,
+        });
+        source.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 10,
+            clientY: 10,
+          })
+        );
+
+        const pasteItem =
+          label === "粘贴"
+            ? document.querySelector<HTMLButtonElement>(
+                '.mt-context-menu__item[aria-label="粘贴"]'
+              )
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".mt-context-menu__item"
+                )
+              ).find(
+                (item) =>
+                  item.querySelector(".mt-context-menu__label")
+                    ?.textContent === label
+              );
+        expect(pasteItem).not.toBeUndefined();
+        pasteItem!.dispatchEvent(
+          new MouseEvent("mousedown", {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+          })
+        );
+        pasteItem!.click();
+        await flushClipboardTasks();
+
+        expect(source.value).toBe(
+          kind === "reference" ? "[^2]" : "[^2]:"
+        );
+        expect(source.isConnected).toBe(true);
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        view.destroy();
+        host.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
 });
 
 describe("HTML source context menu", () => {
@@ -737,6 +1761,77 @@ describe("code block context menu", () => {
 });
 
 describe("table quick copy", () => {
+  it.each(["粘贴为纯文本", "粘贴"])(
+    "strips the clipboard trailing newline when using %s in a table",
+    async (label) => {
+      const readText = vi.fn().mockResolvedValue("PASTE\r\n");
+      vi.stubGlobal("navigator", {
+        clipboard: { readText },
+        userAgent: "",
+      });
+      const { view, host } = createTableView();
+
+      try {
+        const table = view.state.doc.firstChild!;
+        const map = TableMap.get(table);
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: map.map[0] + 3,
+          inside: -1,
+        });
+        const pasteText = vi
+          .spyOn(view, "pasteText")
+          .mockImplementation(() => true);
+        view.dom.querySelector("td")!.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 10,
+            clientY: 10,
+          })
+        );
+
+        const pasteItem =
+          label === "粘贴"
+            ? document.querySelector<HTMLButtonElement>(
+                '.mt-context-menu__item[aria-label="粘贴"]'
+              )
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".mt-context-menu__item"
+                )
+              ).find(
+                (item) =>
+                  item.querySelector(".mt-context-menu__label")
+                    ?.textContent === label
+              );
+        expect(pasteItem).not.toBeUndefined();
+        pasteItem!.click();
+        await flushClipboardTasks();
+
+        if (label === "粘贴") {
+          expect(pasteText).toHaveBeenCalledWith("PASTE");
+        } else {
+          expect(pasteText).not.toHaveBeenCalled();
+          let pastedText = "";
+          view.state.doc.descendants((node) => {
+            if (node.isText && node.text?.includes("PASTE")) {
+              pastedText = node.text;
+            }
+          });
+          expect(pastedText).toContain("PASTE");
+          expect(pastedText).not.toMatch(/[\r\n]/);
+        }
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        vi.unstubAllGlobals();
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
   it("copies the current table as Markdown source", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", {
@@ -810,8 +1905,7 @@ describe("table quick copy", () => {
           '[aria-label="剪切表格源码"]'
         )
         ?.click();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushClipboardTasks();
 
       expect(writeText).toHaveBeenCalledWith(
         "| A | B |\n| --- | --- |\n| A1 | B1 |"
@@ -926,8 +2020,7 @@ describe("table quick copy", () => {
           '[aria-label="剪切 Markdown 源码"]'
         )
         ?.click();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushClipboardTasks();
 
       expect(writeText).toHaveBeenCalledWith("**bold**");
       expect(view.state.doc.textContent).toBe("");
@@ -1088,8 +2181,7 @@ describe("alert quick copy", () => {
           '[aria-label="剪切 Alert 源码"]'
         )
         ?.click();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushClipboardTasks();
 
       expect(writeText).toHaveBeenCalledWith(
         "> [!WARNING] 注意\n> 正文"
@@ -1145,11 +2237,75 @@ describe("blockquote quick cut", () => {
           '[aria-label="剪切引用源码"]'
         )
         ?.click();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushClipboardTasks();
 
       expect(writeText).toHaveBeenCalledWith("> 引用文字");
       expect(view.state.doc.firstChild?.type.name).toBe("paragraph");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      vi.unstubAllGlobals();
+      view.destroy();
+      host.remove();
+    }
+  });
+});
+
+describe("blockquote quick copy", () => {
+  it("preserves inline code in the copied Markdown source", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText },
+      userAgent: "",
+    });
+    const quote = schema.nodes.blockquote.create(
+      null,
+      schema.node(
+        "paragraph",
+        null,
+        schema.text("code", [schema.marks.inlineCode.create()])
+      )
+    );
+    const doc = schema.node("doc", null, [quote]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [
+          createFormatMenuProsePlugin((node) => {
+            expect(node.type.name).toBe("doc");
+            return "> `code`";
+          }),
+        ],
+      }),
+    });
+
+    try {
+      const target = view.dom.querySelector("blockquote code")!;
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 3,
+        inside: -1,
+      });
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+
+      const copy = document.querySelector<HTMLButtonElement>(
+        '[aria-label="复制引用源码"]'
+      );
+      expect(copy?.disabled).toBe(false);
+      copy?.click();
+      await Promise.resolve();
+
+      expect(writeText).toHaveBeenCalledWith("> `code`");
     } finally {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })

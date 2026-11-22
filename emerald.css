@@ -349,7 +349,7 @@
 .milkdown th,
 .milkdown td {
   border: 1px solid var(--mt-color-border);
-  padding: 1px 10px;            /* 紧凑表格 */
+  padding: 0 var(--mt-table-cell-padding-inline);
   line-height: 1.2;
   text-align: left;
 }

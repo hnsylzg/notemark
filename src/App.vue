@@ -3360,21 +3360,4 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
-/* 窄窗口：压缩间距与内边距，让文件名尽量少被截断 */
-@media (max-width: 680px) {
-  .mt-toolbar {
-    padding: 0 8px;
-    gap: 4px;
-  }
-  .mt-toolbar__right,
-  .mt-toolbar__left {
-    gap: 4px;
-  }
-  .mt-btn {
-    padding: 3px 7px;
-  }
-  .mt-btn--icon {
-    width: 26px;
-  }
-}
 </style>

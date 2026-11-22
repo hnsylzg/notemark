@@ -34,6 +34,30 @@ const schema = new Schema({
       group: "block",
       toDOM: () => ["hr"],
     },
+    link_reference_definition: {
+      group: "block",
+      atom: true,
+      attrs: {
+        identifier: { default: "" },
+        label: { default: "" },
+        url: { default: "" },
+        title: { default: null },
+      },
+      toDOM: () => [
+        "div",
+        { class: "mt-link-reference-definition" },
+      ],
+    },
+    footnote_reference: {
+      group: "inline",
+      inline: true,
+      atom: true,
+      attrs: { label: { default: "" } },
+      toDOM: () => [
+        "sup",
+        { "data-type": "footnote_reference" },
+      ],
+    },
     alert: {
       group: "block",
       content: "block+",
@@ -135,6 +159,59 @@ describe("object menu context", () => {
       expect(resolveObjectMenuContext(view, target)?.kind).toBe(
         "horizontal-rule"
       );
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("resolves link reference definitions and preserves their source", () => {
+    const { view, host } = mount(
+      schema.node("doc", null, [
+        schema.node("link_reference_definition", {
+          identifier: "site",
+          label: "site",
+          url: "https://example.com",
+          title: "Example",
+        }),
+      ])
+    );
+
+    try {
+      const target = view.dom.querySelector(
+        ".mt-link-reference-definition"
+      )!;
+      const context = resolveObjectMenuContext(view, target);
+      expect(context?.kind).toBe("link-reference-definition");
+      expect(context && objectClipboardSource(context)).toBe(
+        '[site]: https://example.com "Example"'
+      );
+      expect(context && objectPlainTextSource(context)).toBe(
+        '[site]: https://example.com "Example"'
+      );
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("resolves footnote references as objects", () => {
+    const { view, host } = mount(
+      schema.node("doc", null, [
+        schema.node("paragraph", null, [
+          schema.text("正文"),
+          schema.node("footnote_reference", { label: "1" }),
+        ]),
+      ])
+    );
+
+    try {
+      const target = view.dom.querySelector(
+        '[data-type="footnote_reference"]'
+      )!;
+      const context = resolveObjectMenuContext(view, target);
+      expect(context?.kind).toBe("footnote-reference");
+      expect(context && objectClipboardSource(context)).toBe("[^1]");
     } finally {
       view.destroy();
       host.remove();

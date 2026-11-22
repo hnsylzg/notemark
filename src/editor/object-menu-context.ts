@@ -1,10 +1,16 @@
 import { Fragment, type Node as PMNode } from "@milkdown/prose/model";
 import { TextSelection } from "@milkdown/prose/state";
 import type { EditorView } from "@milkdown/prose/view";
+import {
+  formatLinkReferenceDefinition,
+  linkReferenceDefinitionFromAttrs,
+} from "./link-reference-definition";
 
 export type ObjectMenuKind =
   | "diagram"
   | "html-block"
+  | "link-reference-definition"
+  | "footnote-reference"
   | "frontmatter"
   | "toc"
   | "horizontal-rule"
@@ -23,6 +29,8 @@ const NODE_SELECTORS: Array<[ObjectMenuKind, string]> = [
   ["alert-title", ".md-alert-title"],
   ["diagram", ".diagram"],
   ["html-block", ".mt-html-block"],
+  ["link-reference-definition", ".mt-link-reference-definition"],
+  ["footnote-reference", '[data-type="footnote_reference"]'],
   ["frontmatter", ".mt-frontmatter"],
   ["toc", ".mt-toc"],
   ["horizontal-rule", "hr"],
@@ -71,6 +79,14 @@ function findAncestorNodeAt(
 
 function containerSource(kind: ObjectMenuKind, node: PMNode | null): string {
   if (node) {
+    if (kind === "link-reference-definition") {
+      const definition = linkReferenceDefinitionFromAttrs(node.attrs);
+      return definition ? formatLinkReferenceDefinition(definition) : "";
+    }
+    if (kind === "footnote-reference") {
+      const label = String(node.attrs.label ?? "").trim();
+      return label ? `[^${label}]` : "";
+    }
     const value = node.attrs.value;
     if (typeof value === "string" && value) return value;
   }

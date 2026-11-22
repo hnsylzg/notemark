@@ -35,6 +35,7 @@ import {
   linkReferenceDefinitionFromAttrs,
   normalizeLinkReferenceIdentifier,
 } from "./link-reference-definition";
+import { MENU_PRESERVE_EDITING_ATTRIBUTE } from "./menu-preserve";
 
 export interface MarkSourceSession {
   markName: string;
@@ -1099,6 +1100,12 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
           editorView,
           session
         );
+        if (
+          event.target instanceof Element &&
+          event.target.closest(`[${MENU_PRESERVE_EDITING_ATTRIBUTE}]`)
+        ) {
+          return;
+        }
         if (
           event.target instanceof Element &&
           blockElement &&

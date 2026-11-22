@@ -56,6 +56,10 @@
     Menlo, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
   --mt-font-size-base: 14px;
   --mt-line-height-base: 1.6;
+  /* 表格代码字号和边框更小，放大行盒以保持约 3px 的可见行间间隙。 */
+  --mt-table-inline-code-line-height: calc(
+    var(--mt-font-size-base) * 1.5714286
+  );
   --mt-content-width: 800px;
   --mt-content-padding: 48px;
 
@@ -377,6 +381,10 @@
   border-radius: 6px;
 }
 
+.milkdown blockquote:not(.md-alert) :not(pre) > code {
+  line-height: 1.8;
+}
+
 .milkdown .md-alert {
   padding: 0.5rem 0.8rem;
   border-left: 4px solid;
@@ -408,7 +416,7 @@
 .milkdown th,
 .milkdown td {
   border: 1px solid var(--mt-color-border);
-  padding: 1px 10px;            /* 紧凑表格 */
+  padding: 0 var(--mt-table-cell-padding-inline);
   line-height: 1.2;
   text-align: left;
 }

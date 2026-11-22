@@ -619,18 +619,57 @@ export function insertLinkReferenceDefinition(
   const markType = state.schema.marks[LINK_REFERENCE_MARK_NAME];
   if (!nodeType || !markType) return false;
 
-  let depth = state.selection.$from.depth;
-  while (depth > 1) depth -= 1;
-  if (depth === 0) return false;
+  const revealDefinition = (
+    definitionPos: number,
+    focusInput: boolean
+  ): void => {
+    requestAnimationFrame(() => {
+      if (
+        view.isDestroyed ||
+        definitionPos >= view.state.doc.content.size
+      ) {
+        return;
+      }
+      const dom = view.nodeDOM(definitionPos);
+      if (!(dom instanceof HTMLElement)) return;
+      dom.scrollIntoView?.({ block: "nearest" });
+      if (focusInput) {
+        dom
+          .querySelector<HTMLInputElement>(
+            '.mt-link-reference-definition__identifier'
+          )
+          ?.focus({ preventScroll: true });
+      }
+    });
+  };
 
-  const { $from } = state.selection;
+  const selection = state.selection;
+  if (selection.$from.depth === 0) {
+    const definition = nodeType.create({
+      identifier: "",
+      label: "",
+      url: "",
+      title: null,
+    });
+    const insertAt = selection.empty
+      ? Math.min(selection.from, state.doc.content.size)
+      : selection.to;
+    view.dispatch(state.tr.insert(insertAt, definition));
+    revealDefinition(insertAt, true);
+    return true;
+  }
+
+  let depth = selection.$from.depth;
+  while (depth > 1) depth -= 1;
+
+  const { $from } = selection;
   const blockStart = $from.before(depth);
   const blockEnd = $from.after(depth);
   const block = $from.node(depth);
   const replaceEmptyParagraph =
     block.type === state.schema.nodes.paragraph &&
     block.content.size === 0;
-  const hasSelection = !state.selection.empty;
+  const hasSelection = !selection.empty;
   const insertBeforeParagraph =
     !hasSelection &&
     !replaceEmptyParagraph &&
@@ -656,8 +695,8 @@ export function insertLinkReferenceDefinition(
   const tr = state.tr;
   if (hasSelection) {
     tr.addMark(
-      state.selection.from,
-      state.selection.to,
+      selection.from,
+      selection.to,
       markType.create({
         identifier,
         label: identifier,
@@ -680,26 +719,8 @@ export function insertLinkReferenceDefinition(
     tr.insert(blockEnd, definition);
   }
   view.dispatch(tr);
-  if (!hasSelection) {
-    requestAnimationFrame(() => {
-      if (
-        view.isDestroyed ||
-        definitionPos >= view.state.doc.content.size
-      ) {
-        return;
-      }
-      const dom = view.nodeDOM(definitionPos);
-      if (dom instanceof HTMLElement) {
-        dom
-          .querySelector<HTMLInputElement>(
-            '.mt-link-reference-definition__identifier'
-          )
-          ?.focus();
-      }
-    });
-  } else {
-    view.focus();
-  }
+  revealDefinition(definitionPos, !hasSelection);
+  if (hasSelection) view.focus();
   return true;
 }
 

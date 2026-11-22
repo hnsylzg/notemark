@@ -96,10 +96,13 @@ import {
 import { insertInlineMath } from "./math-view";
 import { formatImageMarkdown } from "./image-markdown";
 import {
+  MARK_SOURCE_SYNTAX,
   closeActiveMarkSource,
+  markSourceKey,
   startMarkSource,
   startMarkSourceRange,
 } from "./mark-source";
+import { MENU_PRESERVE_EDITING_ATTRIBUTE } from "./menu-preserve";
 import { insertLinkReferenceDefinition } from "./link-reference-definition";
 import { normalizePastedMarkdown } from "./markdown-paste";
 import {
@@ -232,6 +235,7 @@ let activeView: EditorView | null = null;
 let activeMath: HTMLElement | null = null;
 /** 菜单统一使用的合法光标位置（已规范到鼠标所在文本块内部） */
 let hitPos = -1;
+let hitSourceControl: TextSourceControl | null = null;
 /** 段落转换使用右键时捕获的文本块快照，菜单打开后不再重新计算 */
 let activeTextblock: TextblockTarget | null = null;
 /** 第一次右键时保留 mousedown 阶段捕获的位置，contextmenu 直接复用 */
@@ -259,6 +263,7 @@ function resetMenuState(): void {
   activeView = null;
   activeMath = null;
   hitPos = -1;
+  hitSourceControl = null;
   activeTextblock = null;
 }
 
@@ -291,7 +296,49 @@ function hitOnSelection(view: EditorView, pos: number): boolean {
   return !sel.empty && pos >= sel.from && pos <= sel.to;
 }
 
+function selectionInTableCell(view: EditorView): boolean {
+  const $from = view.state.selection.$from;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    if ($from.node(depth).type.spec.tableRole === "cell") return true;
+  }
+  return false;
+}
+
+/** 浏览器原生选区是否覆盖右键目标（用于内联代码、链接等对象）。 */
+function nativeSelectionIntersectsTarget(
+  view: EditorView,
+  target: Element | null
+): boolean {
+  if (!target || !view.dom.contains(target)) return false;
+  const selection = view.dom.ownerDocument.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false;
+  }
+  for (let index = 0; index < selection.rangeCount; index++) {
+    try {
+      if (selection.getRangeAt(index).intersectsNode(target)) return true;
+    } catch {
+      // 目标或 Range 已失效时继续检查下一个 Range。
+    }
+  }
+  return false;
+}
+
 const TEXTBLOCK_SELECTOR = "p, h1, h2, h3, h4, h5, h6";
+
+/** 展开行内源码时，把光标限制在分隔符内部。 */
+function clampToActiveMarkSource(view: EditorView, pos: number): number {
+  const session = markSourceKey.getState(view.state);
+  if (!session) return pos;
+  const syntax = MARK_SOURCE_SYNTAX[session.markName];
+  if (!syntax) return pos;
+  const contentStart = session.from + syntax.open.length;
+  const contentEnd = Math.max(
+    contentStart,
+    session.to - syntax.close.length
+  );
+  return Math.max(contentStart, Math.min(pos, contentEnd));
+}
 
 /**
  * Capture the paragraph under the pointer once, while the DOM event still has
@@ -331,7 +378,11 @@ function captureRightClick(
   }
 
   const domBlock =
-    target?.closest<HTMLElement>(TEXTBLOCK_SELECTOR) ?? null;
+    target?.closest<HTMLElement>(TEXTBLOCK_SELECTOR) ??
+    target
+      ?.closest<HTMLElement>("dd")
+      ?.querySelector<HTMLElement>(TEXTBLOCK_SELECTOR) ??
+    null;
   let textblock: TextblockTarget | null = null;
 
   if (domBlock && view.dom.contains(domBlock)) {
@@ -987,7 +1038,13 @@ function serializeSourceNode(
   const serializer = markdownSourceSerializers.get(view);
   if (!serializer) return null;
   try {
-    return normalizeMarkdownSource(serializer(node));
+    const paragraph = view.state.schema.nodes.paragraph;
+    const content =
+      node.isInline && paragraph
+        ? paragraph.create(null, node)
+        : node;
+    const doc = view.state.schema.nodes.doc.create(null, content);
+    return normalizeMarkdownSource(serializer(doc));
   } catch {
     return null;
   }
@@ -1009,9 +1066,14 @@ function serializeSourceSelection(view: EditorView): string | null {
   }
 }
 
-async function pasteAt(view: EditorView, pos: number): Promise<void> {
+async function pasteAt(
+  view: EditorView,
+  pos: number,
+  stripTrailingLineBreak = false
+): Promise<void> {
   view.focus();
-  if (!hitOnSelection(view, pos)) placeCaretAt(view, pos);
+  const target = clampToActiveMarkSource(view, pos);
+  if (!hitOnSelection(view, target)) placeCaretAt(view, target);
 
   let html = "";
   let text = "";
@@ -1045,7 +1107,12 @@ async function pasteAt(view: EditorView, pos: number): Promise<void> {
     text = await readClipboardText();
   }
   if (html) view.pasteHTML(html);
-  else if (text) pasteMarkdownText(view, text);
+  else if (text) {
+    pasteMarkdownText(
+      view,
+      stripTrailingLineBreak ? stripTrailingClipboardLineBreak(text) : text
+    );
+  }
   view.focus();
 }
 
@@ -1078,18 +1145,102 @@ function pasteMarkdownText(
 
 async function pastePlainSourceAt(
   view: EditorView,
-  pos: number
+  pos: number,
+  stripTrailingLineBreak = false
 ): Promise<void> {
   view.focus();
-  if (!hitOnSelection(view, pos)) placeCaretAt(view, pos);
+  const target = clampToActiveMarkSource(view, pos);
+  if (!hitOnSelection(view, target)) placeCaretAt(view, target);
   const text = await readClipboardText();
-  if (text) pasteMarkdownText(view, text, false);
+  if (text) {
+    pasteMarkdownText(
+      view,
+      stripTrailingLineBreak ? stripTrailingClipboardLineBreak(text) : text,
+      false
+    );
+  }
   view.focus();
 }
 
-function runQuickAction(action: "cut" | "copy" | "paste" | "delete"): void {
+type TextSourceControl = HTMLInputElement | HTMLTextAreaElement;
+
+function stripTrailingClipboardLineBreak(text: string): string {
+  return text.replace(/(?:\r\n|\r|\n)$/, "");
+}
+
+const BLOCK_SOURCE_CONTROL_SELECTOR = [
+  ".milkdown-math-inline-input",
+  ".math-block-editor",
+  ".diagram-editor",
+  ".mt-frontmatter-body",
+  ".mt-html-block-body",
+  ".mt-link-reference-definition input",
+  ".mt-footnote-label-source",
+].join(", ");
+
+function activeBlockSourceControl(): TextSourceControl | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) {
+    return null;
+  }
+  return active.matches(BLOCK_SOURCE_CONTROL_SELECTOR) ? active : null;
+}
+
+function sourceControlAtTarget(
+  target: Element | null
+): TextSourceControl | null {
+  if (!target) return null;
+  const control =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement
+      ? target
+      : target.closest(BLOCK_SOURCE_CONTROL_SELECTOR);
+  return control instanceof HTMLInputElement ||
+    control instanceof HTMLTextAreaElement
+    ? control
+    : null;
+}
+
+function currentBlockSourceControl(): TextSourceControl | null {
+  return hitSourceControl ?? activeBlockSourceControl();
+}
+
+function replaceTextControlSelection(
+  control: TextSourceControl,
+  start: number,
+  end: number,
+  text: string
+): void {
+  control.focus();
+  control.value =
+    control.value.slice(0, start) + text + control.value.slice(end);
+  const caret = start + text.length;
+  control.setSelectionRange(caret, caret);
+  control.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function pasteIntoSourceControl(
+  control: TextSourceControl
+): Promise<void> {
+  const start = control.selectionStart ?? control.value.length;
+  const end = control.selectionEnd ?? start;
+  const text = stripTrailingClipboardLineBreak(await readClipboardText());
+  if (!text || !control.isConnected) return;
+  replaceTextControlSelection(control, start, end, text);
+}
+
+function runQuickAction(
+  action: "cut" | "copy" | "paste" | "delete",
+  tableContext = false
+): void {
   const view = activeView;
   const pos = hitPos;
+  const sourceControl =
+    action === "paste" ? currentBlockSourceControl() : null;
+  const tablePaste =
+    action === "paste" &&
+    !!view &&
+    (tableContext || selectionInTableCell(view));
   closeMenu();
   if (!view) return;
   try {
@@ -1098,14 +1249,17 @@ function runQuickAction(action: "cut" | "copy" | "paste" | "delete"): void {
         alert(`无法写入剪贴板：${error instanceof Error ? error.message : String(error)}`);
       });
     } else if (action === "paste") {
-      void pasteAt(view, pos).catch((error) => {
+      const paste = sourceControl
+        ? pasteIntoSourceControl(sourceControl)
+        : pasteAt(view, pos, tablePaste);
+      void paste.catch((error) => {
         alert(`无法读取剪贴板：${error instanceof Error ? error.message : String(error)}`);
       });
     } else if (!view.state.selection.empty) {
       view.dispatch(view.state.tr.deleteSelection().scrollIntoView());
     }
   } finally {
-    view.focus();
+    if (!sourceControl) view.focus();
   }
 }
 
@@ -1138,13 +1292,14 @@ function runCodeBlockQuickAction(
       });
     } else if (action === "paste") {
       void readClipboardText().then((text) => {
+        const pasteText = stripTrailingClipboardLineBreak(text);
         view.dispatch({
           changes: {
             from: selection.from,
             to: selection.to,
-            insert: text,
+            insert: pasteText,
           },
-          selection: { anchor: selection.from + text.length },
+          selection: { anchor: selection.from + pasteText.length },
         });
       }).catch((error) => {
         alert(
@@ -1167,6 +1322,8 @@ function runObjectQuickAction(
   action: "cut" | "copy" | "paste" | "delete"
 ): void {
   const view = activeView;
+  const sourceControl =
+    action === "paste" ? currentBlockSourceControl() : null;
   closeMenu();
   if (action === "cut" && context.kind === "html-block") {
     void writeClipboardText(context.source)
@@ -1196,10 +1353,22 @@ function runObjectQuickAction(
         `对象复制失败：${error instanceof Error ? error.message : String(error)}`
       );
     });
+  } else if (action === "paste" && sourceControl) {
+    void pasteIntoSourceControl(sourceControl).catch((error) => {
+      alert(
+        `无法读取剪贴板：${error instanceof Error ? error.message : String(error)}`
+      );
+    });
   } else if (action === "paste" && context.kind === "html-block") {
     void readClipboardText()
       .then((text) => {
-        if (view) replaceHtmlBlockSource(view, context, text);
+        if (view) {
+          replaceHtmlBlockSource(
+            view,
+            context,
+            stripTrailingClipboardLineBreak(text)
+          );
+        }
       })
       .catch((error) => {
         alert(
@@ -1217,10 +1386,12 @@ function replaceHtmlSourceSelection(
   end: number,
   text: string
 ): void {
-  editor.focus();
-  editor.setRangeText(text, start, end, "end");
-  const caret = start + text.length;
-  editor.setSelectionRange(caret, caret);
+  replaceTextControlSelection(
+    editor,
+    start,
+    end,
+    stripTrailingClipboardLineBreak(text)
+  );
 }
 
 interface HtmlSourceSelection {
@@ -1374,7 +1545,11 @@ function pasteImageSourceSelection(
   closeMenu();
   void readClipboardText()
     .then((text) =>
-      replaceContentEditableSelection(editor, selection, text)
+      replaceContentEditableSelection(
+        editor,
+        selection,
+        stripTrailingClipboardLineBreak(text)
+      )
     )
     .catch((error) => {
       alert(
@@ -1481,6 +1656,10 @@ function runClipboardAs(
 ): void {
   const view = activeView;
   const pos = hitPos;
+  const sourceControl =
+    action === "pasteText" ? currentBlockSourceControl() : null;
+  const tablePaste =
+    action === "pasteText" && !!view && selectionInTableCell(view);
   closeMenu();
   if (!view) return;
   if (action === "copyText") {
@@ -1492,7 +1671,10 @@ function runClipboardAs(
       alert(`无法写入剪贴板：${error instanceof Error ? error.message : String(error)}`);
     });
   } else if (action === "pasteText") {
-    void pastePlainSourceAt(view, pos).catch((error) => {
+    const paste = sourceControl
+      ? pasteIntoSourceControl(sourceControl)
+      : pastePlainSourceAt(view, pos, tablePaste);
+    void paste.catch((error) => {
       alert(`无法读取剪贴板：${error instanceof Error ? error.message : String(error)}`);
     });
   }
@@ -1664,12 +1846,14 @@ function openMenu(
   inlineMath: HTMLElement | null = null,
   inlineImage: HTMLImageElement | null = null,
   sourceEditor: HTMLTextAreaElement | null = null,
-  imageSourceEditor: HTMLElement | null = null
+  imageSourceEditor: HTMLElement | null = null,
+  sourceControl: TextSourceControl | null = null
 ): void {
   closeMenu();
   activeView = view;
   activeMath = math ?? inlineMath;
   hitPos = pos;
+  hitSourceControl = sourceControl;
   activeTextblock = textblock;
 
   const menu = document.createElement("div");
@@ -1727,7 +1911,12 @@ function openMenu(
     icon: keyof typeof ICONS,
     label: string,
     run: () => void,
-    opts?: { active?: boolean; disabled?: boolean; danger?: boolean }
+    opts?: {
+      active?: boolean;
+      disabled?: boolean;
+      danger?: boolean;
+      preserveEditing?: boolean;
+    }
   ): HTMLButtonElement => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1735,6 +1924,9 @@ function openMenu(
     btn.setAttribute("role", "menuitem");
     btn.setAttribute("aria-label", label);
     btn.title = label;
+    if (opts?.preserveEditing) {
+      btn.setAttribute(MENU_PRESERVE_EDITING_ATTRIBUTE, "");
+    }
     if (opts?.active) btn.classList.add("is-active");
     if (opts?.danger) btn.classList.add("mt-context-menu__item--danger");
     btn.disabled = !!opts?.disabled;
@@ -1827,6 +2019,8 @@ function openMenu(
     const objectLabels: Record<ObjectMenuContext["kind"], string> = {
       diagram: "代码块",
       "html-block": "HTML",
+      "link-reference-definition": "链接引用",
+      "footnote-reference": "脚注索引",
       frontmatter: "Front Matter",
       toc: "目录",
       "horizontal-rule": "水平线",
@@ -1867,6 +2061,12 @@ function openMenu(
         break;
       }
       case "html-block": {
+        break;
+      }
+      case "link-reference-definition": {
+        break;
+      }
+      case "footnote-reference": {
         break;
       }
       case "frontmatter": {
@@ -1994,6 +2194,7 @@ function openMenu(
           : inlineImage
             ? false
             : hasPlainTextSelection;
+  const hasActiveSourceControl = !!currentBlockSourceControl();
   const enclosingSourceTarget = sourceContainerTargetAt(
     view,
     pos,
@@ -2177,7 +2378,7 @@ function openMenu(
       runCodeBlockQuickAction(codeBlock, action);
       return;
     }
-    runQuickAction(action);
+    runQuickAction(action, action === "paste" && !!tableCell);
   };
 
   const quickGrid = document.createElement("div");
@@ -2200,13 +2401,21 @@ function openMenu(
     () => copyContextSource(),
     { disabled: !canCopySource }
   );
-  addIconButton(quickGrid, "paste", "粘贴", () => runContextQuick("paste"), {
-    disabled: sourceEditor || imageSourceEditor
-      ? false
-      : objectMenu
-        ? objectMenu.kind !== "html-block" || !objectMenu.node
-        : !!codeBlock && !codeBlock.view,
-  });
+  addIconButton(
+    quickGrid,
+    "paste",
+    "粘贴",
+    () => runContextQuick("paste"),
+    {
+      preserveEditing: true,
+      disabled: sourceEditor || imageSourceEditor
+        ? false
+        : objectMenu
+          ? (objectMenu.kind !== "html-block" || !objectMenu.node) &&
+            !hasActiveSourceControl
+          : !!codeBlock && !codeBlock.view,
+    }
+  );
   addIconButton(quickGrid, "delete", "删除", () => runContextQuick("delete"), {
     disabled: sourceEditor || imageSourceEditor
       ? !sourceSelection
@@ -2246,15 +2455,20 @@ function openMenu(
       active?: boolean;
       disabled?: boolean;
       title?: string;
+      preserveEditing?: boolean;
     }
-  ): void => {
+  ): HTMLButtonElement => {
     const btn = addRow(parent, opts?.active ? "✓" : "", label, opts?.shortcut);
+    if (opts?.preserveEditing) {
+      btn.setAttribute(MENU_PRESERVE_EDITING_ATTRIBUTE, "");
+    }
     if (opts?.active) btn.classList.add("is-active");
     if (opts?.disabled) {
       btn.disabled = true;
       if (opts.title) btn.title = opts.title;
     }
     btn.addEventListener("click", run);
+    return btn;
   };
 
   const addBlockConversions = (
@@ -2393,13 +2607,14 @@ function openMenu(
       const selection = codeSelection(cm);
       closeMenu();
       void readClipboardText().then((text) => {
+        const pasteText = stripTrailingClipboardLineBreak(text);
         cm.dispatch({
           changes: {
             from: selection.from,
             to: selection.to,
-            insert: text,
+            insert: pasteText,
           },
-          selection: { anchor: selection.from + text.length },
+          selection: { anchor: selection.from + pasteText.length },
         });
         cm.focus();
       }).catch((error) => {
@@ -2412,7 +2627,13 @@ function openMenu(
     if (objectMenu?.kind === "html-block") {
       closeMenu();
       void readClipboardText()
-        .then((text) => replaceHtmlBlockSource(view, objectMenu, text))
+        .then((text) =>
+          replaceHtmlBlockSource(
+            view,
+            objectMenu,
+            stripTrailingClipboardLineBreak(text)
+          )
+        )
         .catch((error) => {
           alert(
             `剪贴板操作失败：${error instanceof Error ? error.message : String(error)}`
@@ -2424,8 +2645,13 @@ function openMenu(
       const selection = view.state.selection;
       closeMenu();
       void readClipboardText().then((text) => {
+        const pasteText = stripTrailingClipboardLineBreak(text);
         view.dispatch(
-          view.state.tr.insertText(text, selection.from, selection.to)
+          view.state.tr.insertText(
+            pasteText,
+            selection.from,
+            selection.to
+          )
         );
         view.focus();
       }).catch((error) => {
@@ -2461,7 +2687,9 @@ function openMenu(
     }
     runClipboardAs("copyHtml");
   });
-  addTextAction(clipboardAs, "粘贴为纯文本", pasteGlobalPlainText);
+  addTextAction(clipboardAs, "粘贴为纯文本", pasteGlobalPlainText, {
+    preserveEditing: true,
+  });
 
   {
     const textFormattingEnabled =
@@ -2781,7 +3009,13 @@ export function createFormatMenuProsePlugin(
               captured?.textblock ?? null,
               null,
               null,
-              objectMenu
+              objectMenu,
+              null,
+              null,
+              null,
+              null,
+              null,
+              sourceControlAtTarget(target)
             );
             return;
           }
@@ -2810,32 +3044,34 @@ export function createFormatMenuProsePlugin(
           const tableCell = target.closest<HTMLElement>("td, th");
           if (tableCell) {
             const pos = editorView.posAtDOM(tableCell, 0);
-            const selection = editorView.state.selection;
-            if (
-              pos >= 0 &&
-              !hitOnSelection(editorView, pos) &&
-              !(selection instanceof AllSelection) &&
-              !(selection instanceof CellSelection)
-            ) {
-              editorView.dispatch(
-                editorView.state.tr.setSelection(
-                  TextSelection.create(editorView.state.doc, pos)
-                )
-              );
-            }
             const captured = captureRightClick(
               editorView,
               target,
               event.clientX,
               event.clientY
             );
+            const caretPos = captured?.caretPos ?? pos;
+            const selection = editorView.state.selection;
+            if (
+              pos >= 0 &&
+              !hitOnSelection(editorView, caretPos) &&
+              !nativeSelectionIntersectsTarget(editorView, target) &&
+              !(selection instanceof AllSelection) &&
+              !(selection instanceof CellSelection)
+            ) {
+              editorView.dispatch(
+                editorView.state.tr.setSelection(
+                  TextSelection.create(editorView.state.doc, caretPos)
+                )
+              );
+            }
             event.preventDefault();
             event.stopPropagation();
             openMenu(
               editorView,
               event.clientX,
               event.clientY,
-              captured?.caretPos ?? pos,
+              caretPos,
               captured?.textblock ?? null,
               null,
               null,
@@ -2967,7 +3203,9 @@ export function createFormatMenuProsePlugin(
             );
             if (!captured) return false;
             pendingRightClick = captured;
-            const onSelection = hitOnSelection(view, captured.caretPos);
+            const onSelection =
+              hitOnSelection(view, captured.caretPos) ||
+              nativeSelectionIntersectsTarget(view, target);
             const keepSelection =
               view.state.selection instanceof AllSelection ||
               view.state.selection instanceof CellSelection ||
@@ -3015,7 +3253,9 @@ export function createFormatMenuProsePlugin(
               );
             pendingRightClick = null;
             if (!captured) return false;
-            const onSelection = hitOnSelection(view, captured.caretPos);
+            const onSelection =
+              hitOnSelection(view, captured.caretPos) ||
+              nativeSelectionIntersectsTarget(view, target);
             // 表格单元格内：默认交给表格右键菜单；右键落在已有文字选区上时
             // 格式菜单优先（给选中的单元格文字套格式）
             if (target?.closest?.("td, th") && !onSelection) return false;
@@ -3031,7 +3271,10 @@ export function createFormatMenuProsePlugin(
               null,
               null,
               inlineMath,
-              inlineImage
+              inlineImage,
+              null,
+              null,
+              sourceControlAtTarget(target)
             );
             return true;
           },

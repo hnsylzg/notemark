@@ -32,6 +32,7 @@ import {
   footnoteDefinitionSchema,
   footnoteReferenceSchema,
 } from "@milkdown/preset-gfm";
+import { MENU_PRESERVE_EDITING_ATTRIBUTE } from "./menu-preserve";
 
 /** preset-gfm 内置脚注节点在 ProseMirror schema 里的名字 */
 const REF = "footnote_reference";
@@ -53,6 +54,43 @@ const footnoteLabelOpeners = new WeakMap<
   HTMLElement,
   FootnoteLabelOpener
 >();
+
+function keepsEditorDuringMenuAction(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    !!target.closest(`[${MENU_PRESERVE_EDITING_ATTRIBUTE}]`)
+  );
+}
+
+function firstTextClientRect(element: HTMLElement): DOMRect | null {
+  const ownerDocument = element.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(
+    element,
+    NodeFilter.SHOW_TEXT
+  );
+  const range = ownerDocument.createRange();
+  try {
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = node.textContent ?? "";
+      const firstVisible = text.search(/\S/);
+      if (firstVisible < 0) continue;
+      range.setStart(node, firstVisible);
+      range.setEnd(node, firstVisible + 1);
+      const rect =
+        (typeof range.getClientRects === "function"
+          ? range.getClientRects()[0]
+          : null) ??
+        (typeof range.getBoundingClientRect === "function"
+          ? range.getBoundingClientRect()
+          : null);
+      if (rect && rect.width > 0) return rect;
+    }
+    return null;
+  } finally {
+    range.detach();
+  }
+}
 
 interface ContentLineBox {
   left: number;
@@ -310,6 +348,8 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
   const dt = document.createElement("dt");
   const dd = document.createElement("dd");
   dt.tabIndex = -1;
+  const labelText = document.createElement("span");
+  labelText.className = "mt-footnote-label-text";
   const source = document.createElement("input");
   source.className = "mt-footnote-label-source";
   source.type = "text";
@@ -317,13 +357,24 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
   source.style.display = "none";
   dom.append(dt, dd);
   let editing = false;
+  let pendingPointerSelection:
+    | { start: number; end: number }
+    | null = null;
+  let cleanupPointerSelectionRestore: (() => void) | null = null;
+  let lastPointerButton = -1;
+
+  const clearPointerSelectionRestore = (): void => {
+    cleanupPointerSelectionRestore?.();
+    cleanupPointerSelectionRestore = null;
+  };
 
   const updateChrome = () => {
     const label = String(node.attrs.label ?? "");
     dom.dataset.type = DEF;
     dom.dataset.label = label;
     if (!editing) {
-      dt.replaceChildren(document.createTextNode(label));
+      labelText.textContent = label;
+      dt.replaceChildren(labelText);
       source.style.display = "none";
       dt.classList.remove("mt-footnote-source-editing");
       delete dt.dataset.mtSource;
@@ -331,7 +382,11 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
   };
   updateChrome();
 
-  const startEditing = (keyboardEntry = false, fromLeft = true) => {
+  const startEditing = (
+    keyboardEntry = false,
+    fromLeft = true,
+    pointerEntry = false
+  ) => {
     if (editing) return;
     editing = true;
     source.value = `[^${String(node.attrs.label ?? "")}]:`;
@@ -352,9 +407,58 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       ? start
       : Math.max(2, textLength - 2);
     source.setSelectionRange(start, end);
+    pendingPointerSelection =
+      pointerEntry && start > 0 ? { start, end } : null;
+    const restorePointerSelection = (): void => {
+      if (
+        !editing ||
+        !pendingPointerSelection
+      ) {
+        return;
+      }
+      source.focus({ preventScroll: true });
+      source.setSelectionRange(
+        pendingPointerSelection.start,
+        pendingPointerSelection.end
+      );
+    };
+    clearPointerSelectionRestore();
+    if (pendingPointerSelection) {
+      const restoreAfterEventDefaults = (): void => {
+        restorePointerSelection();
+        setTimeout(restorePointerSelection, 0);
+        requestAnimationFrame(restorePointerSelection);
+      };
+      document.addEventListener(
+        "mouseup",
+        restoreAfterEventDefaults,
+        true
+      );
+      document.addEventListener(
+        "click",
+        restoreAfterEventDefaults,
+        true
+      );
+      cleanupPointerSelectionRestore = () => {
+        document.removeEventListener(
+          "mouseup",
+          restoreAfterEventDefaults,
+          true
+        );
+        document.removeEventListener(
+          "click",
+          restoreAfterEventDefaults,
+          true
+        );
+      };
+    }
+    queueMicrotask(restorePointerSelection);
+    requestAnimationFrame(restorePointerSelection);
+    setTimeout(restorePointerSelection, 0);
   };
 
   const onOutsideMouseDown = (event: MouseEvent) => {
+    if (keepsEditorDuringMenuAction(event.target)) return;
     if (!dt.contains(event.target as Node)) finishEditing(true);
   };
 
@@ -365,6 +469,8 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       ? parseFootnoteLabel(source.value, true)
       : previous;
     editing = false;
+    pendingPointerSelection = null;
+    clearPointerSelectionRestore();
     updateChrome();
     if (next && next !== previous) {
       updateFootnoteLabels(view, previous, next);
@@ -373,21 +479,27 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     document.removeEventListener("pointerdown", onOutsideMouseDown, true);
   };
 
-  const startFromPointer = (event: MouseEvent) => {
-    const rect = dt.getBoundingClientRect();
-    const fromLeft =
-      rect.width > 0 &&
-      event.clientX < rect.left;
-    startEditing(fromLeft, true);
-  };
-
-  const startFromContainerEdge = (event: MouseEvent) => {
-    if (event.button !== 0 || editing) return;
+  const pointerEntryAt = (
+    event: MouseEvent
+  ): { keyboardEntry: boolean; fromLeft: boolean } | null => {
+    if (editing || event.button !== 0) return null;
     const target = event.target as Node | null;
-    if (!target || dt.contains(target) || dd.contains(target)) {
-      return;
+    if (!target || source.contains(target)) return null;
+    const inNumber = dt.contains(target);
+    const inExplanation = dd.contains(target);
+    if (inExplanation && target !== dd) return null;
+
+    const labelRect =
+      firstTextClientRect(labelText) ??
+      labelText.getBoundingClientRect();
+    if (
+      labelRect.width > 0 &&
+      (event.clientY < labelRect.top ||
+        event.clientY > labelRect.bottom)
+    ) {
+      return null;
     }
-    const rect = dt.getBoundingClientRect();
+    const dtRect = dt.getBoundingClientRect();
     const fontSize = Number.parseFloat(
       dt.ownerDocument.defaultView?.getComputedStyle(dt).fontSize ?? ""
     );
@@ -395,40 +507,100 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       ? fontSize * FOOTNOTE_POINTER_EDGE_EM
       : 0;
     if (
-      rect.width <= 0 ||
-      event.clientX > rect.left + edgeWidth
+      !inNumber &&
+      !inExplanation &&
+      dtRect.width > 0 &&
+      event.clientX <= dtRect.left + edgeWidth
     ) {
-      return;
+      return { keyboardEntry: true, fromLeft: true };
     }
-    event.preventDefault();
-    event.stopPropagation();
-    startEditing(true, true);
+
+    if (labelRect.width <= 0) {
+      return inNumber
+        ? { keyboardEntry: false, fromLeft: true }
+        : null;
+    }
+    const contentBlock =
+      dd.firstElementChild instanceof HTMLElement
+        ? dd.firstElementChild
+        : null;
+    const contentRect = contentBlock
+      ? firstTextClientRect(contentBlock) ??
+        contentBlock.getBoundingClientRect()
+      : null;
+    const clickedBeforeContent =
+      !!contentRect &&
+      contentRect.width > 0 &&
+      event.clientX < contentRect.left;
+    if (
+      (!inExplanation || clickedBeforeContent) &&
+      event.clientX > labelRect.right
+    ) {
+      return { keyboardEntry: true, fromLeft: false };
+    }
+    if (!inNumber) return null;
+    return event.clientX < labelRect.left
+      ? { keyboardEntry: true, fromLeft: true }
+      : { keyboardEntry: false, fromLeft: true };
   };
 
-  dt.addEventListener("mousedown", (event) => {
-    if (event.button !== 0) return;
-    if (editing) {
+  dom.addEventListener(
+    "mousedown",
+    (event) => {
+      lastPointerButton = event.button;
+    },
+    true
+  );
+  dom.addEventListener(
+    "contextmenu",
+    () => {
+      lastPointerButton = 2;
+    },
+    true
+  );
+  dom.addEventListener("mousedown", (event) => {
+    const entry = pointerEntryAt(event);
+    if (!entry) return;
+    event.preventDefault();
+    event.stopPropagation();
+    startEditing(
+      entry.keyboardEntry,
+      entry.fromLeft,
+      true
+    );
+  });
+  dom.addEventListener("click", (event) => {
+    const secondaryGesture = lastPointerButton !== 0;
+    lastPointerButton = -1;
+    if (secondaryGesture || event.button !== 0) {
+      event.preventDefault();
       event.stopPropagation();
       return;
     }
-    event.preventDefault();
-    event.stopPropagation();
-    startFromPointer(event);
+    if (
+      editing &&
+      pendingPointerSelection
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      source.focus({ preventScroll: true });
+      source.setSelectionRange(
+        pendingPointerSelection.start,
+        pendingPointerSelection.end
+      );
+    }
   });
-  dt.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!editing) startFromPointer(event);
-  });
-  dom.addEventListener("mousedown", startFromContainerEdge);
-  dom.addEventListener("click", startFromContainerEdge);
   source.addEventListener("mousedown", (event) => {
+    pendingPointerSelection = null;
+    clearPointerSelectionRestore();
     event.stopPropagation();
   });
   source.addEventListener("click", (event) => {
     event.stopPropagation();
   });
   source.addEventListener("keydown", (event) => {
+    pendingPointerSelection = null;
+    clearPointerSelectionRestore();
     event.stopPropagation();
     const caret = source.selectionStart ?? 0;
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -521,6 +693,7 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     },
     destroy() {
       editing = false;
+      clearPointerSelectionRestore();
       footnoteLabelOpeners.delete(dt);
       document.removeEventListener("mousedown", onOutsideMouseDown, true);
       document.removeEventListener("pointerdown", onOutsideMouseDown, true);
@@ -585,6 +758,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
   };
 
   const onOutsideMouseDown = (event: MouseEvent) => {
+    if (keepsEditorDuringMenuAction(event.target)) return;
     if (!dom.contains(event.target as Node)) finishEditing(true);
   };
 
@@ -956,7 +1130,7 @@ function footnoteKeyboardTarget(
   return null;
 }
 
-function footnoteClickTarget(
+function footnoteReferenceClickTarget(
   view: EditorView,
   pos: number
 ): { pos: number; fromLeft: boolean } | null {
@@ -973,23 +1147,6 @@ function footnoteClickTarget(
         pos: $pos.pos - $pos.nodeBefore.nodeSize,
         fromLeft: false,
       };
-    }
-    if ($pos.nodeAfter?.type.name === DEF) {
-      return { pos: $pos.pos, fromLeft: true };
-    }
-    for (let depth = $pos.depth; depth > 0; depth -= 1) {
-      const node = $pos.node(depth);
-      if (node.type.name !== DEF) continue;
-      const definitionPos = $pos.before(depth);
-      const first = firstTextPos(
-        view.state.doc,
-        definitionPos,
-        node.nodeSize
-      );
-      if (first === $pos.pos) {
-        return { pos: definitionPos, fromLeft: false };
-      }
-      break;
     }
   }
   return null;
@@ -1062,7 +1219,14 @@ export function createFootnoteClickPlugin(): Plugin {
               );
             }
           }
-          const fallback = footnoteClickTarget(view, pos);
+          if (
+            target?.closest?.(
+              '[data-type="footnote_definition"]'
+            )
+          ) {
+            return false;
+          }
+          const fallback = footnoteReferenceClickTarget(view, pos);
           if (
             fallback &&
             openFootnoteLabelEditor(

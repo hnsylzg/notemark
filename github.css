@@ -36,7 +36,8 @@
   --github-table-border-color: #d1d9e0b3;
   /* GitHub's 1px grid can resolve to two device pixels at common zoom levels. */
   --github-table-border-width: 0.75px;
-  --github-table-cell-padding-block: 0.4em;
+  /* 表格上下空间 8px（8 / 16）。 */
+  --github-table-cell-padding-block: 0.5em;
   --github-table-cell-padding-inline: 0.8em;
   --github-inline-code-bg: rgba(129, 139, 152, 0.12);
   --github-mark-bg: #fff8c5;
@@ -48,6 +49,8 @@
     "Liberation Mono", monospace;
   --mt-font-size-base: 16px;
   --mt-line-height-base: 1.5;
+  /* GitHub 表格代码无边框，补少量纵向 padding 增加代码背景高度。 */
+  --mt-table-inline-code-padding-block: 0.1em;
   --mt-content-width: 1012px;
   --mt-content-padding: 2rem;
 
@@ -548,7 +551,7 @@ html[data-theme="dark"] {
 .milkdown :not(pre) > code {
   padding: 0.2em 0.4em;
   border: 0;
-  border-radius: 6px;
+  border-radius: 5px;
   background: var(--github-inline-code-bg);
   color: var(--mt-color-fg);
   font-family: var(--mt-font-mono);

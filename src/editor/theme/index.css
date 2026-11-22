@@ -128,6 +128,18 @@
   > tr:nth-child(even) {
   background: var(--mt-table-stripe, var(--mt-color-bg-soft));
 }
+
+/* 表格行高保持紧凑：代码背景留出少量行间空隙。
+   必须未分层，才能覆盖外置主题对 padding 和 line-height 的重置。 */
+.milkdown .editor :is(th, td) {
+  line-height: var(--mt-table-line-height);
+}
+.milkdown .editor :is(th, td) :not(pre) > code,
+.milkdown .editor :is(th, td) > code {
+  padding-block: var(--mt-table-inline-code-padding-block);
+  line-height: var(--mt-table-inline-code-line-height);
+}
+
 /* ============================================================
  * 标题行距基线——必须未分层
  *

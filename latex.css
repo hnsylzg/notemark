@@ -44,6 +44,8 @@
 
   --mt-font-size-base: 16px;
   --mt-line-height-base: 1.55;
+  /* 表格代码无边框，放大行盒以保持约 3px 的可见行间间隙。 */
+  --mt-table-inline-code-line-height: calc(var(--mt-font-size-base) * 1.5);
   --mt-content-width: calc(16cm + 2 * 2.5cm);
   --mt-content-padding: 2.5cm;
 

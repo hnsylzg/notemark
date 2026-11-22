@@ -635,7 +635,7 @@
 :where(.milkdown .editor) td {
   position: relative;
   border: 1px solid var(--mt-color-border);
-  padding: 1px 10px; /* 单元格内边距（垂直 1px） */
+  padding: 0 var(--mt-table-cell-padding-inline);
   line-height: 1.2; /* 表格行高紧凑，避免继承正文 1.75 */
   text-align: left;
 }
@@ -888,13 +888,14 @@
 :where(.milkdown .editor) .mt-frontmatter-row {
   display: grid;
   grid-template-columns: minmax(6em, max-content) minmax(0, 1fr);
+  align-items: baseline;
   gap: 1em;
   line-height: 1.6;
 }
 :where(.milkdown .editor) .mt-frontmatter-key {
   color: var(--mt-color-fg-muted);
   font-family: var(--mt-font-mono, monospace);
-  font-size: 0.88em;
+  font-size: 1em;
 }
 :where(.milkdown .editor) .mt-frontmatter-value {
   min-width: 0;

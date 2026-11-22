@@ -162,6 +162,15 @@ describe("link reference definitions", () => {
     root.className = "milkdown";
     document.body.appendChild(root);
     const editor = createEditor(root);
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView"
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
 
     try {
       await editor.create();
@@ -199,7 +208,25 @@ describe("link reference definitions", () => {
         )?.placeholder
       ).toBe("title (optional)");
       expect(getMarkdown(editor)).toContain("[]: ");
+      await vi.waitFor(() => {
+        expect(scrollIntoView).toHaveBeenCalled();
+      });
+      expect(document.activeElement).toBe(
+        definition?.querySelector('[data-field="identifier"]')
+      );
     } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          originalScrollIntoView
+        );
+      } else {
+        Reflect.deleteProperty(
+          HTMLElement.prototype,
+          "scrollIntoView"
+        );
+      }
       await editor.destroy();
       root.remove();
     }
@@ -292,6 +319,36 @@ describe("link reference definitions", () => {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
       );
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("inserts at a top-level document boundary", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "正文\n");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      ) as EditorView;
+      const end = view.state.doc.content.size;
+      view.dispatch(
+        view.state.tr.setSelection(
+          new GapCursor(view.state.doc.resolve(end))
+        )
+      );
+
+      expect(insertLinkReferenceDefinition(view)).toBe(true);
+      expect(view.state.doc.childCount).toBe(2);
+      expect(view.state.doc.lastChild?.type.name).toBe(
+        LINK_REFERENCE_DEFINITION_NAME
+      );
+    } finally {
       await editor.destroy();
       root.remove();
     }
