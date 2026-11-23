@@ -421,7 +421,8 @@
   text-align: left;
 }
 .milkdown th {
-  font-weight: bold;          /* 表头仅加粗，不另设底色/文字色 */
+  background: transparent;
+  font-weight: bold;
 }
 /* 斑马纹从表头（首行）起即开始交替，表头也参与条纹。
    条纹绘制在行上，单元格只保留边框，避免背景遮住折叠边框（共用 --mt-table-stripe）。 */
