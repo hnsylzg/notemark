@@ -109,3 +109,21 @@ describe("Mermaid code block language", () => {
     preview.destroy();
   });
 });
+
+describe("Markmap code block language", () => {
+  it("keeps Markmap in its normal language order", () => {
+    const loader = new CodeBlockLanguageLoader(languages);
+    const names = loader.getAll().map((language) => language.name);
+    const markmapIndex = names.indexOf("markmap");
+
+    expect(markmapIndex).toBeGreaterThan(names.indexOf("Markdown"));
+    expect(markmapIndex).toBeLessThan(names.indexOf("mermaid"));
+    expect(markmapIndex).toBeLessThan(names.indexOf("MS SQL"));
+  });
+
+  it("does not try to load a CM language for Markmap", async () => {
+    const loader = new CodeBlockLanguageLoader([]);
+
+    await expect(loader.load("MARKMAP")).resolves.toBeUndefined();
+  });
+});

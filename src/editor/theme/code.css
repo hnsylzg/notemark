@@ -202,20 +202,26 @@
   display: none;
 }
 
-:where(.milkdown .editor)
-  .milkdown-code-block.mermaid-code-block:has(.codemirror-host.hidden) {
-  padding: 0;
-  background: transparent;
+:where(.milkdown .editor) .milkdown-code-block.diagram-code-block {
+  --mt-diagram-code-bg: transparent;
 }
 
 :where(.milkdown .editor)
-  .milkdown-code-block.mermaid-code-block
+  .milkdown-code-block.diagram-code-block:has(.codemirror-host.hidden) {
+  /* 主题层还会用同等特异性给所有代码块设置背景；这里用变量保留
+     Mermaid / Markmap 预览态的独立默认值，同时允许主题覆盖该变量。 */
+  background: var(--mt-diagram-code-bg, transparent) !important;
+  padding: 0;
+}
+
+:where(.milkdown .editor)
+  .milkdown-code-block.diagram-code-block
   .preview-toggle-button {
   display: none;
 }
 
 :where(.milkdown .editor)
-  .milkdown-code-block.mermaid-code-block.is-editing-mermaid-source
+  .milkdown-code-block.diagram-code-block.is-editing-diagram-source
   .preview-panel {
   display: none;
 }
@@ -243,7 +249,8 @@
   overflow-x: auto;
 }
 
-:where(.milkdown .editor) .milkdown-code-block .mermaid-preview {
+:where(.milkdown .editor) .milkdown-code-block .mermaid-preview,
+:where(.milkdown .editor) .milkdown-code-block .markmap-preview {
   margin: 0 auto;
 }
 

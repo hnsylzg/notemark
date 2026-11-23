@@ -711,6 +711,9 @@
 
 /* ============ Mermaid 图表（无外框，mermaid 默认配色） ============ */
 :where(.milkdown .editor) .diagram {
+  /* Markmap 主题可通过 --markmap-theme（classic/cards/minimal）、
+     --markmap-layout（tree/two-sided/org-chart）、
+     --markmap-color-scheme 和 --markmap-wrap-width 覆盖。 */
   /* Mermaid 渲染配置（CSS 变量形式，diagram-view.ts 读取，用法同 Typora）：
      --mermaid-theme: 可覆盖 Mermaid 主题（如 neutral/dark）
      --mermaid-look: 可覆盖图形外观（classic/neo/handDrawn）

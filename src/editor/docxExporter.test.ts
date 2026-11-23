@@ -1153,6 +1153,240 @@ describe("Word Mermaid diagrams", () => {
       vi.restoreAllMocks();
     }
   });
+
+  it("reuses the rendered SVG for a Markmap code block", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        text: { group: "inline" },
+        code_block: {
+          group: "block",
+          content: "text*",
+          marks: "",
+          code: true,
+          defining: true,
+          attrs: { language: { default: "" } },
+          toDOM: () => ["pre", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node(
+        "code_block",
+        { language: "markmap" },
+        schema.text("# Linux\n- Systemd")
+      ),
+    ]);
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 200;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      }
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:markmap");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: vi.fn(() => ({ drawImage: vi.fn() })),
+    });
+    Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+      configurable: true,
+      value: vi.fn((callback: BlobCallback) => {
+        callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+      }),
+    });
+
+    const viewDom = document.createElement("div");
+    viewDom.innerHTML =
+      '<div class="milkdown-code-block diagram-code-block markmap-code-block">' +
+      '<div class="diagram markmap-preview">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="2000" viewBox="0 0 400 2000">' +
+      '<style>.markmap{--mm-text:#112233;--mm-branch-0:#abcdef;}</style>' +
+      '<text x="10" y="20" style="fill:var(--mm-text)">Linux</text>' +
+      '<path d="M10 50 H190" style="fill:none;stroke:var(--mm-branch-0);stroke-width:4"/>' +
+      "</svg></div></div>";
+
+    try {
+      const bytes = await buildDocx({ doc, viewDom });
+      const zip = await JSZip.loadAsync(bytes);
+      const documentXml = await zip
+        .file("word/document.xml")!
+        .async("string");
+      const svgName = Object.keys(zip.files).find(
+        (name) => name.startsWith("word/media/") && name.endsWith(".svg")
+      );
+      expect(svgName).toBeDefined();
+      const svg = await zip.file(svgName!)!.async("string");
+      const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+      expect(parsed.querySelector("text")?.textContent).toBe("Linux");
+      expect(parsed.querySelector("path")?.getAttribute("style")).toContain(
+        "stroke:#abcdef"
+      );
+      expect(svg).not.toContain("var(--mm-");
+      expect(parsed.querySelector('svg > rect[fill="#ffffff"]')).not.toBeNull();
+      const extent = documentXml.match(
+        /<wp:extent cx="(\d+)" cy="(\d+)"\/>/
+      );
+      expect(Number(extent?.[1])).toBe(130 * 9525);
+      expect(Number(extent?.[2])).toBe(651 * 9525);
+    } finally {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+        configurable: true,
+        value: originalGetContext,
+      });
+      Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+        configurable: true,
+        value: originalToBlob,
+      });
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("keeps figure spacing after a table", async () => {
+    const cellAttrs = {
+      alignment: { default: "left" },
+      colwidth: { default: null },
+    };
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        table: {
+          group: "block",
+          content: "table_header_row table_row+",
+          toDOM: () => ["table", 0],
+        },
+        table_header_row: {
+          content: "(table_header)*",
+          toDOM: () => ["tr", 0],
+        },
+        table_row: {
+          content: "(table_cell)*",
+          toDOM: () => ["tr", 0],
+        },
+        table_header: {
+          content: "paragraph",
+          attrs: cellAttrs,
+          toDOM: () => ["th", 0],
+        },
+        table_cell: {
+          content: "paragraph",
+          attrs: cellAttrs,
+          toDOM: () => ["td", 0],
+        },
+        code_block: {
+          group: "block",
+          content: "text*",
+          attrs: { language: { default: "" } },
+          toDOM: () => ["pre", 0],
+        },
+      },
+    });
+    const cell = (type: "table_header" | "table_cell", text: string) =>
+      schema.node(
+        type,
+        { alignment: "left", colwidth: null },
+        schema.node("paragraph", null, schema.text(text))
+      );
+    const doc = schema.node("doc", null, [
+      schema.node("table", null, [
+        schema.node("table_header_row", null, [
+          cell("table_header", "列"),
+        ]),
+        schema.node("table_row", null, [cell("table_cell", "值")]),
+      ]),
+      schema.node(
+        "code_block",
+        { language: "mermaid" },
+        schema.text("flowchart LR\nA --> B")
+      ),
+    ]);
+
+    const viewDom = document.createElement("div");
+    viewDom.innerHTML =
+      '<div class="milkdown-code-block diagram-code-block mermaid-code-block">' +
+      '<div class="diagram mermaid-preview">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">' +
+      '<path d="M10 50 H190" stroke="#333"/>' +
+      "</svg></div></div>";
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 200;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      }
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:table-figure");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: vi.fn(() => ({ drawImage: vi.fn() })),
+    });
+    Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+      configurable: true,
+      value: vi.fn((callback: BlobCallback) => {
+        callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+      }),
+    });
+
+    try {
+      const bytes = await buildDocx({ doc, viewDom });
+      const zip = await JSZip.loadAsync(bytes);
+      const documentXml = await zip
+        .file("word/document.xml")!
+        .async("string");
+      const stylesXml = await zip.file("word/styles.xml")!.async("string");
+      const figureStyle =
+        stylesXml.match(
+          /<w:style\b[^>]*w:styleId="Figure"[^>]*>[\s\S]*?<\/w:style>/
+        )?.[0] ?? "";
+
+      expect(figureStyle).toContain(
+        '<w:spacing w:after="180" w:before="180"/>'
+      );
+      expect(documentXml.indexOf("<w:tbl>")).toBeLessThan(
+        documentXml.indexOf('<w:pStyle w:val="Figure"/>')
+      );
+    } finally {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+        configurable: true,
+        value: originalGetContext,
+      });
+      Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+        configurable: true,
+        value: originalToBlob,
+      });
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("Word footnotes", () => {

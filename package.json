@@ -1,7 +1,7 @@
 {
   "name": "notemark",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.4.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,6 +18,8 @@
     "@codemirror/language": "^6.12.4",
     "@codemirror/language-data": "^6.5.2",
     "@lezer/highlight": "^1.2.3",
+    "@markmap/parse": "^1.1.1",
+    "@markmap/render": "^1.1.1",
     "@milkdown/components": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "@milkdown/plugin-diagram": "^7.7.0",

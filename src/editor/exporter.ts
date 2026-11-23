@@ -33,7 +33,8 @@ import {
   tableHtmlToAlignedPlainText,
 } from "./table-clipboard";
 import { renderMermaidSvg } from "./diagram-view";
-import { isMermaidLanguage } from "./mermaid-language";
+import { diagramLanguage } from "./diagram-language";
+import { renderMarkmapSvg } from "./markmap-renderer";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -253,33 +254,39 @@ export function getEditorHtml(editor: Editor): string {
  */
 export async function getExportHtml(editor: Editor): Promise<string> {
   const view = editor.action((ctx) => ctx.get(editorViewCtx));
-  const mermaidBlocks: Array<{ source: string; pos: number }> = [];
+  const diagramBlocks: Array<{
+    kind: "mermaid" | "markmap";
+    source: string;
+    pos: number;
+  }> = [];
   view.state.doc.descendants((node, pos) => {
-    if (
-      node.type.name === "code_block" &&
-      isMermaidLanguage((node.attrs as { language?: unknown }).language)
-    ) {
-      mermaidBlocks.push({ source: node.textContent, pos });
-    }
+    if (node.type.name !== "code_block") return;
+    const kind = diagramLanguage(
+      (node.attrs as { language?: unknown }).language
+    );
+    if (kind) diagramBlocks.push({ kind, source: node.textContent, pos });
   });
 
   const clone = view.dom.cloneNode(true) as HTMLElement;
-  if (mermaidBlocks.length > 0) {
+  if (diagramBlocks.length > 0) {
     const rendered = await Promise.allSettled(
-      mermaidBlocks.map((block, index) =>
-        renderMermaidSvg(block.source, `export-${block.pos}`, index + 1)
+      diagramBlocks.map((block, index) =>
+        block.kind === "mermaid"
+          ? renderMermaidSvg(block.source, `export-${block.pos}`, index + 1)
+          : renderMarkmapSvg(block.source)
       )
     );
     const blocks = Array.from(
       clone.querySelectorAll<HTMLElement>(
-        ".milkdown-code-block.mermaid-code-block"
+        ".milkdown-code-block.diagram-code-block"
       )
     );
     for (let index = 0; index < blocks.length; index += 1) {
       const result = rendered[index];
-      if (result?.status !== "fulfilled") continue;
+      const block = diagramBlocks[index];
+      if (!block || result?.status !== "fulfilled") continue;
       const diagram = document.createElement("div");
-      diagram.className = "diagram mermaid-preview";
+      diagram.className = `diagram ${block.kind}-preview`;
       diagram.innerHTML = result.value;
       blocks[index].replaceWith(diagram);
     }

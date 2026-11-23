@@ -46,4 +46,5 @@ describe("Mermaid export", () => {
       DEFAULT_MERMAID_EXPORT_BACKGROUND
     );
   });
+
 });

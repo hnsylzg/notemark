@@ -25,9 +25,15 @@ import type { NodeViewConstructor } from "@milkdown/prose/view";
 import { $view } from "@milkdown/utils";
 import { renderMermaidSvg, subscribeMermaidTheme } from "./diagram-view";
 import {
+  diagramLanguage,
+  MARKMAP_LANGUAGE,
   MERMAID_LANGUAGE,
-  isMermaidLanguage,
-} from "./mermaid-language";
+  type DiagramLanguage,
+} from "./diagram-language";
+import {
+  renderMarkmapSvg,
+  subscribeMarkmapTheme,
+} from "./markmap-renderer";
 
 type CodeMirrorBlockArgs = ConstructorParameters<typeof CodeMirrorBlock>;
 type CodeMirrorBlockInternals = {
@@ -54,20 +60,26 @@ export type FloatingCoordinates = {
 
 type ApplyPreview = Parameters<CodeBlockConfig["renderPreview"]>[2];
 
-export interface MermaidCodeBlockPreview {
+export interface DiagramCodeBlockPreview {
   renderPreview: CodeBlockConfig["renderPreview"];
   destroy(): void;
 }
 
 let previewRenderSequence = 0;
 
-function mermaidPreviewMarkup(svg: string): string {
-  return `<div class="diagram mermaid-preview">${svg}</div>`;
+function diagramPreviewMarkup(
+  kind: DiagramLanguage,
+  svg: string
+): string {
+  return `<div class="diagram ${kind}-preview">${svg}</div>`;
 }
 
-function mermaidPreviewError(error: unknown): HTMLElement {
+function diagramPreviewError(
+  kind: DiagramLanguage,
+  error: unknown
+): HTMLElement {
   const wrapper = document.createElement("div");
-  wrapper.className = "diagram mermaid-preview mermaid-preview--error";
+  wrapper.className = `diagram ${kind}-preview ${kind}-preview--error`;
   const message = document.createElement("pre");
   message.className = "error";
   message.textContent =
@@ -80,50 +92,61 @@ function mermaidPreviewError(error: unknown): HTMLElement {
  * 每个代码块持有独立的渲染序号，避免快速修改语言或源码时，较早的异步
  * Mermaid 结果覆盖较新的预览；同时把渲染注册到主题切换回调中。
  */
-export function createMermaidCodeBlockPreview(): MermaidCodeBlockPreview {
+export function createDiagramCodeBlockPreview(): DiagramCodeBlockPreview {
   let revision = 0;
-  let current: { source: string; apply: ApplyPreview } | null = null;
+  let current: {
+    kind: DiagramLanguage;
+    source: string;
+    apply: ApplyPreview;
+  } | null = null;
 
   const renderCurrent = (): void => {
     const request = current;
     if (!request) return;
     const requestRevision = ++revision;
     const renderId = `code-preview-${++previewRenderSequence}`;
-    void renderMermaidSvg(
-      request.source,
-      renderId,
-      requestRevision
-    )
+    const render =
+      request.kind === "mermaid"
+        ? renderMermaidSvg(request.source, renderId, requestRevision)
+        : renderMarkmapSvg(request.source);
+    void render
       .then((svg) => {
         if (requestRevision !== revision) return;
-        request.apply(mermaidPreviewMarkup(svg));
+        request.apply(diagramPreviewMarkup(request.kind, svg));
       })
       .catch((error) => {
         if (requestRevision !== revision) return;
-        request.apply(mermaidPreviewError(error));
+        request.apply(diagramPreviewError(request.kind, error));
       });
   };
 
-  const unsubscribeTheme = subscribeMermaidTheme(renderCurrent);
+  const unsubscribeMermaidTheme = subscribeMermaidTheme(renderCurrent);
+  const unsubscribeMarkmapTheme = subscribeMarkmapTheme(renderCurrent);
 
   return {
     renderPreview(language, content, apply) {
       revision += 1;
-      if (!isMermaidLanguage(language) || !content.trim()) {
+      const kind = diagramLanguage(language);
+      if (!kind || !content.trim()) {
         current = null;
         apply(null);
         return null;
       }
-      current = { source: content, apply };
+      current = { kind, source: content, apply };
       renderCurrent();
       return undefined;
     },
     destroy() {
       revision += 1;
       current = null;
-      unsubscribeTheme();
+      unsubscribeMermaidTheme();
+      unsubscribeMarkmapTheme();
     },
   };
+}
+
+export function createMermaidCodeBlockPreview(): DiagramCodeBlockPreview {
+  return createDiagramCodeBlockPreview();
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -180,8 +203,8 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
   private languagePickerListObserver: MutationObserver | null = null;
   private languagePickerActiveIndex = -1;
   private readonly languageTerms = new Map<string, string[]>();
-  private mermaidSourceOpen = false;
-  private readonly mermaidPreview = createMermaidCodeBlockPreview();
+  private diagramSourceOpen = false;
+  private readonly diagramPreview = createDiagramCodeBlockPreview();
 
   constructor(...args: CodeMirrorBlockArgs) {
     super(...args);
@@ -193,9 +216,9 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     }
     this.config = {
       ...this.config,
-      renderPreview: this.mermaidPreview.renderPreview,
+      renderPreview: this.diagramPreview.renderPreview,
     };
-    this.syncMermaidMode(this.node);
+    this.syncDiagramMode(this.node);
     const internals = this as unknown as CodeMirrorBlockInternals;
     internals.scheduleTeardown = () => {};
     // Capture runs before Milkdown's button handler, so the deferred callback
@@ -217,7 +240,7 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     );
     this.dom.addEventListener(
       "click",
-      this.handleMermaidPreviewClick,
+      this.handleDiagramPreviewClick,
       true
     );
   }
@@ -240,19 +263,21 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     }, 0);
   };
 
-  private syncMermaidMode(node: Parameters<CodeMirrorBlock["update"]>[0]): void {
-    const mermaid = isMermaidLanguage(node.attrs.language);
-    this.dom.classList.toggle("mermaid-code-block", mermaid);
-    if (!mermaid) this.setMermaidSourceOpen(false);
+  private syncDiagramMode(node: Parameters<CodeMirrorBlock["update"]>[0]): void {
+    const kind = diagramLanguage(node.attrs.language);
+    this.dom.classList.toggle("diagram-code-block", !!kind);
+    this.dom.classList.toggle("mermaid-code-block", kind === "mermaid");
+    this.dom.classList.toggle("markmap-code-block", kind === "markmap");
+    if (!kind) this.setDiagramSourceOpen(false);
   }
 
   private readonly handleLanguagePickerKeydown = (
     event: KeyboardEvent
   ): void => {
-    if (event.key === "Escape" && this.mermaidSourceOpen) {
+    if (event.key === "Escape" && this.diagramSourceOpen) {
       event.preventDefault();
       event.stopPropagation();
-      this.setMermaidSourceOpen(false);
+      this.setDiagramSourceOpen(false);
       this.view.focus();
       return;
     }
@@ -286,39 +311,49 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     window.setTimeout(() => this.syncLanguagePickerItems(), 0);
   };
 
-  private readonly handleMermaidPreviewClick = (
+  private readonly handleDiagramPreviewClick = (
     event: MouseEvent
   ): void => {
     const target = event.target;
     if (
       !(target instanceof Element) ||
-      !target.closest(".mermaid-preview") ||
-      this.mermaidSourceOpen
+      !target.closest(".mermaid-preview, .markmap-preview") ||
+      this.diagramSourceOpen
     ) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
-    this.setMermaidSourceOpen(true);
+    this.setDiagramSourceOpen(true);
   };
 
   private readonly handleDocumentPointerDown = (
     event: PointerEvent
   ): void => {
-    if (!this.mermaidSourceOpen) return;
+    if (!this.diagramSourceOpen) return;
     const target = event.target;
     if (target instanceof Node && this.dom.contains(target)) return;
-    this.setMermaidSourceOpen(false);
+    this.setDiagramSourceOpen(false);
   };
 
-  private setMermaidSourceOpen(open: boolean): void {
-    if (this.mermaidSourceOpen === open) return;
+  private setDiagramSourceOpen(open: boolean): void {
+    if (this.diagramSourceOpen === open) return;
     const toggle = this.dom.querySelector<HTMLButtonElement>(
       ".preview-toggle-button"
     );
     if (open && !toggle) return;
-    this.mermaidSourceOpen = open;
-    this.dom.classList.toggle("is-editing-mermaid-source", open);
+    const kind = diagramLanguage(this.node.attrs.language);
+    if (open && !kind) return;
+    this.diagramSourceOpen = open;
+    this.dom.classList.toggle("is-editing-diagram-source", open);
+    this.dom.classList.toggle(
+      "is-editing-mermaid-source",
+      open && kind === "mermaid"
+    );
+    this.dom.classList.toggle(
+      "is-editing-markmap-source",
+      open && kind === "markmap"
+    );
     toggle?.click();
     if (open) {
       document.addEventListener(
@@ -327,7 +362,7 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
         true
       );
       requestAnimationFrame(() => {
-        if (!this.mermaidSourceOpen || this.view.isDestroyed) return;
+        if (!this.diagramSourceOpen || this.view.isDestroyed) return;
         const end = this.cm.state.doc.length;
         this.cm.dispatch({ selection: { anchor: end } });
         this.cm.focus();
@@ -512,7 +547,7 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
 
   update(node: Parameters<CodeMirrorBlock["update"]>[0]): boolean {
     const applied = super.update(node);
-    this.syncMermaidMode(node);
+    this.syncDiagramMode(node);
     return applied;
   }
 
@@ -534,7 +569,7 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     );
     this.dom.removeEventListener(
       "click",
-      this.handleMermaidPreviewClick,
+      this.handleDiagramPreviewClick,
       true
     );
     document.removeEventListener(
@@ -543,7 +578,7 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
       true
     );
     this.stopLanguagePickerTracking();
-    this.mermaidPreview.destroy();
+    this.diagramPreview.destroy();
     super.destroy();
   }
 }
@@ -555,8 +590,8 @@ export class CodeBlockLanguageLoader {
   constructor(languages: LanguageDescription[]) {
     this.languages = languages.filter(
       (language) =>
-        !isMermaidLanguage(language.name) &&
-        !language.alias.some(isMermaidLanguage)
+        !diagramLanguage(language.name) &&
+        !language.alias.some((alias) => diagramLanguage(alias))
     );
     this.map = {};
     for (const language of this.languages) {
@@ -571,22 +606,24 @@ export class CodeBlockLanguageLoader {
       name: language.name,
       alias: language.alias,
     }));
-    const insertionIndex = ordered.findIndex(
-      (language) =>
-        language.name.localeCompare(MERMAID_LANGUAGE, undefined, {
-          sensitivity: "base",
-        }) > 0
-    );
-    ordered.splice(
-      insertionIndex < 0 ? ordered.length : insertionIndex,
-      0,
-      { name: MERMAID_LANGUAGE, alias: [MERMAID_LANGUAGE] }
-    );
+    for (const language of [MARKMAP_LANGUAGE, MERMAID_LANGUAGE]) {
+      const insertionIndex = ordered.findIndex(
+        (candidate) =>
+          candidate.name.localeCompare(language, undefined, {
+            sensitivity: "base",
+          }) > 0
+      );
+      ordered.splice(
+        insertionIndex < 0 ? ordered.length : insertionIndex,
+        0,
+        { name: language, alias: [language] }
+      );
+    }
     return ordered;
   }
 
   load(languageName: string): Promise<LanguageSupport | undefined> {
-    if (isMermaidLanguage(languageName)) return Promise.resolve(undefined);
+    if (diagramLanguage(languageName)) return Promise.resolve(undefined);
     const language = this.map[languageName.toLowerCase()];
     if (!language) return Promise.resolve(undefined);
     if (language.support) return Promise.resolve(language.support);

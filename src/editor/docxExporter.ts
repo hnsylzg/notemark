@@ -27,11 +27,14 @@ import { renderMathJaxSvg, texToMathMl } from "./mathjax";
 import { mathMlToOmml } from "./mathml-to-omml";
 import { resolveImageSrc } from "./image-view";
 import {
+  normalizeMermaidHslColors,
   normalizeMermaidSvgForExport,
   resolveMermaidExportBackground,
 } from "./mermaid-export";
-import { isMermaidLanguage } from "./mermaid-language";
+import { diagramLanguage } from "./diagram-language";
 import { renderMermaidSvg } from "./diagram-view";
+import { renderMarkmapSvg } from "./markmap-renderer";
+import { inlineMarkmapSvgTheme } from "./markmap-export";
 import {
   AlignmentType,
   BorderStyle,
@@ -113,6 +116,11 @@ const PANDOC_BODY_SPACING = {
   after: 180,
   line: 240,
   lineRule: LineRuleType.AUTO,
+} as const;
+/** 图表沿用正文段落的段前段后节奏，避免紧贴表格或相邻正文。 */
+const FIGURE_SPACING = {
+  before: PANDOC_BODY_SPACING.before,
+  after: PANDOC_BODY_SPACING.after,
 } as const;
 /** Pandoc Compact 样式：段前段后各 36 twips，单倍行距。 */
 const TABLE_CELL_SPACING = {
@@ -282,6 +290,11 @@ const MAX_FIGURE_HEIGHT_PX = Math.floor(
  * Word 图表的 PNG 兼容回退使用独立导出倍率，不依赖屏幕 DPR。
  * 4 倍可覆盖打印缩放，单张图的逻辑尺寸仍保持不变。
  */
+/** Markmap layouts are usually taller; allow 70% of the page content height. */
+const MARKMAP_MAX_FIGURE_HEIGHT_RATIO = 0.7;
+const MARKMAP_MAX_FIGURE_HEIGHT_PX = Math.floor(
+  (PAGE_CONTENT_H / 1440) * 96 * MARKMAP_MAX_FIGURE_HEIGHT_RATIO
+);
 const DIAGRAM_EXPORT_RASTER_SCALE = 4;
 /** Formula PNGs need explicit print resolution; never depend on screen DPR. */
 const FORMULA_EXPORT_RASTER_SCALE = 4;
@@ -364,8 +377,8 @@ type ExportContext = {
   inFootnote: boolean;
   /** 当前正在导出的 Alert 类型色；普通文档内容为 null。 */
   alertStyle: { color: string } | null;
-  /** Mermaid code-block preview index in document order. */
-  mermaidCodeBlockIndex: number;
+  /** Diagram code-block preview index in document order. */
+  diagramCodeBlockIndex: number;
 };
 
 export interface DocxExportSource {
@@ -399,7 +412,7 @@ export async function buildDocx(
     nextFootnoteId: FIRST_FOOTNOTE_ID,
     inFootnote: false,
     alertStyle: null,
-    mermaidCodeBlockIndex: 0,
+    diagramCodeBlockIndex: 0,
   };
   collectFootnoteMetadata(doc, ctx);
   const children = [
@@ -737,6 +750,9 @@ export async function buildDocx(
           id: FIGURE_STYLE,
           name: "Figure",
           basedOn: "Normal",
+          paragraph: {
+            spacing: FIGURE_SPACING,
+          },
         },
         {
           id: CAPTIONED_FIGURE_STYLE,
@@ -1334,22 +1350,25 @@ async function convertBlock(
 
     case "code_block":
     case "fence": {
-      if (
-        node.type.name === "code_block" &&
-        isMermaidLanguage((node.attrs ?? {}).language)
-      ) {
+      const kind =
+        node.type.name === "code_block"
+          ? diagramLanguage((node.attrs ?? {}).language)
+          : null;
+      if (kind) {
         const code = node.textContent;
-        const previewIndex = ctx.mermaidCodeBlockIndex;
-        ctx.mermaidCodeBlockIndex += 1;
+        const previewIndex = ctx.diagramCodeBlockIndex;
+        ctx.diagramCodeBlockIndex += 1;
         const diagram = await diagramToImage(
           code,
           "",
           ctx.viewDom,
+          kind,
           previewIndex
         );
         if (diagram) {
           return [
             createParagraph(ctx, {
+              style: FIGURE_STYLE,
               children: [
                 new ImageRun({
                   type: "svg",
@@ -1487,6 +1506,7 @@ async function convertBlock(
       if (diagram) {
         return [
           createParagraph(ctx, {
+            style: FIGURE_STYLE,
             children: [
               new ImageRun({
                 type: "svg",
@@ -2315,16 +2335,42 @@ async function embedImage(
 
 /** 用 mermaid 把图表代码渲染为 SVG 字符串 */
 /** Serialize a rendered Mermaid SVG together with its active theme background. */
+function addSvgBackground(svg: SVGSVGElement, color: string): void {
+  const values = (svg.getAttribute("viewBox") ?? "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) {
+    return;
+  }
+  const [x, y, width, height] = values;
+  const background = document.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "rect"
+  );
+  background.setAttribute("x", String(x));
+  background.setAttribute("y", String(y));
+  background.setAttribute("width", String(width));
+  background.setAttribute("height", String(height));
+  background.setAttribute("fill", color);
+  svg.insertBefore(background, svg.firstChild);
+}
+
 function serializeRenderedSvg(container: HTMLElement | null): string | null {
   if (!container) return null;
   const el = container?.querySelector<SVGSVGElement>("svg") ?? null;
   if (!el) return null;
+  const background = resolveMermaidExportBackground(container);
   // 序列化时把 CSS 变量驱动的前景色内联进 style：脱离页面 CSS 后颜色仍然正确
   let svg: string;
   try {
     const clone = el.cloneNode(true) as SVGSVGElement;
+    const markmap = container.classList.contains("markmap-preview");
     const color = getComputedStyle(el).color;
     if (color) clone.style.color = color;
+    if (markmap) {
+      addSvgBackground(clone, background);
+    }
     svg = clone.outerHTML;
   } catch {
     svg = el.outerHTML;
@@ -2333,8 +2379,12 @@ function serializeRenderedSvg(container: HTMLElement | null): string | null {
   // --mermaid-flowchart-html-labels 时会出现）。此时放弃复用，改由
   // renderMermaid（固定 htmlLabels:false）输出纯 SVG 文本节点，保证可栅格化。
   if (/<foreignObject[\s>]/i.test(svg)) return null;
-  const background = resolveMermaidExportBackground(container);
-  return normalizeMermaidSvgForExport(svg, background);
+  const normalized = normalizeMermaidHslColors(
+    normalizeMermaidSvgForExport(svg, background)
+  );
+  return container.classList.contains("markmap-preview")
+    ? inlineMarkmapSvgTheme(normalized)
+    : normalized;
 }
 
 function pickRenderedSvg(
@@ -2356,11 +2406,13 @@ function pickRenderedCodeBlockSvg(
   if (!viewDom) return null;
   const block = Array.from(
     viewDom.querySelectorAll<HTMLElement>(
-      ".milkdown-code-block.mermaid-code-block"
+      ".milkdown-code-block.diagram-code-block, .milkdown-code-block.mermaid-code-block, .milkdown-code-block.markmap-code-block"
     )
   )[index];
   const container =
-    block?.querySelector<HTMLElement>(".diagram.mermaid-preview") ?? null;
+    block?.querySelector<HTMLElement>(
+      ".diagram.mermaid-preview, .diagram.markmap-preview"
+    ) ?? null;
   return serializeRenderedSvg(container);
 }
 
@@ -2373,6 +2425,7 @@ async function diagramToImage(
   code: string,
   identity: string,
   viewDom: HTMLElement | null,
+  kind: "mermaid" | "markmap" = "mermaid",
   codeBlockIndex?: number
 ): Promise<{
   svg: string;
@@ -2384,22 +2437,26 @@ async function diagramToImage(
     codeBlockIndex != null
       ? Array.from(
           viewDom?.querySelectorAll<HTMLElement>(
-            ".milkdown-code-block.mermaid-code-block"
+            ".milkdown-code-block.diagram-code-block, .milkdown-code-block.mermaid-code-block, .milkdown-code-block.markmap-code-block"
           ) ?? []
         )[codeBlockIndex]?.querySelector<HTMLElement>(
-          ".diagram.mermaid-preview"
+          ".diagram.mermaid-preview, .diagram.markmap-preview"
         ) ?? null
       : null;
   const svg =
     (codeBlockIndex != null
       ? pickRenderedCodeBlockSvg(codeBlockIndex, viewDom)
       : pickRenderedSvg(identity, viewDom)) ??
-    (await renderMermaidForExport(code, identity, container));
+    (kind === "mermaid"
+      ? await renderMermaidForExport(code, identity, container)
+      : await renderMarkmapForExport(code));
   if (!svg) return null;
   const png = await svgToPng(
     svg,
     MERMAID_WIDTH_PX,
-    MAX_FIGURE_HEIGHT_PX,
+    kind === "markmap"
+      ? MARKMAP_MAX_FIGURE_HEIGHT_PX
+      : MAX_FIGURE_HEIGHT_PX,
     DIAGRAM_EXPORT_RASTER_SCALE
   );
   if (!png) return null;
@@ -2409,6 +2466,18 @@ async function diagramToImage(
     width: png.width,
     height: png.height,
   };
+}
+
+async function renderMarkmapForExport(code: string): Promise<string | null> {
+  if (!code || !code.trim()) return null;
+  try {
+    return inlineMarkmapSvgTheme(
+      await renderMarkmapSvg(code, { background: true })
+    );
+  } catch (err) {
+    console.warn("[NoteMark] markmap render failed:", err);
+    return null;
+  }
 }
 
 /** Fallback: render Mermaid from source using the active editor theme. */
@@ -2424,9 +2493,11 @@ async function renderMermaidForExport(
       identity || `docx-${Math.random().toString(36).slice(2)}`,
       1
     );
-    return normalizeMermaidSvgForExport(
-      svg,
-      resolveMermaidExportBackground(container)
+    return normalizeMermaidHslColors(
+      normalizeMermaidSvgForExport(
+        svg,
+        resolveMermaidExportBackground(container)
+      )
     );
   } catch (err) {
     console.warn("[NoteMark] mermaid render failed:", err);

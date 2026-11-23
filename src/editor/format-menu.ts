@@ -685,7 +685,7 @@ function clickElement(element: Element | null): void {
   element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
-async function copyMermaidImageToClipboard(
+async function copyDiagramImageToClipboard(
   element: HTMLElement
 ): Promise<void> {
   const svg = element.querySelector<SVGSVGElement>("svg");
@@ -702,7 +702,7 @@ async function copyObjectToClipboard(
   context: ObjectMenuContext
 ): Promise<void> {
   if (context.kind === "diagram") {
-    await copyMermaidImageToClipboard(context.element);
+    await copyDiagramImageToClipboard(context.element);
     return;
   }
   await writeClipboardText(objectClipboardSource(context));
@@ -2170,10 +2170,12 @@ function openMenu(
   const codeBlockPlainText = codeBlock
     ? (codeBlock.view?.state.doc.toString() ?? codeBlock.fallbackText)
     : "";
-  const mermaidPreview =
+  const diagramPreview =
     codeBlock &&
-    !codeBlock.element.classList.contains("is-editing-mermaid-source")
-      ? codeBlock.element.querySelector<HTMLElement>(".mermaid-preview")
+    !codeBlock.element.classList.contains("is-editing-diagram-source")
+      ? codeBlock.element.querySelector<HTMLElement>(
+          ".mermaid-preview, .markmap-preview"
+        )
       : null;
   const tablePlainText = tableCell ? tableCellPlainText(tableCell) : "";
   const objectPlainText = objectMenu
@@ -2519,14 +2521,14 @@ function openMenu(
   const clipboardAs = addSubmenu("", "复制 / 粘贴为…");
   const clipboardMath = math ?? inlineMath;
   const hasSpecificClipboardActions =
-    !!mermaidPreview ||
+    !!diagramPreview ||
     !!clipboardMath ||
     !!inlineImage ||
     objectMenu?.kind === "diagram";
-  if (mermaidPreview) {
+  if (diagramPreview) {
     addTextAction(clipboardAs, "复制为图片", () => {
       closeMenu();
-      void copyMermaidImageToClipboard(mermaidPreview).catch((error) => {
+      void copyDiagramImageToClipboard(diagramPreview).catch((error) => {
         alert(
           `图片复制失败：${error instanceof Error ? error.message : String(error)}`
         );
