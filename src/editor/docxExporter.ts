@@ -27,11 +27,11 @@ import { renderMathJaxSvg, texToMathMl } from "./mathjax";
 import { mathMlToOmml } from "./mathml-to-omml";
 import { resolveImageSrc } from "./image-view";
 import {
-  DEFAULT_MERMAID_EXPORT_BACKGROUND,
   normalizeMermaidSvgForExport,
   resolveMermaidExportBackground,
 } from "./mermaid-export";
 import { isMermaidLanguage } from "./mermaid-language";
+import { renderMermaidSvg } from "./diagram-view";
 import {
   AlignmentType,
   BorderStyle,
@@ -364,6 +364,8 @@ type ExportContext = {
   inFootnote: boolean;
   /** 当前正在导出的 Alert 类型色；普通文档内容为 null。 */
   alertStyle: { color: string } | null;
+  /** Mermaid code-block preview index in document order. */
+  mermaidCodeBlockIndex: number;
 };
 
 export interface DocxExportSource {
@@ -397,6 +399,7 @@ export async function buildDocx(
     nextFootnoteId: FIRST_FOOTNOTE_ID,
     inFootnote: false,
     alertStyle: null,
+    mermaidCodeBlockIndex: 0,
   };
   collectFootnoteMetadata(doc, ctx);
   const children = [
@@ -1336,7 +1339,14 @@ async function convertBlock(
         isMermaidLanguage((node.attrs ?? {}).language)
       ) {
         const code = node.textContent;
-        const diagram = await diagramToImage(code, "", ctx.viewDom);
+        const previewIndex = ctx.mermaidCodeBlockIndex;
+        ctx.mermaidCodeBlockIndex += 1;
+        const diagram = await diagramToImage(
+          code,
+          "",
+          ctx.viewDom,
+          previewIndex
+        );
         if (diagram) {
           return [
             createParagraph(ctx, {
@@ -2304,26 +2314,9 @@ async function embedImage(
 /* ============ Mermaid 渲染 ============ */
 
 /** 用 mermaid 把图表代码渲染为 SVG 字符串 */
-/**
- * 取编辑器 DOM 中该图表**已渲染好**的 SVG（借鉴 PDF 导出的做法）。
- *
- * PDF 导出直接打印编辑器 DOM 里的 <svg>，所以与屏幕所见完全一致；DOCX 此前是
- * 从源码重新 mermaid.render() 一遍，配置（主题/字体/曲线/间距）可能与编辑器不同，
- * 导致外观与尺寸出现差异。这里优先复用 DOM 中现成的 SVG 以消除该差异。
- *
- * 深色主题下不复用：Word 页面是白底，而深色图是「浅色文字 + 透明背景」，
- * 放到白底上会看不清。此时返回 null，交由 renderMermaid 用浅色主题重渲染。
- */
-function pickRenderedSvg(
-  identity: string,
-  viewDom: HTMLElement | null
-): string | null {
-  if (!viewDom || !identity) return null;
-  if (document.documentElement.dataset.theme === "dark") return null;
-  const container =
-    Array.from(viewDom.querySelectorAll<HTMLElement>(".diagram")).find(
-      (candidate) => candidate.dataset.diagramId === identity
-    ) ?? null;
+/** Serialize a rendered Mermaid SVG together with its active theme background. */
+function serializeRenderedSvg(container: HTMLElement | null): string | null {
+  if (!container) return null;
   const el = container?.querySelector<SVGSVGElement>("svg") ?? null;
   if (!el) return null;
   // 序列化时把 CSS 变量驱动的前景色内联进 style：脱离页面 CSS 后颜色仍然正确
@@ -2344,22 +2337,64 @@ function pickRenderedSvg(
   return normalizeMermaidSvgForExport(svg, background);
 }
 
+function pickRenderedSvg(
+  identity: string,
+  viewDom: HTMLElement | null
+): string | null {
+  if (!viewDom || !identity) return null;
+  const container =
+    Array.from(viewDom.querySelectorAll<HTMLElement>(".diagram")).find(
+      (candidate) => candidate.dataset.diagramId === identity
+    ) ?? null;
+  return serializeRenderedSvg(container);
+}
+
+function pickRenderedCodeBlockSvg(
+  index: number,
+  viewDom: HTMLElement | null
+): string | null {
+  if (!viewDom) return null;
+  const block = Array.from(
+    viewDom.querySelectorAll<HTMLElement>(
+      ".milkdown-code-block.mermaid-code-block"
+    )
+  )[index];
+  const container =
+    block?.querySelector<HTMLElement>(".diagram.mermaid-preview") ?? null;
+  return serializeRenderedSvg(container);
+}
+
 /**
  * 生成 Mermaid 图表的 SVG 与 PNG 回退。
- * 优先复用编辑器已渲染好的 SVG，取不到（深色主题 / 未渲染 / 导出环境无 DOM）时
- * 回退到浅色主题重新渲染。尺寸仍按 SVG 自身尺寸（viewBox）配合页面内容区缩放。
+ * 优先复用编辑器已渲染好的主题 SVG；取不到时按当前主题配置重新渲染。
+ * 尺寸仍按 SVG 自身尺寸（viewBox）配合页面内容区缩放。
  */
 async function diagramToImage(
   code: string,
   identity: string,
-  viewDom: HTMLElement | null
+  viewDom: HTMLElement | null,
+  codeBlockIndex?: number
 ): Promise<{
   svg: string;
   fallback: Uint8Array;
   width: number;
   height: number;
 } | null> {
-  const svg = pickRenderedSvg(identity, viewDom) ?? (await renderMermaid(code));
+  const container =
+    codeBlockIndex != null
+      ? Array.from(
+          viewDom?.querySelectorAll<HTMLElement>(
+            ".milkdown-code-block.mermaid-code-block"
+          ) ?? []
+        )[codeBlockIndex]?.querySelector<HTMLElement>(
+          ".diagram.mermaid-preview"
+        ) ?? null
+      : null;
+  const svg =
+    (codeBlockIndex != null
+      ? pickRenderedCodeBlockSvg(codeBlockIndex, viewDom)
+      : pickRenderedSvg(identity, viewDom)) ??
+    (await renderMermaidForExport(code, identity, container));
   if (!svg) return null;
   const png = await svgToPng(
     svg,
@@ -2376,23 +2411,22 @@ async function diagramToImage(
   };
 }
 
-/** 兜底：从源码渲染 Mermaid（浅色主题，适配 Word 白底页面） */
-async function renderMermaid(code: string): Promise<string | null> {
+/** Fallback: render Mermaid from source using the active editor theme. */
+async function renderMermaidForExport(
+  code: string,
+  identity: string,
+  container: HTMLElement | null
+): Promise<string | null> {
   if (!code || !code.trim()) return null;
   try {
-    const mod = await import("mermaid");
-    const mermaid = (mod.default ?? mod) as typeof import("mermaid")["default"];
-    mermaid.initialize({
-      startOnLoad: false,
-      // Word 页面是白底，统一用浅色主题：深色主题是浅色文字 + 透明背景，白底上看不清
-      theme: "default",
-      htmlLabels: false,
-    });
-    const id = `docx-mermaid-${Math.random().toString(36).slice(2)}`;
-    const { svg } = await mermaid.render(id, code);
+    const svg = await renderMermaidSvg(
+      code,
+      identity || `docx-${Math.random().toString(36).slice(2)}`,
+      1
+    );
     return normalizeMermaidSvgForExport(
       svg,
-      DEFAULT_MERMAID_EXPORT_BACKGROUND
+      resolveMermaidExportBackground(container)
     );
   } catch (err) {
     console.warn("[NoteMark] mermaid render failed:", err);

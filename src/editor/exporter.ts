@@ -32,6 +32,8 @@ import {
   normalizeTableClipboardHtml,
   tableHtmlToAlignedPlainText,
 } from "./table-clipboard";
+import { renderMermaidSvg } from "./diagram-view";
+import { isMermaidLanguage } from "./mermaid-language";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -242,6 +244,47 @@ export function getEditorHtml(editor: Editor): string {
     const view = ctx.get(editorViewCtx);
     return view.dom.innerHTML;
   });
+}
+
+/**
+ * Build an export-only HTML snapshot. Mermaid code blocks are rendered
+ * directly from their ProseMirror source in parallel, then replaced in a DOM
+ * clone. This avoids capturing the preview panel's temporary loading text.
+ */
+export async function getExportHtml(editor: Editor): Promise<string> {
+  const view = editor.action((ctx) => ctx.get(editorViewCtx));
+  const mermaidBlocks: Array<{ source: string; pos: number }> = [];
+  view.state.doc.descendants((node, pos) => {
+    if (
+      node.type.name === "code_block" &&
+      isMermaidLanguage((node.attrs as { language?: unknown }).language)
+    ) {
+      mermaidBlocks.push({ source: node.textContent, pos });
+    }
+  });
+
+  const clone = view.dom.cloneNode(true) as HTMLElement;
+  if (mermaidBlocks.length > 0) {
+    const rendered = await Promise.allSettled(
+      mermaidBlocks.map((block, index) =>
+        renderMermaidSvg(block.source, `export-${block.pos}`, index + 1)
+      )
+    );
+    const blocks = Array.from(
+      clone.querySelectorAll<HTMLElement>(
+        ".milkdown-code-block.mermaid-code-block"
+      )
+    );
+    for (let index = 0; index < blocks.length; index += 1) {
+      const result = rendered[index];
+      if (result?.status !== "fulfilled") continue;
+      const diagram = document.createElement("div");
+      diagram.className = "diagram mermaid-preview";
+      diagram.innerHTML = result.value;
+      blocks[index].replaceWith(diagram);
+    }
+  }
+  return clone.innerHTML;
 }
 
 /** 取 Word 导出所需文档快照，避免动态加载的导出模块再次依赖 Milkdown context。 */

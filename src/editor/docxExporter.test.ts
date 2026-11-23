@@ -1069,6 +1069,90 @@ describe("Word Mermaid diagrams", () => {
       vi.restoreAllMocks();
     }
   });
+
+  it("reuses the themed preview SVG for a Mermaid code block", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        code_block: {
+          group: "block",
+          content: "text*",
+          attrs: { language: { default: "" } },
+          toDOM: () => ["pre", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node(
+        "code_block",
+        { language: "mermaid" },
+        schema.text("flowchart LR\nA --> B")
+      ),
+    ]);
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 200;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      }
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mermaid");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: vi.fn(() => ({ drawImage: vi.fn() })),
+    });
+    Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+      configurable: true,
+      value: vi.fn((callback: BlobCallback) => {
+        callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+      }),
+    });
+
+    const viewDom = document.createElement("div");
+    viewDom.innerHTML =
+      '<div class="milkdown-code-block mermaid-code-block" style="--mt-color-bg:#112233">' +
+      '<div class="diagram mermaid-preview">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">' +
+      '<path d="M10 50 H190" stroke="#abcdef"/>' +
+      '<g class="edgeLabel"><rect width="40" height="20" style="fill:#28253D;opacity:0.5"/></g>' +
+      "</svg></div></div>";
+
+    try {
+      const bytes = await buildDocx({ doc, viewDom });
+      const zip = await JSZip.loadAsync(bytes);
+      const svgName = Object.keys(zip.files).find(
+        (name) => name.startsWith("word/media/") && name.endsWith(".svg")
+      );
+      expect(svgName).toBeDefined();
+      const svg = await zip.file(svgName!)!.async("string");
+      const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+      expect(parsed.querySelector('path[stroke="#abcdef"]')).not.toBeNull();
+      const edgeLabel = parsed.querySelector(".edgeLabel rect");
+      expect(edgeLabel?.getAttribute("fill")).toBe("#112233");
+      expect(edgeLabel?.getAttribute("opacity")).toBe("1");
+    } finally {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+        configurable: true,
+        value: originalGetContext,
+      });
+      Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+        configurable: true,
+        value: originalToBlob,
+      });
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("Word footnotes", () => {

@@ -2,6 +2,7 @@ import { editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { describe, expect, it, vi } from "vitest";
 import { createEditor, getMarkdown, setMarkdown } from "./index";
+import { getExportHtml } from "./exporter";
 
 vi.mock("./mathjax", () => ({
   loadMathJax: vi.fn(async () => ({})),
@@ -149,6 +150,35 @@ describe("Mermaid code blocks", () => {
           root.querySelector(".milkdown-code-block.mermaid-code-block")
         ).toBeNull();
       });
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("replaces every Mermaid code block with SVG in the export snapshot", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(
+        editor,
+        [
+          "```mermaid\nflowchart LR\nA --> B\n```",
+          "```mermaid\nflowchart LR\nC --> D\n```",
+        ].join("\n\n")
+      );
+
+      const html = await getExportHtml(editor);
+      const parsed = new DOMParser().parseFromString(html, "text/html");
+      expect(parsed.querySelectorAll(".diagram.mermaid-preview svg")).toHaveLength(
+        2
+      );
+      expect(parsed.querySelector(".milkdown-code-block")).toBeNull();
+      expect(parsed.body.textContent).not.toContain("正在渲染图表");
     } finally {
       await editor.destroy();
       root.remove();

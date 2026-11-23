@@ -5,21 +5,26 @@ export const DEFAULT_MERMAID_EXPORT_BACKGROUND = "#ffffff";
 export function resolveMermaidExportBackground(
   element: Element | null
 ): string {
-  if (!(element instanceof HTMLElement)) {
-    return DEFAULT_MERMAID_EXPORT_BACKGROUND;
-  }
-  const inline = element.style.getPropertyValue("--mt-color-bg").trim();
-  if (inline && !inline.startsWith("var(") && inline !== "transparent") {
-    return inline;
-  }
-  const style = getComputedStyle(element);
-  const themed = style.getPropertyValue("--mt-color-bg").trim();
-  if (themed && !themed.startsWith("var(") && themed !== "transparent") {
-    return themed;
-  }
-  const computed = style.backgroundColor.trim();
-  if (computed && computed !== "transparent" && computed !== "rgba(0, 0, 0, 0)") {
-    return computed;
+  let current = element;
+  while (current instanceof HTMLElement) {
+    const inline = current.style.getPropertyValue("--mt-color-bg").trim();
+    if (inline && !inline.startsWith("var(") && inline !== "transparent") {
+      return inline;
+    }
+    const style = getComputedStyle(current);
+    const themed = style.getPropertyValue("--mt-color-bg").trim();
+    if (themed && !themed.startsWith("var(") && themed !== "transparent") {
+      return themed;
+    }
+    const computed = style.backgroundColor.trim();
+    if (
+      computed &&
+      computed !== "transparent" &&
+      computed !== "rgba(0, 0, 0, 0)"
+    ) {
+      return computed;
+    }
+    current = current.parentElement;
   }
   return DEFAULT_MERMAID_EXPORT_BACKGROUND;
 }

@@ -968,12 +968,12 @@ fn trash_delete(app: tauri::AppHandle, path: String) -> Result<(), String> {
 /// 用系统浏览器（Edge / Chrome）以无头模式把 HTML 打印成 PDF。
 ///
 /// 先写临时 HTML，再交给浏览器 --print-to-pdf 输出，属于静默导出（无弹窗）。
-/// 失败时返回错误文本，由前端回退到 window.print() 的打印对话框。
+/// 失败时返回错误文本，由前端直接提示用户重试。
 ///
 /// 注意：浏览器以成功状态退出后，PDF 文件未必已落盘（--headless=new 偶发
 /// "先退出、后写盘"），因此退出后轮询一小段时间再判定，避免误判"未生成文件"
-/// 而触发前端的打印对话框。每次调用使用独立 user-data-dir，避免重复 / 并发
-/// 导出时默认 profile 锁竞争导致偶发失败。
+/// 而误报失败。每次调用使用独立 user-data-dir，避免重复 / 并发导出时默认
+/// profile 锁竞争导致偶发失败。
 #[tauri::command]
 fn export_pdf(app: tauri::AppHandle, html: String, pdf_path: String) -> Result<(), String> {
   let pdf_target = std::path::Path::new(&pdf_path);
@@ -988,14 +988,10 @@ fn export_pdf(app: tauri::AppHandle, html: String, pdf_path: String) -> Result<(
       .map(|d| d.as_nanos())
       .unwrap_or(0)
   ));
-  let temp_pdf = std::env::temp_dir().join(format!(
-    "notemark-export-{}-{}.pdf",
-    std::process::id(),
-    std::time::SystemTime::now()
-      .duration_since(std::time::UNIX_EPOCH)
-      .map(|d| d.as_nanos())
-      .unwrap_or(0)
-  ));
+  // 临时 PDF 必须与目标文件位于同一卷。Windows 的 MoveFileExW 在没有
+  // COPY_ALLOWED 标志时不能跨卷移动，否则从系统临时目录导出到其他盘会报
+  // "系统无法将文件移到不同的磁盘驱动器"。
+  let temp_pdf = pdf_temp_path(pdf_target)?;
   std::fs::write(&html_path, html).map_err(|e| e.to_string())?;
   let html_path = html_path.to_string_lossy().to_string();
   let temp_pdf_string = temp_pdf.to_string_lossy().to_string();
@@ -1004,6 +1000,21 @@ fn export_pdf(app: tauri::AppHandle, html: String, pdf_path: String) -> Result<(
   let _ = std::fs::remove_file(&html_path);
   let _ = std::fs::remove_file(&temp_pdf);
   result
+}
+
+fn pdf_temp_path(pdf_target: &std::path::Path) -> Result<PathBuf, String> {
+  let parent = pdf_target
+    .parent()
+    .filter(|path| !path.as_os_str().is_empty())
+    .ok_or_else(|| "PDF 导出路径缺少目标目录".to_string())?;
+  Ok(parent.join(format!(
+    ".notemark-export-{}-{}.pdf",
+    std::process::id(),
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_nanos())
+      .unwrap_or(0)
+  )))
 }
 
 fn export_pdf_file(html_path: &str, pdf_path: &str) -> Result<(), String> {
@@ -1149,6 +1160,23 @@ mod tests {
     write_file_atomically(&target, b"v2", false).unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"v2");
     assert!(!dir.join(".export.html.notemark-bak").exists());
+
+    let _ = std::fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn pdf_temporary_file_uses_the_target_directory() {
+    let dir = unique_temp_dir("pdf-temp");
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("document.pdf");
+    let temp = pdf_temp_path(&target).unwrap();
+
+    assert_eq!(temp.parent(), Some(dir.as_path()));
+    assert_ne!(temp, target);
+    assert_eq!(
+      temp.extension().and_then(|value| value.to_str()),
+      Some("pdf")
+    );
 
     let _ = std::fs::remove_dir_all(dir);
   }

@@ -99,6 +99,9 @@ function getMermaidConfig(): Record<string, unknown> {
 }
 
 let mermaidPromise: Promise<MermaidLike> | null = null;
+const MERMAID_SVG_CACHE_LIMIT = 100;
+const mermaidSvgCache = new Map<string, Promise<string>>();
+
 function getMermaid(): Promise<MermaidLike> {
   if (!mermaidPromise) {
     mermaidPromise = import("mermaid").then(
@@ -108,22 +111,50 @@ function getMermaid(): Promise<MermaidLike> {
   return mermaidPromise;
 }
 
+function cacheMermaidSvg(
+  key: string,
+  promise: Promise<string>
+): Promise<string> {
+  if (mermaidSvgCache.size >= MERMAID_SVG_CACHE_LIMIT) {
+    const oldest = mermaidSvgCache.keys().next().value;
+    if (oldest) mermaidSvgCache.delete(oldest);
+  }
+  mermaidSvgCache.set(key, promise);
+  void promise.catch(() => {
+    if (mermaidSvgCache.get(key) === promise) mermaidSvgCache.delete(key);
+  });
+  return promise;
+}
+
+function mermaidUsesMathJax(source: string): boolean {
+  return /\$\$[\s\S]*\$\$/.test(source);
+}
+
 /** Render a Mermaid source string with the editor's active theme settings. */
 export async function renderMermaidSvg(
   value: string,
   identity: string,
   revision: number
 ): Promise<string> {
-  // Mermaid 的 $$...$$ 标签也走 MathJax 兼容层，先确保引擎就绪。
-  await loadMathJax();
-  const mermaid = await getMermaid();
-  mermaid.initialize(getMermaidConfig());
-  const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "-");
-  const { svg } = await mermaid.render(
-    `diagram-${safeIdentity}-${revision}`,
-    value
-  );
-  return svg;
+  const config = getMermaidConfig();
+  const cacheKey = `${JSON.stringify(config)}\u0000${value}`;
+  const cached = mermaidSvgCache.get(cacheKey);
+  if (cached) return cached;
+
+  const renderPromise = (async () => {
+    // Only Mermaid labels using $$...$$ need MathJax. Waiting for it for every
+    // diagram kept ordinary flowcharts stuck on the loading preview.
+    if (mermaidUsesMathJax(value)) await loadMathJax();
+    const mermaid = await getMermaid();
+    mermaid.initialize(config);
+    const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const { svg } = await mermaid.render(
+      `diagram-${safeIdentity}-${revision}`,
+      value
+    );
+    return svg;
+  })();
+  return cacheMermaidSvg(cacheKey, renderPromise);
 }
 
 /** 所有存活 diagram 的重渲染回调（主题切换时全部刷新） */
