@@ -164,6 +164,338 @@ describe("inline math source insertion", () => {
   );
 
   it.each([
+    ["before", 1],
+    ["after", 4],
+  ])(
+    "handles the first printable key after keyboard entry from the %s side",
+    (side, initialSelection) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, initialSelection),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        view.dispatch(
+          view.state.tr.setSelection(
+            NodeSelection.create(view.state.doc, 1)
+          )
+        );
+        const input = view.dom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "X",
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+
+        expect(input.style.display).toBe("none");
+        expect(view.state.doc.textContent).toBe(
+          side === "before" ? "Xx" : "xX"
+        );
+        const paragraph = view.state.doc.firstChild!;
+        expect(
+          paragraph.child(side === "before" ? 1 : 0).type.name
+        ).toBe(
+          "math_inline"
+        );
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
+    ["before", "X$x$", "Xx"],
+    ["after", "$x$X", "xX"],
+  ])(
+    "handles text typed at the %s edge after expanding inline math by mouse",
+    (side, changedValue, expectedText) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 3),
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        const mathDom = view.dom.querySelector<HTMLElement>(
+          ".milkdown-math-inline"
+        )!;
+        mathDom.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        const input = mathDom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        const caret = side === "before" ? 0 : input.value.length;
+        input.setSelectionRange(caret, caret);
+        input.value = changedValue;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+
+        expect(input.style.display).toBe("none");
+        expect(view.state.doc.textContent).toBe(expectedText);
+        const paragraph = view.state.doc.firstChild!;
+        const mathIndex = side === "before" ? 1 : 0;
+        expect(paragraph.child(mathIndex).type.name).toBe("math_inline");
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
+    ["before", 1, "Backspace"],
+    ["before", 1, "Delete"],
+    ["after", 4, "Backspace"],
+    ["after", 4, "Delete"],
+  ])(
+    "keeps inline math intact when %s boundary receives %s",
+    (side, initialSelection, key) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, initialSelection),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        view.dispatch(
+          view.state.tr.setSelection(
+            NodeSelection.create(view.state.doc, 1)
+          )
+        );
+        const input = view.dom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+
+        expect(input.style.display).toBe("none");
+        expect(
+          view.state.doc.firstChild?.firstChild?.type.name
+        ).toBe("math_inline");
+        expect(view.state.selection.from).toBe(
+          side === "before" ? 1 : 4
+        );
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
+    ["before", 1, "X$x$", "Xx"],
+    ["after", 4, "$x$X", "xX"],
+  ])(
+    "falls back to input events for text typed outside inline math from the %s side",
+    (side, initialSelection, changedValue, expectedText) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, initialSelection),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        view.dispatch(
+          view.state.tr.setSelection(
+            NodeSelection.create(view.state.doc, 1)
+          )
+        );
+        const input = view.dom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        input.value = changedValue;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+
+        expect(input.style.display).toBe("none");
+        expect(view.state.doc.textContent).toBe(expectedText);
+        const paragraph = view.state.doc.firstChild!;
+        expect(
+          side === "before"
+            ? paragraph.child(1).type.name
+            : paragraph.child(0).type.name
+        ).toBe("math_inline");
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
+    ["before", 1, "deleteContentForward"],
+    ["after", 4, "deleteContentBackward"],
+  ])(
+    "keeps inline math intact when deleting from the %s boundary",
+    (side, initialSelection, inputType) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, initialSelection),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        view.dispatch(
+          view.state.tr.setSelection(
+            NodeSelection.create(view.state.doc, 1)
+          )
+        );
+        const input = view.dom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType,
+        });
+
+        expect(input.dispatchEvent(event)).toBe(false);
+        expect(
+          view.state.doc.firstChild?.firstChild?.type.name
+        ).toBe("math_inline");
+        expect(view.state.selection.from).toBe(
+          side === "before" ? 1 : 4
+        );
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
+    ["before", 1, 0],
+    ["after", 4, 3],
+  ])(
+    "inserts ordinary text outside inline math when typing from the %s boundary",
+    (side, initialSelection, expectedCaret) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, initialSelection),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        view.dispatch(
+          view.state.tr.setSelection(
+            NodeSelection.create(view.state.doc, 1)
+          )
+        );
+        const input = view.dom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        expect(input.selectionStart).toBe(expectedCaret);
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: "X",
+        });
+
+        expect(input.dispatchEvent(event)).toBe(false);
+        expect(input.style.display).toBe("none");
+        expect(view.state.doc.textContent).toBe(
+          side === "before" ? "Xx" : "xX"
+        );
+        const paragraph = view.state.doc.firstChild!;
+        const mathChild =
+          side === "before"
+            ? paragraph.child(1)
+            : paragraph.child(0);
+        expect(mathChild.type.name).toBe("math_inline");
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
     ["ArrowUp", "above"],
     ["ArrowDown", "below"],
   ])(
@@ -416,6 +748,77 @@ describe("inline math source insertion", () => {
         expect(clicked).toBe(true);
         expect(input.style.display).not.toBe("none");
         expect(mathDom.ownerDocument.activeElement).toBe(input);
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it.each([
+    ["before", 100, 0, "X$x$", "Xx"],
+    ["after", 200, 3, "$x$X", "xX"],
+  ])(
+    "enters inline math from the %s mouse edge and keeps outside text outside",
+    (side, clientX, expectedCaret, changedValue, expectedText) => {
+      const math = schema.nodes.math_inline.create(
+        null,
+        schema.text("x")
+      );
+      const doc = schema.node("doc", null, [
+        schema.node("paragraph", null, math),
+      ]);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = new EditorView(host, {
+        state: EditorState.create({
+          schema,
+          doc,
+          selection: TextSelection.create(doc, 3),
+          plugins: [createMathInlineCursorPlugin()],
+        }),
+        nodeViews: { math_inline: createMathInlineNodeView },
+      });
+
+      try {
+        const mathDom = view.dom.querySelector<HTMLElement>(
+          ".milkdown-math-inline"
+        )!;
+        vi.spyOn(mathDom, "getBoundingClientRect").mockReturnValue({
+          x: 100,
+          y: 0,
+          width: 100,
+          height: 20,
+          top: 0,
+          right: 200,
+          bottom: 20,
+          left: 100,
+          toJSON() {},
+        });
+
+        expect(
+          view.someProp("handleClick", (handler) =>
+            handler(view, 1, {
+              button: 0,
+              target: mathDom,
+              clientX,
+              preventDefault() {},
+            } as unknown as MouseEvent)
+          )
+        ).toBe(true);
+        const input = mathDom.querySelector<HTMLInputElement>(
+          ".milkdown-math-inline-input"
+        )!;
+        expect(input.selectionStart).toBe(expectedCaret);
+        input.value = changedValue;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+
+        expect(input.style.display).toBe("none");
+        expect(view.state.doc.textContent).toBe(expectedText);
+        const paragraph = view.state.doc.firstChild!;
+        expect(
+          paragraph.child(side === "before" ? 1 : 0).type.name
+        ).toBe("math_inline");
       } finally {
         view.destroy();
         host.remove();

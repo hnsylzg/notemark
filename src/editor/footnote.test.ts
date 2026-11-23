@@ -48,6 +48,122 @@ const schema = new Schema({
   },
 });
 
+function mountFootnoteDefinition(text = "note") {
+  const definition = schema.nodes.footnote_definition.create(
+    { label: "1" },
+    schema.node("paragraph", null, schema.text(text))
+  );
+  const doc = schema.node("doc", null, [definition]);
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const view = new EditorView(host, {
+    state: EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, 2),
+      plugins: [createFootnoteClickPlugin()],
+    }),
+    nodeViews: {
+      footnote_definition: createFootnoteDefinitionView,
+      footnote_reference: createFootnoteReferenceView,
+    },
+  });
+  return { view, host, definition };
+}
+
+function openFootnoteDefinitionLeftBoundary(
+  view: EditorView
+): HTMLInputElement {
+  const definitionDom = view.dom.querySelector<HTMLElement>(
+    '[data-type="footnote_definition"]'
+  )!;
+  const dt = definitionDom.querySelector<HTMLElement>("dt")!;
+  const labelText = dt.querySelector<HTMLElement>(
+    ".mt-footnote-label-text"
+  )!;
+  vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
+    left: 20,
+    right: 30,
+    top: 0,
+    bottom: 20,
+    width: 10,
+    height: 20,
+    x: 20,
+    y: 0,
+    toJSON() {},
+  });
+  vi.spyOn(dt, "getBoundingClientRect").mockReturnValue({
+    left: 20,
+    right: 40,
+    top: 0,
+    bottom: 20,
+    width: 20,
+    height: 20,
+    x: 20,
+    y: 0,
+    toJSON() {},
+  });
+
+  dt.dispatchEvent(
+    new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 19,
+    })
+  );
+  return dt.querySelector<HTMLInputElement>(
+    "input.mt-footnote-label-source"
+  )!;
+}
+
+function openFootnoteDefinitionRightBoundary(
+  view: EditorView
+): HTMLInputElement {
+  const definitionDom = view.dom.querySelector<HTMLElement>(
+    '[data-type="footnote_definition"]'
+  )!;
+  const dt = definitionDom.querySelector<HTMLElement>("dt")!;
+  const labelText = dt.querySelector<HTMLElement>(
+    ".mt-footnote-label-text"
+  )!;
+  const note = definitionDom.querySelector<HTMLElement>("dd p")!;
+  vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
+    left: 20,
+    right: 30,
+    top: 0,
+    bottom: 20,
+    width: 10,
+    height: 20,
+    x: 20,
+    y: 0,
+    toJSON() {},
+  });
+  vi.spyOn(note, "getBoundingClientRect").mockReturnValue({
+    left: 40,
+    right: 80,
+    top: 0,
+    bottom: 20,
+    width: 40,
+    height: 20,
+    x: 40,
+    y: 0,
+    toJSON() {},
+  });
+
+  dt.dispatchEvent(
+    new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 35,
+    })
+  );
+  return dt.querySelector<HTMLInputElement>(
+    "input.mt-footnote-label-source"
+  )!;
+}
+
 describe("footnote definition source label", () => {
   it("enters the footnote reference from the actual editor keyboard flow", async () => {
     const root = document.createElement("div");
@@ -96,6 +212,86 @@ describe("footnote definition source label", () => {
       root.remove();
     }
   });
+
+  it.each([
+    ["before", "ArrowRight", 0],
+    ["after", "ArrowLeft", 4],
+  ])(
+    "inserts ordinary text outside a footnote reference from the %s boundary",
+    async (side, entryKey, expectedCaret) => {
+      const root = document.createElement("div");
+      root.className = "milkdown";
+      document.body.appendChild(root);
+      const editor = createEditor(root);
+
+      try {
+        await editor.create();
+        setMarkdown(editor, "前[^1]后\n\n[^1]: 脚注内容");
+        const view = editor.action((ctx) =>
+          ctx.get(editorViewCtx)
+        ) as EditorView;
+        const referenceDom = view.dom.querySelector<HTMLElement>(
+          '[data-type="footnote_reference"]'
+        )!;
+        const referencePos = view.posAtDOM(referenceDom, 0);
+        const reference = view.state.doc.nodeAt(referencePos)!;
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.create(
+              view.state.doc,
+              entryKey === "ArrowRight"
+                ? referencePos
+                : referencePos + reference.nodeSize
+            )
+          )
+        );
+        expect(
+          view.someProp("handleKeyDown", (handler) =>
+            handler(
+              view,
+              new KeyboardEvent("keydown", {
+                key: entryKey,
+                bubbles: true,
+                cancelable: true,
+              })
+            )
+          )
+        ).toBe(true);
+        const input = referenceDom.querySelector<HTMLInputElement>(
+          "input.mt-footnote-label-source"
+        )!;
+        expect(input.selectionStart).toBe(expectedCaret);
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: "X",
+        });
+
+        expect(input.dispatchEvent(event)).toBe(false);
+        expect(input.style.display).toBe("none");
+        const paragraph = view.state.doc.firstChild!;
+        expect(paragraph.textContent).toBe("前X后");
+        const referenceIndex = Array.from(
+          { length: paragraph.childCount },
+          (_, index) => paragraph.child(index)
+        ).findIndex((child) => child.type.name === "footnote_reference");
+        expect(referenceIndex).toBe(1);
+        const precedingText = Array.from(
+          { length: referenceIndex },
+          (_, index) => paragraph.child(index).textContent
+        ).join("");
+        expect(precedingText).toBe(side === "before" ? "前X" : "前");
+        expect(
+          view.dom.querySelector("[data-type='footnote_reference']")
+            ?.textContent
+        ).toBe("1");
+      } finally {
+        await editor.destroy();
+        root.remove();
+      }
+    }
+  );
 
   it("enters the definition number before moving to the previous block", async () => {
     const root = document.createElement("div");
@@ -202,7 +398,7 @@ describe("footnote definition source label", () => {
         "dt input.mt-footnote-label-source"
       )!;
       expect(source.value).toBe("[^1]:");
-      expect(source.selectionStart).toBe(0);
+      expect(source.selectionStart).toBe(2);
     } finally {
       await editor.destroy();
       root.remove();
@@ -495,7 +691,7 @@ describe("footnote definition source label", () => {
     }
   );
 
-  it("opens at the start from the container's left mouse edge", () => {
+  it("opens after the bracket from the container's left mouse edge", () => {
     const definition = schema.nodes.footnote_definition.create(
       { label: "1" },
       schema.node("paragraph", null, schema.text("note"))
@@ -545,7 +741,7 @@ describe("footnote definition source label", () => {
         "input.mt-footnote-label-source"
       )!;
       expect(source.value).toBe("[^1]:");
-      expect(source.selectionStart).toBe(0);
+      expect(source.selectionStart).toBe(2);
     } finally {
       view.destroy();
       host.remove();
@@ -1481,6 +1677,318 @@ describe("footnote definition source label", () => {
         new MouseEvent("pointerdown", { bubbles: false })
       );
       expect(dt.textContent).toBe("1");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not add a paragraph when typing from the left boundary", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const before = view.state.doc.toJSON();
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.setSelectionRange(0, 0);
+      const event = new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: "X",
+      });
+
+      expect(source.dispatchEvent(event)).toBe(false);
+      expect(view.state.doc.toJSON()).toEqual(before);
+      expect(source.style.display).not.toBe("none");
+      expect(source.value).toBe("[^X1]:");
+      expect(source.selectionStart).toBe(3);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("moves fallback text typed before the marker into the label", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const before = view.state.doc.toJSON();
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.setSelectionRange(0, 0);
+      source.value = "X[^1]:";
+      source.dispatchEvent(new Event("input", { bubbles: true }));
+
+      expect(view.state.doc.toJSON()).toEqual(before);
+      expect(source.value).toBe("[^X1]:");
+      expect(source.selectionStart).toBe(3);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not move the source caret before the opening bracket", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      expect(source.selectionStart).toBe(2);
+
+      source.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+
+      expect(
+        view.dom.querySelector("dt input.mt-footnote-label-source")
+      ).toBeNull();
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each([
+    ["delete backward before the closing marker", "deleteContentBackward", 4, 4],
+    ["delete backward over the closing marker", "deleteContentBackward", 3, 4],
+    ["delete forward over the closing marker", "deleteContentForward", 3, 4],
+  ] as const)(
+    "protects the closing marker when trying to %s",
+    (_name, inputType, selectionStart, selectionEnd) => {
+      const { view, host } = mountFootnoteDefinition();
+
+      try {
+        const source = openFootnoteDefinitionLeftBoundary(view);
+        source.setSelectionRange(selectionStart, selectionEnd);
+        const event = new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType,
+        });
+
+        expect(source.dispatchEvent(event)).toBe(false);
+        expect(source.value).toBe("[^1]:");
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it("protects the closing marker in the keydown fallback", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.setSelectionRange(4, 4);
+
+      expect(
+        source.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Backspace",
+            bubbles: true,
+            cancelable: true,
+          })
+        )
+      ).toBe(false);
+      expect(source.value).toBe("[^1]:");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each(["beforeinput", "keydown"] as const)(
+    "does not type between the closing marker and colon on %s",
+    (eventKind) => {
+      const { view, host } = mountFootnoteDefinition();
+
+      try {
+        const source = openFootnoteDefinitionLeftBoundary(view);
+        source.setSelectionRange(4, 4);
+        const event =
+          eventKind === "beforeinput"
+            ? new InputEvent("beforeinput", {
+                bubbles: true,
+                cancelable: true,
+                inputType: "insertText",
+                data: "X",
+              })
+            : new KeyboardEvent("keydown", {
+                key: "X",
+                bubbles: true,
+                cancelable: true,
+              });
+
+        expect(source.dispatchEvent(event)).toBe(false);
+        expect(source.value).toBe("[^1]:");
+        expect(source.selectionStart).toBe(3);
+        expect(source.selectionEnd).toBe(3);
+      } finally {
+        view.destroy();
+        host.remove();
+      }
+    }
+  );
+
+  it("clamps a selection placed between the closing marker and colon", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.setSelectionRange(4, 4);
+      source.dispatchEvent(new Event("select"));
+
+      expect(source.selectionStart).toBe(3);
+      expect(source.selectionEnd).toBe(3);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("skips the closing marker gap when moving left from after the colon", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.setSelectionRange(source.value.length, source.value.length);
+      source.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+
+      expect(source.selectionStart).toBe(3);
+      expect(source.selectionEnd).toBe(3);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("leaves the label when moving right from before the closing marker", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.setSelectionRange(3, 3);
+      source.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowRight",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+
+      expect(
+        view.dom.querySelector("dt input.mt-footnote-label-source")
+      ).toBeNull();
+      expect(view.state.selection.$from.parent.textContent).toBe("note");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("restores a missing closing marker in the input fallback", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.value = "[^1:";
+      source.dispatchEvent(new Event("input", { bubbles: true }));
+
+      expect(source.value).toBe("[^1]:");
+      expect(source.selectionStart).toBe(2);
+      expect(source.selectionEnd).toBe(3);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("restores text inserted between the closing marker and colon", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionLeftBoundary(view);
+      source.value = "[^1]X:";
+      source.dispatchEvent(new Event("input", { bubbles: true }));
+
+      expect(source.value).toBe("[^1]:");
+      expect(source.selectionStart).toBe(2);
+      expect(source.selectionEnd).toBe(3);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("inserts ordinary text from the definition mouse-right boundary", () => {
+    const { view, host } = mountFootnoteDefinition("this");
+
+    try {
+      const source = openFootnoteDefinitionRightBoundary(view);
+      expect(source.selectionStart).toBe(source.value.length);
+
+      expect(
+        source.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "X",
+            bubbles: true,
+            cancelable: true,
+          })
+        )
+      ).toBe(false);
+      expect(view.state.doc.firstChild?.attrs.label).toBe("1");
+      expect(view.state.doc.firstChild?.textContent).toBe("Xthis");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("falls back to input events at the definition's right boundary", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const source = openFootnoteDefinitionRightBoundary(view);
+      source.value = "[^1]:X";
+      source.dispatchEvent(new Event("input", { bubbles: true }));
+
+      expect(source.style.display).toBe("none");
+      const definitionNode = view.state.doc.lastChild;
+      expect(definitionNode?.attrs.label).toBe("1");
+      expect(definitionNode?.textContent).toBe("Xnote");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("keeps the definition intact when deleting from the explanation boundary", () => {
+    const { view, host } = mountFootnoteDefinition();
+
+    try {
+      const before = view.state.doc.toJSON();
+      const source = openFootnoteDefinitionRightBoundary(view);
+
+      source.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Delete",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+
+      expect(view.state.doc.toJSON()).toEqual(before);
+      expect(view.state.selection.$from.parent.textContent).toBe("note");
     } finally {
       view.destroy();
       host.remove();

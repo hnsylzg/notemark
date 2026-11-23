@@ -233,6 +233,7 @@ export const createMathInlineNodeView: NodeViewConstructor = (
     dom.append(display, input);
 
     let editing = false;
+    let boundaryValue = "";
 
     type VerticalTarget = {
       position: number;
@@ -271,6 +272,7 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       dom.classList.toggle("is-editing", on);
       if (on) {
         input.value = `$${node.textContent}$`;
+        boundaryValue = input.value;
         display.style.display = "none";
         input.style.display = "";
         input.focus();
@@ -288,6 +290,7 @@ export const createMathInlineNodeView: NodeViewConstructor = (
             : Math.max(1, input.value.length - 1);
         input.setSelectionRange(start, end);
       } else {
+        boundaryValue = "";
         input.style.display = "none";
         display.style.display = "";
       }
@@ -359,6 +362,16 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       return tr;
     };
 
+    const insertOutside = (text: string): void => {
+      const at = view.state.selection.from;
+      const tr = view.state.tr.insertText(text, at);
+      tr.setSelection(
+        TextSelection.create(tr.doc, at + text.length)
+      );
+      view.dispatch(tr);
+      view.focus();
+    };
+
     const verticalTargetAt = (
       direction: -1 | 1
     ): VerticalTarget | undefined => {
@@ -400,6 +413,66 @@ export const createMathInlineNodeView: NodeViewConstructor = (
     input.addEventListener("copy", stop);
     input.addEventListener("cut", stop);
     input.addEventListener("drop", stop);
+    const boundarySide = (): "before" | "after" | null => {
+      if (
+        input.selectionStart === 0 &&
+        input.selectionEnd === 0
+      ) {
+        return "before";
+      }
+      if (
+        input.selectionStart === input.value.length &&
+        input.selectionEnd === input.value.length
+      ) {
+        return "after";
+      }
+      return null;
+    };
+    input.addEventListener("beforeinput", (event) => {
+      const side = boundarySide();
+      if (!editing || !side) return;
+      const deleting =
+        event.inputType === "deleteContentBackward" ||
+        event.inputType === "deleteContentForward";
+      if (deleting) {
+        event.preventDefault();
+        finish(true, side);
+        return;
+      }
+      if (!event.data || !event.inputType.startsWith("insert")) return;
+      event.preventDefault();
+      finish(true, side);
+      insertOutside(event.data);
+    });
+    input.addEventListener("input", () => {
+      if (!editing || !boundaryValue) return;
+      const value = input.value;
+      if (value === boundaryValue) return;
+      const inserted =
+        value.endsWith(boundaryValue)
+          ? value.slice(0, value.length - boundaryValue.length)
+          : value.startsWith(boundaryValue)
+            ? value.slice(boundaryValue.length)
+            : "";
+      if (inserted) {
+        input.value = boundaryValue;
+        const side: "before" | "after" = value.endsWith(boundaryValue)
+          ? "before"
+          : "after";
+        finish(true, side);
+        insertOutside(inserted);
+        return;
+      }
+      if (value === boundaryValue.slice(1)) {
+        input.value = boundaryValue;
+        finish(true, "before");
+        return;
+      }
+      if (value === boundaryValue.slice(0, -1)) {
+        input.value = boundaryValue;
+        finish(true, "after");
+      }
+    });
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") {
@@ -422,6 +495,23 @@ export const createMathInlineNodeView: NodeViewConstructor = (
       ) {
         e.preventDefault();
         finish(true, "after");
+      } else if (
+        (e.key === "Backspace" || e.key === "Delete") &&
+        boundarySide()
+      ) {
+        e.preventDefault();
+        finish(true, boundarySide()!);
+      } else if (
+        boundarySide() &&
+        e.key.length === 1 &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        const side = boundarySide()!;
+        finish(true, side);
+        insertOutside(e.key);
       } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
         const direction = e.key === "ArrowUp" ? -1 : 1;
@@ -540,6 +630,9 @@ function inlineMathRangeAtPosition(
   return null;
 }
 
+/** Fraction of the inline math width treated as its outside entry edge. */
+const MATH_INLINE_EDGE_HIT_RATIO = 0.15;
+
 /**
  * Keyboard navigation is handled by ProseMirror outside the NodeView. When a
  * keyboard selection enters math_inline, forward that state to the existing
@@ -557,13 +650,21 @@ export function createMathInlineCursorPlugin(): Plugin {
         if (!range) return false;
         const dom = view.nodeDOM(range.from);
         if (!(dom instanceof HTMLElement)) return false;
+        const rect = dom.getBoundingClientRect();
+        const edge = rect.width * MATH_INLINE_EDGE_HIT_RATIO;
+        const atLeftEdge =
+          rect.width > 0 && event.clientX <= rect.left + edge;
+        const atRightEdge =
+          rect.width > 0 && event.clientX >= rect.right - edge;
+        const fromLeft =
+          rect.width <= 0 || event.clientX <= rect.left + rect.width / 2;
         event.preventDefault();
         dom.dispatchEvent(
           new CustomEvent("mt-inline-math-edit", {
             detail: {
               selectAll: false,
-              keyboardEntry: false,
-              fromLeft: true,
+              keyboardEntry: atLeftEdge || atRightEdge,
+              fromLeft: atLeftEdge ? true : atRightEdge ? false : fromLeft,
             },
           })
         );

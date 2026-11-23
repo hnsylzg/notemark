@@ -38,6 +38,8 @@ import { MENU_PRESERVE_EDITING_ATTRIBUTE } from "./menu-preserve";
 const REF = "footnote_reference";
 const DEF = "footnote_definition";
 const FOOTNOTE_POINTER_EDGE_EM = 0.2;
+const DEFINITION_SOURCE_OPEN = "[^";
+const DEFINITION_SOURCE_CLOSE = "]:";
 
 /** 查找到的脚注节点（文档位置 + 节点本身） */
 interface FootnoteHit {
@@ -357,6 +359,8 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
   source.style.display = "none";
   dom.append(dt, dd);
   let editing = false;
+  let boundaryEntry: "after" | null = null;
+  let boundaryValue = "";
   let pendingPointerSelection:
     | { start: number; end: number }
     | null = null;
@@ -389,23 +393,30 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
   ) => {
     if (editing) return;
     editing = true;
-    source.value = `[^${String(node.attrs.label ?? "")}]:`;
+    boundaryEntry =
+      keyboardEntry && !fromLeft ? "after" : null;
+    source.value = `${DEFINITION_SOURCE_OPEN}${String(
+      node.attrs.label ?? ""
+    )}${DEFINITION_SOURCE_CLOSE}`;
+    boundaryValue = source.value;
     source.style.display = "inline-block";
     dt.replaceChildren(source);
     dt.dataset.mtSource = "true";
     dt.classList.add("mt-footnote-source-editing");
     document.addEventListener("mousedown", onOutsideMouseDown, true);
     document.addEventListener("pointerdown", onOutsideMouseDown, true);
+    document.addEventListener(
+      "selectionchange",
+      onDocumentSelectionChange
+    );
     source.focus();
     const textLength = source.value.length;
-    const start = keyboardEntry
-      ? fromLeft
-        ? 0
-        : textLength
-      : 2;
+    const labelStart = Math.min(2, textLength);
+    const start =
+      keyboardEntry && !fromLeft ? textLength : labelStart;
     const end = keyboardEntry
       ? start
-      : Math.max(2, textLength - 2);
+      : Math.max(labelStart, textLength - 2);
     source.setSelectionRange(start, end);
     pendingPointerSelection =
       pointerEntry && start > 0 ? { start, end } : null;
@@ -469,6 +480,8 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       ? parseFootnoteLabel(source.value, true)
       : previous;
     editing = false;
+    boundaryEntry = null;
+    boundaryValue = "";
     pendingPointerSelection = null;
     clearPointerSelectionRestore();
     updateChrome();
@@ -477,6 +490,154 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     }
     document.removeEventListener("mousedown", onOutsideMouseDown, true);
     document.removeEventListener("pointerdown", onOutsideMouseDown, true);
+    document.removeEventListener(
+      "selectionchange",
+      onDocumentSelectionChange
+    );
+  };
+
+  const boundarySideAtCaret = (): "after" | null => {
+    if (!editing || !boundaryEntry) return null;
+    if (
+      source.selectionStart === source.value.length &&
+      source.selectionEnd === source.value.length
+    ) {
+      return "after";
+    }
+    return null;
+  };
+
+  const explanationStartPos = (): number | null => {
+    const pos = getPos();
+    if (typeof pos !== "number") return null;
+    const live = view.state.doc.nodeAt(pos);
+    if (!live || live.type.name !== DEF) return null;
+    return firstTextPos(view.state.doc, pos, live.nodeSize);
+  };
+
+  const labelContentRange = (): { from: number; to: number } => ({
+    from: DEFINITION_SOURCE_OPEN.length,
+    to: Math.max(
+      DEFINITION_SOURCE_OPEN.length,
+      source.value.length - DEFINITION_SOURCE_CLOSE.length
+    ),
+  });
+
+  const clampSourceSelection = (): void => {
+    if (!editing) return;
+    const range = labelContentRange();
+    const length = source.value.length;
+    const selectionStart = source.selectionStart ?? range.from;
+    const selectionEnd = source.selectionEnd ?? selectionStart;
+    if (
+      selectionStart === length &&
+      selectionEnd === length
+    ) {
+      return;
+    }
+    const clamp = (position: number): number =>
+      Math.max(range.from, Math.min(position, range.to));
+    const nextStart = clamp(selectionStart);
+    const nextEnd = clamp(selectionEnd);
+    if (
+      nextStart !== selectionStart ||
+      nextEnd !== selectionEnd
+    ) {
+      source.setSelectionRange(nextStart, nextEnd);
+    }
+  };
+
+  const onDocumentSelectionChange = (): void => {
+    if (source.ownerDocument.activeElement === source) {
+      clampSourceSelection();
+    }
+  };
+
+  const deletionTouchesProtectedSyntax = (
+    inputType: "deleteContentBackward" | "deleteContentForward"
+  ): boolean => {
+    const range = labelContentRange();
+    const selectionStart = source.selectionStart ?? 0;
+    const selectionEnd = source.selectionEnd ?? selectionStart;
+    const from =
+      selectionStart === selectionEnd &&
+      inputType === "deleteContentBackward"
+        ? Math.max(0, selectionStart - 1)
+        : selectionStart;
+    const to =
+      selectionStart === selectionEnd &&
+      inputType === "deleteContentForward"
+        ? Math.min(source.value.length, selectionEnd + 1)
+        : selectionEnd;
+    const removedLabelCharacters = Math.max(
+      0,
+      Math.min(to, range.to) - Math.max(from, range.from)
+    );
+    return (
+      from < range.from ||
+      to > range.to ||
+      removedLabelCharacters >= range.to - range.from
+    );
+  };
+
+  const insertLabelText = (text: string): void => {
+    const range = labelContentRange();
+    const selectionStart = source.selectionStart ?? range.from;
+    const selectionEnd = source.selectionEnd ?? selectionStart;
+    const from = Math.max(
+      range.from,
+      Math.min(selectionStart, range.to)
+    );
+    const to = Math.max(
+      from,
+      Math.min(selectionEnd, range.to)
+    );
+    source.setRangeText(text, from, to, "end");
+  };
+
+  const redirectLabelInsertion = (text: string): boolean => {
+    const range = labelContentRange();
+    const selectionStart = source.selectionStart ?? range.from;
+    const selectionEnd = source.selectionEnd ?? selectionStart;
+    if (selectionStart > range.to) {
+      source.setSelectionRange(range.to, range.to);
+      return true;
+    }
+    if (
+      selectionStart < range.from ||
+      selectionEnd > range.to
+    ) {
+      insertLabelText(text);
+      return true;
+    }
+    return false;
+  };
+
+  const focusExplanationStart = (): void => {
+    finishEditing(true);
+    const target = explanationStartPos();
+    if (target == null) return;
+    view.dispatch(
+      view.state.tr.setSelection(
+        TextSelection.near(view.state.doc.resolve(target), 1)
+      )
+    );
+    view.focus();
+  };
+
+  const insertAtBoundary = (text: string): void => {
+    finishEditing(true);
+    const target = explanationStartPos();
+    if (target == null || !text) return;
+    const tr = view.state.tr.insertText(text, target);
+    tr.setSelection(
+      TextSelection.near(
+        tr.doc.resolve(target + text.length),
+        1
+      )
+    );
+    view.dispatch(tr);
+    view.focus();
   };
 
   const pointerEntryAt = (
@@ -595,14 +756,126 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     clearPointerSelectionRestore();
     event.stopPropagation();
   });
+  source.addEventListener("mouseup", () => {
+    queueMicrotask(clampSourceSelection);
+  });
+  source.addEventListener("select", clampSourceSelection);
   source.addEventListener("click", (event) => {
     event.stopPropagation();
+    queueMicrotask(clampSourceSelection);
+  });
+  source.addEventListener("beforeinput", (event) => {
+    const side = boundarySideAtCaret();
+    if (
+      event.inputType === "deleteContentBackward" ||
+      event.inputType === "deleteContentForward"
+    ) {
+      if (side) {
+        event.preventDefault();
+        focusExplanationStart();
+        return;
+      }
+      if (deletionTouchesProtectedSyntax(event.inputType)) {
+        event.preventDefault();
+      }
+      return;
+    }
+    if (!event.data || !event.inputType.startsWith("insert")) return;
+    if (!side) {
+      if (redirectLabelInsertion(event.data)) {
+        event.preventDefault();
+      }
+      return;
+    }
+    event.preventDefault();
+    insertAtBoundary(event.data);
+  });
+  source.addEventListener("input", () => {
+    const side = boundaryEntry;
+    const value = source.value;
+    if (!boundaryValue || value === boundaryValue) return;
+    const markerStart = value.indexOf(DEFINITION_SOURCE_OPEN);
+    if (
+      markerStart > 0 &&
+      value.endsWith(DEFINITION_SOURCE_CLOSE)
+    ) {
+      const prefix = value.slice(0, markerStart);
+      const markerSource = value.slice(markerStart);
+      source.value = `${DEFINITION_SOURCE_OPEN}${prefix}${markerSource.slice(
+        DEFINITION_SOURCE_OPEN.length
+      )}`;
+      const caret = DEFINITION_SOURCE_OPEN.length + prefix.length;
+      source.setSelectionRange(caret, caret);
+      return;
+    }
+    if (side) {
+      const afterSide = value.startsWith(boundaryValue);
+      if (afterSide) {
+        const inserted = value.slice(boundaryValue.length);
+        if (!inserted) return;
+        source.value = boundaryValue;
+        insertAtBoundary(inserted);
+        return;
+      }
+      if (value === boundaryValue.slice(0, -1)) {
+        source.value = boundaryValue;
+        focusExplanationStart();
+        return;
+      }
+    }
+    if (parseFootnoteLabel(value, true) == null) {
+      source.value = boundaryValue;
+      const range = labelContentRange();
+      source.setSelectionRange(range.from, range.to);
+    }
   });
   source.addEventListener("keydown", (event) => {
     pendingPointerSelection = null;
     clearPointerSelectionRestore();
     event.stopPropagation();
+    const boundarySide = boundarySideAtCaret();
+    if (
+      boundarySide &&
+      (event.key === "Backspace" || event.key === "Delete")
+    ) {
+      event.preventDefault();
+      focusExplanationStart();
+      return;
+    }
+    if (
+      boundarySide &&
+      event.key.length === 1 &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      insertAtBoundary(event.key);
+      return;
+    }
     const caret = source.selectionStart ?? 0;
+    const range = labelContentRange();
+    if (
+      (event.key === "Backspace" || event.key === "Delete") &&
+      deletionTouchesProtectedSyntax(
+        event.key === "Backspace"
+          ? "deleteContentBackward"
+          : "deleteContentForward"
+      )
+    ) {
+      event.preventDefault();
+      return;
+    }
+    if (
+      event.key.length === 1 &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      redirectLabelInsertion(event.key)
+    ) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       event.preventDefault();
       const direction = event.key === "ArrowUp" ? -1 : 1;
@@ -635,7 +908,17 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
         );
       }
       view.focus();
-    } else if (event.key === "ArrowLeft" && caret === 0) {
+    } else if (
+      event.key === "ArrowLeft" &&
+      caret > range.to &&
+      caret <= source.value.length
+    ) {
+      event.preventDefault();
+      source.setSelectionRange(range.to, range.to);
+    } else if (
+      event.key === "ArrowLeft" &&
+      caret <= range.from
+    ) {
       event.preventDefault();
       const pos = getPos();
       finishEditing(true);
@@ -647,9 +930,15 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
         );
       }
       view.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      source.setSelectionRange(range.from, range.from);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      source.setSelectionRange(range.to, range.to);
     } else if (
       event.key === "ArrowRight" &&
-      caret === source.value.length
+      caret >= range.to
     ) {
       event.preventDefault();
       const pos = getPos();
@@ -697,6 +986,10 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       footnoteLabelOpeners.delete(dt);
       document.removeEventListener("mousedown", onOutsideMouseDown, true);
       document.removeEventListener("pointerdown", onOutsideMouseDown, true);
+      document.removeEventListener(
+        "selectionchange",
+        onDocumentSelectionChange
+      );
     },
   };
 };
@@ -713,6 +1006,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
 ) => {
   let node = initialNode;
   let editing = false;
+  let boundaryEntry: "before" | "after" | null = null;
   const dom = document.createElement("sup");
   dom.className = "mt-footnote-reference";
   dom.tabIndex = -1;
@@ -738,6 +1032,11 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
   const startEditing = (keyboardEntry = false, fromLeft = true) => {
     if (editing) return;
     editing = true;
+    boundaryEntry = keyboardEntry
+      ? fromLeft
+        ? "before"
+        : "after"
+      : null;
     source.value = `[^${String(node.attrs.label ?? "")}]`;
     source.style.display = "inline-block";
     dom.replaceChildren(source);
@@ -767,6 +1066,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
     const previous = String(node.attrs.label ?? "");
     const next = commit ? parseFootnoteLabel(source.value) : previous;
     editing = false;
+    boundaryEntry = null;
     render();
     if (next && next !== previous) {
       updateFootnoteLabels(view, previous, next);
@@ -795,6 +1095,37 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
   });
   source.addEventListener("click", (event) => {
     event.stopPropagation();
+  });
+  source.addEventListener("beforeinput", (event) => {
+    const side = boundaryEntry;
+    if (!editing || !side || !event.data) return;
+    const atBoundary =
+      side === "before"
+        ? source.selectionStart === 0 && source.selectionEnd === 0
+        : source.selectionStart === source.value.length &&
+          source.selectionEnd === source.value.length;
+    if (
+      !atBoundary ||
+      !event.inputType.startsWith("insert")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    const pos = getPos();
+    finishEditing(true);
+    if (typeof pos !== "number") return;
+    const live = view.state.doc.nodeAt(pos);
+    if (!live) return;
+    const at = side === "before" ? pos : pos + live.nodeSize;
+    const tr = view.state.tr.insertText(event.data, at);
+    tr.setSelection(
+      TextSelection.near(
+        tr.doc.resolve(at + event.data.length),
+        side === "before" ? -1 : 1
+      )
+    );
+    view.dispatch(tr);
+    view.focus();
   });
   source.addEventListener("keydown", (event) => {
     event.stopPropagation();
