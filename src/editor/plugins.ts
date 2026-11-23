@@ -20,6 +20,7 @@ import {
   strongInputRule,
 } from "@milkdown/kit/preset/commonmark";
 import {
+  extendListItemSchemaForTask,
   gfm,
   remarkGFMPlugin,
   strikethroughInputRule as gfmStrikethroughInputRule,
@@ -34,7 +35,10 @@ import {
   mathInlineInputRule,
   remarkMathPlugin,
 } from "./math-schema";
-import { diagram } from "@milkdown/plugin-diagram";
+import {
+  diagramSchema,
+  mermaidConfigCtx,
+} from "@milkdown/plugin-diagram";
 import { diagramView } from "./diagram-view";
 import {
   mathBlockPlugins,
@@ -143,6 +147,19 @@ const linkExclusiveSchema = linkSchema.extendSchema((prev) => (ctx) => ({
 }));
 
 /**
+ * CommonMark 允许列表项的第一个块直接是标题或其它 block，例如：
+ * `- ### 标题`、`1. ### 标题`。Milkdown 默认把 list_item 限制为
+ * `paragraph block*`，解析时会额外插入一个空段落，直接输入时标题输入规则
+ * 也会因无法替换首段而失效。这里改为 `block+`，与 Markdown 的列表项内容
+ * 模型一致；基于 GFM 的扩展继续保留任务列表的 checked 属性与序列化逻辑。
+ */
+const listItemWithBlockContentSchema =
+  extendListItemSchemaForTask.extendSchema((prev) => (ctx) => ({
+    ...prev(ctx),
+    content: "block+",
+  }));
+
+/**
  * 返回一组可直接传给 Milkdown 的扩展（插件）集合。
  * 各 preset/组件导出可能是单个 MilkdownPlugin 或 MilkdownPlugin[]，
  * 统一展开成扁平的 MilkdownPlugin[] 后，整体传给 Editor.use()。
@@ -182,6 +199,8 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 表格 / 任务列表 / 脚注 / 删除线等 GFM 支持（remark-gfm 与删除线输入
     // 规则已替换为只认 ~~ 的严格版，单波浪 ~ 让给下标，见 script.ts）
     ...gfmPlugins,
+    // GFM 注册后再覆盖列表项内容模型，保留 checked 等任务列表扩展。
+    ...listItemWithBlockContentSchema,
     // 脚注的「添加入口 + 点击跳转 + Ctrl+Alt+F」。
     // 节点本身（footnote_reference / footnote_definition）由上面的 gfmPlugins
     // 注册，解析与序列化也由它负责，所以必须排在其后；本插件只补交互。
@@ -195,7 +214,11 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     mathInlineView,
     mathInlineCursorPlugin,
     ...mathBlockPlugins,
-    ...diagram,
+    // Mermaid 的唯一入口是代码块 language=mermaid。保留 diagram schema /
+    // NodeView 仅用于兼容已有节点；不再注册 remark/inputRule 把普通
+    // ```mermaid 围栏转换成独立节点。
+    mermaidConfigCtx,
+    ...diagramSchema,
     diagramView,
     gapcursorPlugin,
     formatMenuPlugin,

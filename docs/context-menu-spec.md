@@ -62,15 +62,14 @@ readonly
 2. 表格单元格
 3. 代码块
 4. 块级公式
-5. Mermaid / 流程图
-6. 块级 HTML
-7. Front Matter
-8. 目录
-9. 任务列表项
-10. 普通列表项
-11. 引用 / Alert
-12. 标题
-13. 普通段落
+5. 块级 HTML
+6. Front Matter
+7. 目录
+8. 任务列表项
+9. 普通列表项
+10. 引用 / Alert
+11. 标题
+12. 普通段落
 14. 只读或未识别区域
 
 命中高层上下文后，不得继续执行低层菜单。
@@ -172,7 +171,6 @@ CodeMirror、MathJax SVG、textarea 等内部 DOM 不是“外部区域”。
 - 表格
 - 代码块
 - 公式块
-- 流程图
 - 内容目录
 - YAML Front Matter
 - 段前 / 段后段落
@@ -272,7 +270,6 @@ interface ClipboardCapabilities {
 | 代码块 | 选中代码、整段代码、Markdown 代码块、纯文本 | 在代码光标处粘贴纯文本 | 用剪贴板文本替换选区或整段代码 |
 | 表格 | 单元格文本、选中表格、Markdown 表格、HTML 表格 | 纯文本、Markdown 单元格内容 | 替换单元格内容 |
 | 图片 | 图片、图片地址、Markdown、HTML | 图片地址、本地图片文件 | 替换图片文件或图片地址 |
-| Mermaid / 流程图 | PNG、SVG、源码、Markdown 代码块 | Mermaid 源码 | 用剪贴板 Mermaid 源码替换 |
 | 块级 HTML | HTML 源码、渲染文本、Markdown | HTML 源码、纯文本 | 用剪贴板 HTML 替换 |
 | Front Matter | YAML 源码、纯文本 | YAML 源码 | 替换整个 Front Matter |
 | 目录 | 目录 Markdown、纯文本、HTML | — | 重建目录 |

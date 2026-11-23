@@ -18,10 +18,16 @@ import type {
 import {
   CodeMirrorBlock,
   codeBlockConfig,
+  type CodeBlockConfig,
 } from "@milkdown/components/code-block";
 import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
 import type { NodeViewConstructor } from "@milkdown/prose/view";
 import { $view } from "@milkdown/utils";
+import { renderMermaidSvg, subscribeMermaidTheme } from "./diagram-view";
+import {
+  MERMAID_LANGUAGE,
+  isMermaidLanguage,
+} from "./mermaid-language";
 
 type CodeMirrorBlockArgs = ConstructorParameters<typeof CodeMirrorBlock>;
 type CodeMirrorBlockInternals = {
@@ -45,6 +51,80 @@ export type FloatingCoordinates = {
   left: number;
   top: number;
 };
+
+type ApplyPreview = Parameters<CodeBlockConfig["renderPreview"]>[2];
+
+export interface MermaidCodeBlockPreview {
+  renderPreview: CodeBlockConfig["renderPreview"];
+  destroy(): void;
+}
+
+let previewRenderSequence = 0;
+
+function mermaidPreviewMarkup(svg: string): string {
+  return `<div class="diagram mermaid-preview">${svg}</div>`;
+}
+
+function mermaidPreviewError(error: unknown): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "diagram mermaid-preview mermaid-preview--error";
+  const message = document.createElement("pre");
+  message.className = "error";
+  message.textContent =
+    error instanceof Error ? error.message : String(error);
+  wrapper.appendChild(message);
+  return wrapper;
+}
+
+/**
+ * 每个代码块持有独立的渲染序号，避免快速修改语言或源码时，较早的异步
+ * Mermaid 结果覆盖较新的预览；同时把渲染注册到主题切换回调中。
+ */
+export function createMermaidCodeBlockPreview(): MermaidCodeBlockPreview {
+  let revision = 0;
+  let current: { source: string; apply: ApplyPreview } | null = null;
+
+  const renderCurrent = (): void => {
+    const request = current;
+    if (!request) return;
+    const requestRevision = ++revision;
+    const renderId = `code-preview-${++previewRenderSequence}`;
+    void renderMermaidSvg(
+      request.source,
+      renderId,
+      requestRevision
+    )
+      .then((svg) => {
+        if (requestRevision !== revision) return;
+        request.apply(mermaidPreviewMarkup(svg));
+      })
+      .catch((error) => {
+        if (requestRevision !== revision) return;
+        request.apply(mermaidPreviewError(error));
+      });
+  };
+
+  const unsubscribeTheme = subscribeMermaidTheme(renderCurrent);
+
+  return {
+    renderPreview(language, content, apply) {
+      revision += 1;
+      if (!isMermaidLanguage(language) || !content.trim()) {
+        current = null;
+        apply(null);
+        return null;
+      }
+      current = { source: content, apply };
+      renderCurrent();
+      return undefined;
+    },
+    destroy() {
+      revision += 1;
+      current = null;
+      unsubscribeTheme();
+    },
+  };
+}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
@@ -97,9 +177,25 @@ function viewportInset(): number {
 
 class PersistentCodeMirrorBlock extends CodeMirrorBlock {
   private languagePickerTrackingCleanup: (() => void) | null = null;
+  private languagePickerListObserver: MutationObserver | null = null;
+  private languagePickerActiveIndex = -1;
+  private readonly languageTerms = new Map<string, string[]>();
+  private mermaidSourceOpen = false;
+  private readonly mermaidPreview = createMermaidCodeBlockPreview();
 
   constructor(...args: CodeMirrorBlockArgs) {
     super(...args);
+    for (const language of this.loader.getAll()) {
+      this.languageTerms.set(language.name, [
+        language.name,
+        ...language.alias,
+      ]);
+    }
+    this.config = {
+      ...this.config,
+      renderPreview: this.mermaidPreview.renderPreview,
+    };
+    this.syncMermaidMode(this.node);
     const internals = this as unknown as CodeMirrorBlockInternals;
     internals.scheduleTeardown = () => {};
     // Capture runs before Milkdown's button handler, so the deferred callback
@@ -107,6 +203,21 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     this.dom.addEventListener(
       "click",
       this.handleLanguagePickerClick,
+      true
+    );
+    this.dom.addEventListener(
+      "keydown",
+      this.handleLanguagePickerKeydown,
+      true
+    );
+    this.dom.addEventListener(
+      "input",
+      this.handleLanguagePickerInput,
+      true
+    );
+    this.dom.addEventListener(
+      "click",
+      this.handleMermaidPreviewClick,
       true
     );
   }
@@ -122,11 +233,113 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
       if (target.dataset.expanded === "true") {
         this.positionLanguagePicker(target);
         this.trackLanguagePicker(target);
+        this.trackLanguagePickerList();
       } else {
         this.stopLanguagePickerTracking();
       }
     }, 0);
   };
+
+  private syncMermaidMode(node: Parameters<CodeMirrorBlock["update"]>[0]): void {
+    const mermaid = isMermaidLanguage(node.attrs.language);
+    this.dom.classList.toggle("mermaid-code-block", mermaid);
+    if (!mermaid) this.setMermaidSourceOpen(false);
+  }
+
+  private readonly handleLanguagePickerKeydown = (
+    event: KeyboardEvent
+  ): void => {
+    if (event.key === "Escape" && this.mermaidSourceOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setMermaidSourceOpen(false);
+      this.view.focus();
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".language-picker")) {
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeLanguagePicker();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.moveLanguagePickerActive(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.selectActiveLanguage();
+    }
+  };
+
+  private readonly handleLanguagePickerInput = (event: Event): void => {
+    const target = event.target;
+    if (
+      !(target instanceof HTMLInputElement) ||
+      !target.matches(".language-picker .search-input")
+    ) {
+      return;
+    }
+    window.setTimeout(() => this.syncLanguagePickerItems(), 0);
+  };
+
+  private readonly handleMermaidPreviewClick = (
+    event: MouseEvent
+  ): void => {
+    const target = event.target;
+    if (
+      !(target instanceof Element) ||
+      !target.closest(".mermaid-preview") ||
+      this.mermaidSourceOpen
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.setMermaidSourceOpen(true);
+  };
+
+  private readonly handleDocumentPointerDown = (
+    event: PointerEvent
+  ): void => {
+    if (!this.mermaidSourceOpen) return;
+    const target = event.target;
+    if (target instanceof Node && this.dom.contains(target)) return;
+    this.setMermaidSourceOpen(false);
+  };
+
+  private setMermaidSourceOpen(open: boolean): void {
+    if (this.mermaidSourceOpen === open) return;
+    const toggle = this.dom.querySelector<HTMLButtonElement>(
+      ".preview-toggle-button"
+    );
+    if (open && !toggle) return;
+    this.mermaidSourceOpen = open;
+    this.dom.classList.toggle("is-editing-mermaid-source", open);
+    toggle?.click();
+    if (open) {
+      document.addEventListener(
+        "pointerdown",
+        this.handleDocumentPointerDown,
+        true
+      );
+      requestAnimationFrame(() => {
+        if (!this.mermaidSourceOpen || this.view.isDestroyed) return;
+        const end = this.cm.state.doc.length;
+        this.cm.dispatch({ selection: { anchor: end } });
+        this.cm.focus();
+      });
+    } else {
+      document.removeEventListener(
+        "pointerdown",
+        this.handleDocumentPointerDown,
+        true
+      );
+    }
+  }
 
   private positionLanguagePicker(trigger: HTMLButtonElement): void {
     const picker = this.dom.querySelector<HTMLElement>(".language-picker");
@@ -188,9 +401,119 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
     };
   }
 
+  private trackLanguagePickerList(): void {
+    this.languagePickerListObserver?.disconnect();
+    const list = this.dom.querySelector<HTMLElement>(
+      ".language-picker .language-list"
+    );
+    if (!list) return;
+    this.languagePickerListObserver = new MutationObserver(() => {
+      this.syncLanguagePickerItems();
+    });
+    this.languagePickerListObserver.observe(list, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    this.syncLanguagePickerItems();
+  }
+
+  private syncLanguagePickerItems(): void {
+    const input = this.dom.querySelector<HTMLInputElement>(
+      ".language-picker .search-input"
+    );
+    const items = Array.from(
+      this.dom.querySelectorAll<HTMLElement>(
+        ".language-picker .language-list-item[data-language]"
+      )
+    );
+    if (!input || items.length === 0) return;
+
+    const query = input.value.trim().toLowerCase();
+    const visible: HTMLElement[] = [];
+    for (const item of items) {
+      const name = item.dataset.language ?? "";
+      const terms = this.languageTerms.get(name) ?? [name];
+      const matches =
+        !query ||
+        terms.some((term) => term.toLowerCase().includes(query));
+      item.hidden = !matches;
+      item.setAttribute("aria-hidden", String(!matches));
+      item.classList.remove("is-keyboard-active");
+      if (matches) visible.push(item);
+    }
+
+    if (visible.length === 0) {
+      this.languagePickerActiveIndex = -1;
+      return;
+    }
+    this.languagePickerActiveIndex = Math.max(
+      0,
+      Math.min(this.languagePickerActiveIndex, visible.length - 1)
+    );
+    visible[this.languagePickerActiveIndex].classList.add(
+      "is-keyboard-active"
+    );
+  }
+
+  private visibleLanguageItems(): HTMLElement[] {
+    return Array.from(
+      this.dom.querySelectorAll<HTMLElement>(
+        ".language-picker .language-list-item[data-language]"
+      )
+    ).filter((item) => !item.hidden);
+  }
+
+  private moveLanguagePickerActive(direction: -1 | 1): void {
+    this.syncLanguagePickerItems();
+    const items = this.visibleLanguageItems();
+    if (items.length === 0) return;
+    const current = this.languagePickerActiveIndex;
+    this.languagePickerActiveIndex =
+      current < 0
+        ? 0
+        : (current + direction + items.length) % items.length;
+    for (const item of items) item.classList.remove("is-keyboard-active");
+    const active = items[this.languagePickerActiveIndex];
+    active.classList.add("is-keyboard-active");
+    active.scrollIntoView?.({ block: "nearest" });
+  }
+
+  private selectActiveLanguage(): boolean {
+    this.syncLanguagePickerItems();
+    const items = this.visibleLanguageItems();
+    if (items.length === 0) return false;
+    const index = Math.max(
+      0,
+      Math.min(this.languagePickerActiveIndex, items.length - 1)
+    );
+    items[index].click();
+    return true;
+  }
+
+  private closeLanguagePicker(): void {
+    const trigger = this.dom.querySelector<HTMLButtonElement>(
+      ".language-button"
+    );
+    if (trigger?.dataset.expanded === "true") {
+      trigger.click();
+    } else {
+      this.stopLanguagePickerTracking();
+    }
+  }
+
   private stopLanguagePickerTracking(): void {
     this.languagePickerTrackingCleanup?.();
     this.languagePickerTrackingCleanup = null;
+    this.languagePickerListObserver?.disconnect();
+    this.languagePickerListObserver = null;
+    this.languagePickerActiveIndex = -1;
+  }
+
+  update(node: Parameters<CodeMirrorBlock["update"]>[0]): boolean {
+    const applied = super.update(node);
+    this.syncMermaidMode(node);
+    return applied;
   }
 
   destroy(): void {
@@ -199,19 +522,44 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
       this.handleLanguagePickerClick,
       true
     );
+    this.dom.removeEventListener(
+      "keydown",
+      this.handleLanguagePickerKeydown,
+      true
+    );
+    this.dom.removeEventListener(
+      "input",
+      this.handleLanguagePickerInput,
+      true
+    );
+    this.dom.removeEventListener(
+      "click",
+      this.handleMermaidPreviewClick,
+      true
+    );
+    document.removeEventListener(
+      "pointerdown",
+      this.handleDocumentPointerDown,
+      true
+    );
     this.stopLanguagePickerTracking();
+    this.mermaidPreview.destroy();
     super.destroy();
   }
 }
 
-class CodeBlockLanguageLoader {
+export class CodeBlockLanguageLoader {
   private readonly map: Record<string, LanguageDescription>;
   private readonly languages: LanguageDescription[];
 
   constructor(languages: LanguageDescription[]) {
-    this.languages = languages;
+    this.languages = languages.filter(
+      (language) =>
+        !isMermaidLanguage(language.name) &&
+        !language.alias.some(isMermaidLanguage)
+    );
     this.map = {};
-    for (const language of languages) {
+    for (const language of this.languages) {
       for (const alias of language.alias) {
         this.map[alias] = language;
       }
@@ -219,13 +567,26 @@ class CodeBlockLanguageLoader {
   }
 
   getAll(): Array<{ name: string; alias: readonly string[] }> {
-    return this.languages.map((language) => ({
+    const ordered = this.languages.map((language) => ({
       name: language.name,
       alias: language.alias,
     }));
+    const insertionIndex = ordered.findIndex(
+      (language) =>
+        language.name.localeCompare(MERMAID_LANGUAGE, undefined, {
+          sensitivity: "base",
+        }) > 0
+    );
+    ordered.splice(
+      insertionIndex < 0 ? ordered.length : insertionIndex,
+      0,
+      { name: MERMAID_LANGUAGE, alias: [MERMAID_LANGUAGE] }
+    );
+    return ordered;
   }
 
   load(languageName: string): Promise<LanguageSupport | undefined> {
+    if (isMermaidLanguage(languageName)) return Promise.resolve(undefined);
     const language = this.map[languageName.toLowerCase()];
     if (!language) return Promise.resolve(undefined);
     if (language.support) return Promise.resolve(language.support);

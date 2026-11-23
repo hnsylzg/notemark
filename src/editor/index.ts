@@ -1706,6 +1706,13 @@ export function createEditor(
         ...ctx.get(codeBlockConfig.key),
         extensions: [syntaxHighlighting(mtHighlightStyle)],
         languages,
+        // Mermaid 代码块默认直接显示图表；普通语言没有预览，代码编辑器
+        // 仍按原逻辑显示。工具条上的按钮可切换回“源码 + 预览”模式。
+        previewOnlyByDefault: true,
+        previewLabel: "图表",
+        previewLoading: "正在渲染图表…",
+        // Mermaid 图表通过点击图表进入源码，不显示独立的“编辑源码”按钮。
+        previewToggleButton: () => "",
         // 扁平化现代图标（Lucide 线性风格，stroke 跟随文字颜色）
         copyIcon:
           `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,

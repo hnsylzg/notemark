@@ -63,6 +63,11 @@ export function normalizeClipboardPlainText(
     : text;
 }
 
+/** CodeMirror counts every line break as one position; CRLF must be normalized before inserting. */
+export function normalizeClipboardCodeText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/\n$/, "");
+}
+
 export async function writeClipboardText(text: string): Promise<void> {
   const clipboardText = normalizeClipboardPlainText(text);
   let pluginError: unknown;

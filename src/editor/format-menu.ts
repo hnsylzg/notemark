@@ -106,6 +106,7 @@ import { MENU_PRESERVE_EDITING_ATTRIBUTE } from "./menu-preserve";
 import { insertLinkReferenceDefinition } from "./link-reference-definition";
 import { normalizePastedMarkdown } from "./markdown-paste";
 import {
+  normalizeClipboardCodeText,
   normalizeClipboardPlainText,
   readClipboardText,
   writeClipboardText,
@@ -684,18 +685,24 @@ function clickElement(element: Element | null): void {
   element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+async function copyMermaidImageToClipboard(
+  element: HTMLElement
+): Promise<void> {
+  const svg = element.querySelector<SVGSVGElement>("svg");
+  if (!svg) throw new Error("图表尚未完成渲染");
+  const background = resolveMermaidExportBackground(element);
+  await copyCanvasImage(
+    await formulaSvgToCanvas(svg, (clone) =>
+      applyMermaidEdgeLabelBackground(clone, background)
+    )
+  );
+}
+
 async function copyObjectToClipboard(
   context: ObjectMenuContext
 ): Promise<void> {
   if (context.kind === "diagram") {
-    const svg = context.element.querySelector<SVGSVGElement>("svg");
-    if (!svg) throw new Error("图表尚未完成渲染");
-    const background = resolveMermaidExportBackground(context.element);
-    await copyCanvasImage(
-      await formulaSvgToCanvas(svg, (clone) =>
-        applyMermaidEdgeLabelBackground(clone, background)
-      )
-    );
+    await copyMermaidImageToClipboard(context.element);
     return;
   }
   await writeClipboardText(objectClipboardSource(context));
@@ -1292,7 +1299,7 @@ function runCodeBlockQuickAction(
       });
     } else if (action === "paste") {
       void readClipboardText().then((text) => {
-        const pasteText = stripTrailingClipboardLineBreak(text);
+        const pasteText = normalizeClipboardCodeText(text);
         view.dispatch({
           changes: {
             from: selection.from,
@@ -2163,6 +2170,11 @@ function openMenu(
   const codeBlockPlainText = codeBlock
     ? (codeBlock.view?.state.doc.toString() ?? codeBlock.fallbackText)
     : "";
+  const mermaidPreview =
+    codeBlock &&
+    !codeBlock.element.classList.contains("is-editing-mermaid-source")
+      ? codeBlock.element.querySelector<HTMLElement>(".mermaid-preview")
+      : null;
   const tablePlainText = tableCell ? tableCellPlainText(tableCell) : "";
   const objectPlainText = objectMenu
     ? objectMenu.kind === "html-block"
@@ -2507,10 +2519,20 @@ function openMenu(
   const clipboardAs = addSubmenu("", "复制 / 粘贴为…");
   const clipboardMath = math ?? inlineMath;
   const hasSpecificClipboardActions =
+    !!mermaidPreview ||
     !!clipboardMath ||
     !!inlineImage ||
     objectMenu?.kind === "diagram";
-  if (objectMenu?.kind === "diagram") {
+  if (mermaidPreview) {
+    addTextAction(clipboardAs, "复制为图片", () => {
+      closeMenu();
+      void copyMermaidImageToClipboard(mermaidPreview).catch((error) => {
+        alert(
+          `图片复制失败：${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+    });
+  } else if (objectMenu?.kind === "diagram") {
     addTextAction(clipboardAs, "复制为图片", () => {
       closeMenu();
       void copyObjectToClipboard(objectMenu).catch((error) => {
@@ -2607,7 +2629,7 @@ function openMenu(
       const selection = codeSelection(cm);
       closeMenu();
       void readClipboardText().then((text) => {
-        const pasteText = stripTrailingClipboardLineBreak(text);
+        const pasteText = normalizeClipboardCodeText(text);
         cm.dispatch({
           changes: {
             from: selection.from,
@@ -2868,7 +2890,6 @@ function openMenu(
   addTextAction(inserts, "公式块", () => runInsertCommand("math"), {
     shortcut: "Ctrl+Shift+M",
   });
-  addTextAction(inserts, "流程图", () => runInsertCommand("diagram"));
   addTextAction(inserts, "内容目录", () => runInsertCommand("toc"));
   addTextAction(inserts, "YAML Front Matter", () =>
     runInsertCommand("frontmatter")

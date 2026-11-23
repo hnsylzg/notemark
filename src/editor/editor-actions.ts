@@ -314,7 +314,6 @@ export type EditorInsertCommand =
   | "table"
   | "code"
   | "math"
-  | "diagram"
   | "toc"
   | "frontmatter";
 
@@ -509,12 +508,6 @@ export function runEditorCommand(
   } else if (id === "math" && nodes.math_block) {
     openEditableBlockAt = blockRangeAt(view.state).start;
     command = replaceWithBlockAndParagraph(nodes.math_block, null);
-  } else if (id === "diagram" && nodes.diagram) {
-    openEditableBlockAt = blockRangeAt(view.state).start;
-    command = replaceWithBlockAndParagraph(nodes.diagram, {
-      value: "",
-      identity: `diagram-${crypto.randomUUID()}`,
-    });
   } else if (id === "toc" && nodes.toc) {
     command = insertAtom(nodes.toc);
   } else if (id === "frontmatter" && nodes.yaml) {

@@ -995,6 +995,80 @@ describe("Word Mermaid diagrams", () => {
       vi.restoreAllMocks();
     }
   });
+
+  it("renders a mermaid fenced code block as an image", async () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        text: { group: "inline" },
+        code_block: {
+          group: "block",
+          content: "text*",
+          attrs: { language: { default: "" } },
+          toDOM: () => ["pre", 0],
+        },
+      },
+    });
+    const doc = schema.node("doc", null, [
+      schema.node(
+        "code_block",
+        { language: "mermaid" },
+        schema.text("flowchart LR\nA --> B")
+      ),
+    ]);
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 200;
+        naturalHeight = 100;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      }
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mermaid");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: vi.fn(() => ({ drawImage: vi.fn() })),
+    });
+    Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+      configurable: true,
+      value: vi.fn((callback: BlobCallback) => {
+        callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+      }),
+    });
+
+    try {
+      const bytes = await buildDocx({ doc, viewDom: null });
+      const zip = await JSZip.loadAsync(bytes);
+      const documentXml = await zip.file("word/document.xml")!.async("string");
+      const media = Object.keys(zip.files).filter((name) =>
+        name.startsWith("word/media/")
+      );
+
+      expect(media.some((name) => name.endsWith(".svg"))).toBe(true);
+      expect(media.some((name) => name.endsWith(".png"))).toBe(true);
+      expect(documentXml).toContain("<asvg:svgBlip");
+      expect(documentXml).not.toContain("flowchart LR");
+    } finally {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+        configurable: true,
+        value: originalGetContext,
+      });
+      Object.defineProperty(HTMLCanvasElement.prototype, "toBlob", {
+        configurable: true,
+        value: originalToBlob,
+      });
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("Word footnotes", () => {

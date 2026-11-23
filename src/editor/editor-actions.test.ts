@@ -82,31 +82,6 @@ describe("editor block actions", () => {
     }
   });
 
-  it("inserts an empty diagram with a unique identity", () => {
-    const doc = schema.node("doc", null, [schema.node("paragraph")]);
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const view = new EditorView(host, {
-      state: EditorState.create({
-        schema,
-        doc,
-        selection: TextSelection.create(doc, 1),
-      }),
-    });
-
-    try {
-      expect(runEditorCommand(view, "diagram")).toBe(true);
-      const diagram = view.state.doc.firstChild!;
-      expect(diagram.type.name).toBe("diagram");
-      expect(diagram.attrs.value).toBe("");
-      expect(diagram.attrs.identity).toMatch(/^diagram-/);
-      expect(view.state.doc.lastChild!.type.name).toBe("paragraph");
-    } finally {
-      view.destroy();
-      host.remove();
-    }
-  });
-
   it("inserts a TOC at the empty first paragraph without a blank line above", () => {
     const doc = schema.node("doc", null, [schema.node("paragraph")]);
     const host = document.createElement("div");

@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { calculateLanguagePickerPosition } from "./code-block-view";
+import { describe, expect, it, vi } from "vitest";
+import { languages } from "@codemirror/language-data";
+import {
+  CodeBlockLanguageLoader,
+  calculateLanguagePickerPosition,
+  createMermaidCodeBlockPreview,
+} from "./code-block-view";
+
+vi.mock("./mathjax", () => ({
+  loadMathJax: vi.fn(async () => ({})),
+}));
+
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><text>diagram</text></svg>',
+    })),
+  },
+}));
 
 const boundary = { top: 0, right: 1000, bottom: 800, left: 0 };
 
@@ -54,5 +72,40 @@ describe("language picker positioning", () => {
         12
       )
     ).toEqual({ left: 12, top: 12 });
+  });
+});
+
+describe("Mermaid code block language", () => {
+  it("keeps Mermaid in its normal language order", async () => {
+    const loader = new CodeBlockLanguageLoader(languages);
+    const names = loader.getAll().map((language) => language.name);
+    const mermaidIndex = names.indexOf("mermaid");
+
+    expect(mermaidIndex).toBeGreaterThan(names.indexOf("Markdown"));
+    expect(mermaidIndex).toBeLessThan(names.indexOf("MS SQL"));
+  });
+
+  it("does not try to load a CM language for Mermaid", async () => {
+    const loader = new CodeBlockLanguageLoader([]);
+
+    await expect(loader.load("MERMAID")).resolves.toBeUndefined();
+  });
+
+  it("renders Mermaid previews only for the Mermaid language", async () => {
+    const preview = createMermaidCodeBlockPreview();
+    const apply = vi.fn();
+
+    expect(preview.renderPreview("javascript", "const x = 1", apply)).toBeNull();
+    expect(preview.renderPreview("mermaid", "", apply)).toBeNull();
+    expect(
+      preview.renderPreview("Mermaid", "flowchart LR\nA --> B", apply)
+    ).toBeUndefined();
+
+    await vi.waitFor(() => {
+      expect(apply).toHaveBeenLastCalledWith(
+        expect.stringContaining('class="diagram mermaid-preview"')
+      );
+    });
+    preview.destroy();
   });
 });

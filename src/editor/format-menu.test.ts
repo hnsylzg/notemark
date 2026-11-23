@@ -1707,6 +1707,50 @@ describe("code block context menu", () => {
     }
   });
 
+  it("offers copy as image for a rendered Mermaid preview", () => {
+    const doc = schema.node("doc", null, [schema.node("codeBlock")]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const target = view.dom.querySelector<HTMLElement>(
+        ".milkdown-code-block"
+      )!;
+      const preview = document.createElement("div");
+      preview.className = "diagram mermaid-preview";
+      preview.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"></svg>';
+      target.appendChild(preview);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 0, inside: -1 });
+      preview.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+
+      const labels = Array.from(
+        document.querySelectorAll(".mt-context-menu__label")
+      ).map((node) => node.textContent);
+      expect(labels).toContain("复制为图片");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("uses copy-as-plain-text instead of a separate whole-code item", () => {
     const doc = schema.node("doc", null, [schema.node("codeBlock")]);
     const host = document.createElement("div");

@@ -108,8 +108,33 @@ function getMermaid(): Promise<MermaidLike> {
   return mermaidPromise;
 }
 
+/** Render a Mermaid source string with the editor's active theme settings. */
+export async function renderMermaidSvg(
+  value: string,
+  identity: string,
+  revision: number
+): Promise<string> {
+  // Mermaid 的 $$...$$ 标签也走 MathJax 兼容层，先确保引擎就绪。
+  await loadMathJax();
+  const mermaid = await getMermaid();
+  mermaid.initialize(getMermaidConfig());
+  const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "-");
+  const { svg } = await mermaid.render(
+    `diagram-${safeIdentity}-${revision}`,
+    value
+  );
+  return svg;
+}
+
 /** 所有存活 diagram 的重渲染回调（主题切换时全部刷新） */
 const renderers = new Set<() => void>();
+
+/** Register a preview renderer that must refresh when the Mermaid theme changes. */
+export function subscribeMermaidTheme(renderer: () => void): () => void {
+  renderers.add(renderer);
+  return () => renderers.delete(renderer);
+}
+
 let themeObserver: MutationObserver | null = null;
 function watchThemeSwitch(): void {
   if (themeObserver) return;
@@ -179,31 +204,27 @@ export const diagramView = $view(diagramSchema.node, () => {
         dom.classList.add("diagram-empty");
         return;
       }
-      void getMermaid()
-        .then(async (mermaid) => {
+      void renderMermaidSvg(
+        value,
+        String(node.attrs.identity),
+        current
+      )
+        .then((svg) => {
           if (current !== token) return;
-          try {
-            // Mermaid 的 $$...$$ 标签也走 MathJax 兼容层，先确保引擎就绪。
-            await loadMathJax();
-            if (current !== token) return;
-            mermaid.initialize(getMermaidConfig());
-            const id = `diagram-${String(node.attrs.identity)}-${current}`;
-            const { svg } = await mermaid.render(id, value);
-            if (current !== token) return;
-            // 渲染期间用户可能已点进编辑态（textarea 已替换 dom 子节点），
-            // 此时不要把 SVG 写回去，否则 textarea（及其光标）会被吞掉。
-            if (editing) return;
-            dom.innerHTML = svg;
-          } catch (error) {
-            if (current !== token) return;
-            // 同上：编辑态下不覆盖 textarea
-            if (editing) return;
-            const pre = document.createElement("pre");
-            pre.className = "error";
-            pre.textContent =
-              error instanceof Error ? error.message : String(error);
-            dom.replaceChildren(pre);
-          }
+          // 渲染期间用户可能已点进编辑态（textarea 已替换 dom 子节点），
+          // 此时不要把 SVG 写回去，否则 textarea（及其光标）会被吞掉。
+          if (editing) return;
+          dom.innerHTML = svg;
+        })
+        .catch((error) => {
+          if (current !== token) return;
+          // 同上：编辑态下不覆盖 textarea
+          if (editing) return;
+          const pre = document.createElement("pre");
+          pre.className = "error";
+          pre.textContent =
+            error instanceof Error ? error.message : String(error);
+          dom.replaceChildren(pre);
         });
     };
 

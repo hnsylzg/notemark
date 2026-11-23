@@ -31,6 +31,7 @@ import {
   normalizeMermaidSvgForExport,
   resolveMermaidExportBackground,
 } from "./mermaid-export";
+import { isMermaidLanguage } from "./mermaid-language";
 import {
   AlignmentType,
   BorderStyle,
@@ -1330,6 +1331,34 @@ async function convertBlock(
 
     case "code_block":
     case "fence": {
+      if (
+        node.type.name === "code_block" &&
+        isMermaidLanguage((node.attrs ?? {}).language)
+      ) {
+        const code = node.textContent;
+        const diagram = await diagramToImage(code, "", ctx.viewDom);
+        if (diagram) {
+          return [
+            createParagraph(ctx, {
+              children: [
+                new ImageRun({
+                  type: "svg",
+                  data: svgDataUri(diagram.svg),
+                  fallback: {
+                    type: "png",
+                    data: diagram.fallback,
+                  },
+                  transformation: {
+                    width: diagram.width,
+                    height: diagram.height,
+                  },
+                }),
+              ],
+            }),
+          ];
+        }
+        return [sourceParagraph(code, ctx)];
+      }
       ctx.hasCodeBlock = true;
       const lines = node.textContent.split("\n");
       const children: TextRun[] = [];
