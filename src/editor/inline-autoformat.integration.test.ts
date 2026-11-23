@@ -78,6 +78,46 @@ describe("inline markdown autoformat integration", () => {
     }
   );
 
+  it.each([
+    ["inline HTML", "前 <mark>高亮</mark> 后", "mark[data-inline-html-mark]"],
+    ["strong", "前 **粗体** 后", "strong"],
+  ])(
+    "types before %s without escaping or breaking the inline mark",
+    async (_label, markdown, selector) => {
+      const root = document.createElement("div");
+      root.className = "milkdown";
+      document.body.appendChild(root);
+      const editor = createEditor(root);
+
+      try {
+        await editor.create();
+        setMarkdown(editor, markdown);
+        const view = editor.action((ctx) =>
+          ctx.get(editorViewCtx)
+        ) as EditorView;
+        const target = root.querySelector<HTMLElement>(selector);
+        expect(target).not.toBeNull();
+        const beforeMark = view.posAtDOM(target!, 0, -1);
+        view.dispatch(
+          view.state.tr.setSelection(
+            TextSelection.create(view.state.doc, beforeMark)
+          )
+        );
+        typePlainText(view, "X");
+        document.body.dispatchEvent(
+          new MouseEvent("click", { bubbles: false })
+        );
+
+        expect(getMarkdown(editor)).not.toContain("\\<");
+        expect(getMarkdown(editor)).not.toContain("\\>");
+        expect(root.querySelector(selector)).not.toBeNull();
+      } finally {
+        await editor.destroy();
+        root.remove();
+      }
+    }
+  );
+
   it("autoformats emphasis after completing the opening marker and exiting from the left", async () => {
     const root = document.createElement("div");
     root.className = "milkdown";

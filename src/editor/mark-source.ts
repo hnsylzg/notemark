@@ -304,7 +304,17 @@ function openSourceSessionTransaction(
       ? TextSelection.create(tr.doc, contentFrom, contentTo)
       : TextSelection.create(tr.doc, safeCaret)
   );
-  tr = tr.setStoredMarks(storedMarksWith(state, type, attrs));
+  const enteredFromOutside =
+    restorable &&
+    safeFrom < safeTo &&
+    (caret <= safeFrom || caret >= safeTo);
+  tr = tr.setStoredMarks(
+    enteredFromOutside
+      ? (state.storedMarks ?? state.selection.$from.marks()).filter(
+          (mark) => mark.type !== type
+        )
+      : storedMarksWith(state, type, attrs)
+  );
   if (restorable) {
     // Opening an existing mark is only a transient source view. Its temporary
     // delimiters must not become a phantom undo step when the user clicks away.
@@ -1292,6 +1302,18 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
       decorations: previewInlineDecorations,
       handleTextInput(view, from, to, text) {
         const session = markSourceKey.getState(view.state);
+        if (
+          session &&
+          session.restorable !== false &&
+          from === session.from &&
+          to === session.from &&
+          ![...text].every((character) =>
+            INLINE_SYNTAX_INPUT_CHARS.has(character)
+          )
+        ) {
+          closeMarkSource(view);
+          return false;
+        }
         if (
           session &&
           from === session.to &&
