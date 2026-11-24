@@ -481,10 +481,9 @@ fn reveal_authorized_path(app: tauri::AppHandle, path: String) -> Result<(), Str
 
 /// Persist editor text without ever truncating the destination in place.
 ///
-/// The previous version is copied to a sibling `.notemark-bak` file, the new
-/// content is flushed to a sibling temporary file, then the temporary file is
-/// atomically moved over the destination. Windows uses MoveFileExW so the
-/// replacement also flushes metadata (`MOVEFILE_WRITE_THROUGH`).
+/// The new content is flushed to a sibling temporary file, then atomically
+/// moved over the destination. Windows uses MoveFileExW so the replacement
+/// also flushes metadata (`MOVEFILE_WRITE_THROUGH`).
 #[tauri::command]
 fn atomic_write_text(app: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
   let target = PathBuf::from(&path);
@@ -494,16 +493,11 @@ fn atomic_write_text(app: tauri::AppHandle, path: String, content: String) -> Re
   if !is_path_allowed(&app, &target) {
     return Err("保存路径不在当前文档授权范围内".to_string());
   }
-  write_file_atomically(&target, content.as_bytes(), true)
+  write_file_atomically(&target, content.as_bytes())
 }
 
 #[tauri::command]
-fn atomic_write_file(
-  app: tauri::AppHandle,
-  path: String,
-  data: Vec<u8>,
-  backup: Option<bool>,
-) -> Result<(), String> {
+fn atomic_write_file(app: tauri::AppHandle, path: String, data: Vec<u8>) -> Result<(), String> {
   let target = PathBuf::from(&path);
   if !target.is_absolute() {
     return Err("保存路径必须是绝对路径".to_string());
@@ -511,14 +505,10 @@ fn atomic_write_file(
   if !is_path_allowed(&app, &target) {
     return Err("保存路径不在当前文档授权范围内".to_string());
   }
-  write_file_atomically(&target, &data, backup.unwrap_or(false))
+  write_file_atomically(&target, &data)
 }
 
-fn write_file_atomically(
-  target: &std::path::Path,
-  content: &[u8],
-  create_backup: bool,
-) -> Result<(), String> {
+fn write_file_atomically(target: &std::path::Path, content: &[u8]) -> Result<(), String> {
   let parent = target
     .parent()
     .ok_or_else(|| "无法取得保存目录".to_string())?;
@@ -535,12 +525,6 @@ fn write_file_atomically(
     ".{file_name}.notemark-{}-{nonce}.tmp",
     std::process::id()
   ));
-
-  if create_backup && target.is_file() {
-    let backup_path = parent.join(format!(".{file_name}.notemark-bak"));
-    std::fs::copy(target, &backup_path)
-      .map_err(|e| format!("无法创建上一版备份 {}: {e}", backup_path.to_string_lossy()))?;
-  }
 
   let write_result = (|| -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
@@ -1132,20 +1116,17 @@ mod tests {
   }
 
   #[test]
-  fn atomic_write_creates_and_replaces_with_backup() {
+  fn atomic_write_replaces_without_document_backup() {
     let dir = unique_temp_dir("atomic-write");
     std::fs::create_dir_all(&dir).unwrap();
     let target = dir.join("note.md");
 
-    write_file_atomically(&target, b"first", true).unwrap();
+    write_file_atomically(&target, b"first").unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
 
-    write_file_atomically(&target, b"second", true).unwrap();
+    write_file_atomically(&target, b"second").unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
-    assert_eq!(
-      std::fs::read_to_string(dir.join(".note.md.notemark-bak")).unwrap(),
-      "first"
-    );
+    assert!(!dir.join(".note.md.notemark-bak").exists());
 
     let _ = std::fs::remove_dir_all(dir);
   }
@@ -1156,8 +1137,8 @@ mod tests {
     std::fs::create_dir_all(&dir).unwrap();
     let target = dir.join("export.html");
 
-    write_file_atomically(&target, b"v1", false).unwrap();
-    write_file_atomically(&target, b"v2", false).unwrap();
+    write_file_atomically(&target, b"v1").unwrap();
+    write_file_atomically(&target, b"v2").unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"v2");
     assert!(!dir.join(".export.html.notemark-bak").exists());
 

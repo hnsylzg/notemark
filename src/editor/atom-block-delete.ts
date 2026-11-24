@@ -17,10 +17,11 @@
 import { $prose } from "@milkdown/utils";
 import {
   Plugin,
+  Selection,
   type Command,
 } from "@milkdown/prose/state";
 import { GapCursor } from "@milkdown/prose/gapcursor";
-import type { Node as PMNode } from "@milkdown/prose/model";
+import { Fragment, type Node as PMNode } from "@milkdown/prose/model";
 import { EXITABLE_BLOCKS } from "./block-exit";
 
 /**
@@ -46,7 +47,9 @@ function isDeletableAtomBlock(node: PMNode): boolean {
  *   必须去 $from.node(depth - 1) 里取、用 $from.index(depth - 1) 取索引。
  *   直接在 $from.parent 里找只能拿到文本节点，永远匹配不到目标块。
  */
-function deleteAdjacentAtomBlock(dir: "backward" | "forward"): Command {
+export function deleteAdjacentAtomBlock(
+  dir: "backward" | "forward"
+): Command {
   return (state, dispatch) => {
     const sel = state.selection;
     const { empty, $from } = sel;
@@ -74,6 +77,26 @@ function deleteAdjacentAtomBlock(dir: "backward" | "forward"): Command {
     const d = $from.depth;
     const container = $from.node(d - 1); // 兄弟节点所在的容器
     const idx = $from.index(d - 1); // 当前块在容器中的索引
+
+    // 空段落上的 Delete 应删除空段落本身，不能越过它删除下方的
+    // hr/toc/htmlBlock 等原子块。Backspace 仍交给后续原子块逻辑。
+    if (
+      dir === "forward" &&
+      $from.parent.isTextblock &&
+      $from.parent.content.size === 0 &&
+      container.canReplace(idx, idx + 1, Fragment.empty)
+    ) {
+      if (dispatch) {
+        const start = $from.before(d);
+        const tr = state.tr.delete(start, $from.after(d));
+        tr.setSelection(
+          Selection.near(tr.doc.resolve(Math.min(start, tr.doc.content.size)))
+        );
+        dispatch(tr.scrollIntoView());
+      }
+      return true;
+    }
+
     let target: PMNode | null = null;
     let start = -1;
 

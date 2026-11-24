@@ -1,7 +1,7 @@
 import { editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { describe, expect, it, vi } from "vitest";
-import { createEditor, setMarkdown } from "./index";
+import { createEditor, getMarkdown, setMarkdown } from "./index";
 
 class StubObserver {
   observe(): void {}
@@ -66,6 +66,43 @@ describe("format menu with the application schema", () => {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
       );
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("does not serialize an inserted empty paragraph as a br placeholder", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "first\n\nsecond");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      ) as EditorView;
+      expect(view.state.doc.childCount).toBe(2);
+      const first = view.state.doc.firstChild!;
+
+      view.dispatch(
+        view.state.tr.insert(
+          first.nodeSize,
+          view.state.schema.nodes.paragraph.create()
+        )
+      );
+
+      const markdown = getMarkdown(editor);
+      expect(markdown).not.toContain("<br");
+      expect(markdown).toContain("first");
+      expect(markdown).toContain("second");
+
+      setMarkdown(editor, markdown);
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+      expect(view.state.doc.child(1).textContent).toBe("");
+    } finally {
       await editor.destroy();
       root.remove();
     }

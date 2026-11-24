@@ -17,6 +17,7 @@ import {
   inlineCodeInputRule,
   inlineCodeSchema,
   linkSchema,
+  remarkPreserveEmptyLinePlugin,
   strongInputRule,
 } from "@milkdown/kit/preset/commonmark";
 import {
@@ -69,6 +70,7 @@ import {
 import { strongParensPlugins } from "./strong-parens";
 import { persistentCodeBlockPlugins } from "./code-block-view";
 import { visualTabPlugin } from "./visual-tab";
+import { emptyParagraphPlugins } from "./empty-paragraph";
 // gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
 // 前后（默认未注册，原子块周围放不进光标，也无法用箭头键跨越）。
 import { $prose } from "@milkdown/utils";
@@ -110,6 +112,8 @@ const commonmarkPlugins = commonmark.filter(
     plugin !== emphasisStarInputRule &&
     plugin !== emphasisUnderscoreInputRule &&
     plugin !== inlineCodeInputRule &&
+    plugin !== remarkPreserveEmptyLinePlugin.options &&
+    plugin !== remarkPreserveEmptyLinePlugin.plugin &&
     plugin !== strongInputRule
 );
 
@@ -193,6 +197,7 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     blockExitPlugin,
     // 代码块在文末时，鼠标点其下方空白自动补空段落并进入（对齐原子块的点出来行为）
     codeBlockExitClickPlugin,
+    ...emptyParagraphPlugins,
     ...commonmarkPlugins,
     ...linkExclusiveSchema,
     // 行内代码改为包含型（点尾部能继续输入），须在 commonmark 之后注册以覆盖

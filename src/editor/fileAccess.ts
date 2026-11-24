@@ -27,7 +27,6 @@ export async function grantRootAccess(path: string): Promise<void> {
  * Write through the Rust command that:
  * - validates the target against the dynamic fs scope;
  * - writes and fsyncs a sibling temporary file;
- * - keeps one `.notemark-bak` copy of the previous file;
  * - replaces the target atomically (MoveFileExW on Windows).
  */
 export async function writeTextFileAtomic(
@@ -41,11 +40,10 @@ export async function writeTextFileAtomic(
   await invoke("atomic_write_text", { path, content });
 }
 
-/** Atomically write binary or export data. Documents use the backup variant above. */
+/** Atomically write binary or export data. */
 export async function writeBytesAtomic(
   path: string,
-  data: Uint8Array,
-  backup = false
+  data: Uint8Array
 ): Promise<void> {
   if (!("__TAURI_INTERNALS__" in window)) {
     throw new Error("原子保存仅在 NoteMark 桌面端可用。");
@@ -54,7 +52,6 @@ export async function writeBytesAtomic(
   await invoke("atomic_write_file", {
     path,
     data: Array.from(data),
-    backup,
   });
 }
 
