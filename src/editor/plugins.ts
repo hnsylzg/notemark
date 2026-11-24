@@ -68,6 +68,7 @@ import {
 } from "./link-reference-definition";
 import { strongParensPlugins } from "./strong-parens";
 import { persistentCodeBlockPlugins } from "./code-block-view";
+import { visualTabPlugin } from "./visual-tab";
 // gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
 // 前后（默认未注册，原子块周围放不进光标，也无法用箭头键跨越）。
 import { $prose } from "@milkdown/utils";
@@ -249,5 +250,8 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     ...linkReferenceDefinitionPlugins,
     ...strongParensPlugins,
     ...persistentCodeBlockPlugins,
+    // Lowest-priority visual-editor Tab fallback. List/table keymaps run first;
+    // ordinary paragraphs use the same tab/outdent semantics as source editors.
+    visualTabPlugin,
   ];
 }

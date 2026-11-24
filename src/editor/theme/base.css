@@ -18,6 +18,7 @@
   font-family: var(--mt-font-sans);
   font-size: var(--mt-font-size-base); /* 16px */
   line-height: var(--mt-line-height-base); /* 1.75 */
+  tab-size: var(--mt-tab-size);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -34,6 +35,11 @@
 
 /* 真正承载文本、由 ProseMirror 管理的编辑区同样撑满 .editor：
    短文档时整片可见区都是 I 型光标、焦点不丢；长文档正常滚动。 */
+:where(.milkdown .editor) textarea,
+:where(.milkdown .editor) .cm-content {
+  tab-size: var(--mt-tab-size);
+}
+
 .milkdown .editor .ProseMirror {
   min-height: 100%;
 }

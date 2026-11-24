@@ -17,6 +17,7 @@ import { getAllCellsInTable } from "@milkdown/kit/preset/gfm";
 import { describe, expect, it, vi } from "vitest";
 import {
   contentEditableSourceCopyText,
+  canInsertCommandAt,
   createFormatMenuProsePlugin,
   htmlBlockVisibleText,
   htmlSourceCopyText,
@@ -959,7 +960,7 @@ describe("right-click selection preservation", () => {
 
     try {
       const target = view.dom.querySelector(".milkdown-math-block")!;
-      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 0, inside: -1 });
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 1, inside: -1 });
       target.dispatchEvent(
         new MouseEvent("contextmenu", {
           bubbles: true,
@@ -1658,6 +1659,490 @@ describe("HTML source context menu", () => {
 });
 
 describe("code block context menu", () => {
+  it("disables block insertion where the schema cannot host it", () => {
+    const insertSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        code_block: {
+          group: "block",
+          content: "text*",
+          attrs: { language: { default: "" } },
+          toDOM: () => ["pre", 0],
+        },
+        math_block: {
+          group: "block",
+          atom: true,
+          toDOM: () => ["div", { class: "milkdown-math-block" }],
+        },
+        math_inline: {
+          group: "inline",
+          inline: true,
+          atom: true,
+          toDOM: () => ["span", { class: "milkdown-math-inline" }],
+        },
+        yaml: {
+          group: "block",
+          atom: true,
+          attrs: { value: { default: "" } },
+          toDOM: () => ["div"],
+        },
+        toc: {
+          group: "block",
+          atom: true,
+          toDOM: () => ["div", { class: "mt-toc" }],
+        },
+        table: {
+          group: "block",
+          content: "table_row+",
+          toDOM: () => ["table", 0],
+        },
+        table_row: {
+          content: "table_cell+",
+          toDOM: () => ["tr", 0],
+        },
+        table_cell: {
+          content: "paragraph+",
+          toDOM: () => ["td", 0],
+        },
+        text: { group: "inline" },
+      },
+    });
+    const codeDoc = insertSchema.node("doc", null, [
+      insertSchema.node("code_block"),
+    ]);
+    const codeHost = document.createElement("div");
+    const codeView = new EditorView(codeHost, {
+      state: EditorState.create({ schema: insertSchema, doc: codeDoc }),
+    });
+    const mathDoc = insertSchema.node("doc", null, [
+      insertSchema.node("math_block"),
+    ]);
+    const mathHost = document.createElement("div");
+    const mathView = new EditorView(mathHost, {
+      state: EditorState.create({ schema: insertSchema, doc: mathDoc }),
+    });
+    const paragraphDoc = insertSchema.node("doc", null, [
+      insertSchema.node("paragraph", null, insertSchema.text("body")),
+    ]);
+    const paragraphHost = document.createElement("div");
+    const paragraphView = new EditorView(paragraphHost, {
+      state: EditorState.create({
+        schema: insertSchema,
+        doc: paragraphDoc,
+      }),
+    });
+    const inlineDoc = insertSchema.node("doc", null, [
+      insertSchema.node("paragraph", null, [
+        insertSchema.node("math_inline"),
+      ]),
+    ]);
+    const inlineHost = document.createElement("div");
+    const inlineView = new EditorView(inlineHost, {
+      state: EditorState.create({ schema: insertSchema, doc: inlineDoc }),
+    });
+    const yamlDoc = insertSchema.node("doc", null, [
+      insertSchema.node("yaml"),
+      insertSchema.node("paragraph"),
+    ]);
+    const yamlHost = document.createElement("div");
+    const yamlView = new EditorView(yamlHost, {
+      state: EditorState.create({ schema: insertSchema, doc: yamlDoc }),
+    });
+    const tocDoc = insertSchema.node("doc", null, [
+      insertSchema.node("toc"),
+      insertSchema.node("paragraph"),
+    ]);
+    const tocHost = document.createElement("div");
+    const tocView = new EditorView(tocHost, {
+      state: EditorState.create({ schema: insertSchema, doc: tocDoc }),
+    });
+    const tableDoc = insertSchema.node("doc", null, [
+      insertSchema.node("table", null, [
+        insertSchema.node("table_row", null, [
+          insertSchema.node("table_cell", null, [
+            insertSchema.node("paragraph", null, insertSchema.text("cell")),
+          ]),
+        ]),
+      ]),
+    ]);
+    const tableHost = document.createElement("div");
+    const tableView = new EditorView(tableHost, {
+      state: EditorState.create({ schema: insertSchema, doc: tableDoc }),
+    });
+
+    try {
+      expect(canInsertCommandAt(codeView, "code", 0)).toBe(false);
+      expect(canInsertCommandAt(codeView, "image", 0)).toBe(false);
+      expect(canInsertCommandAt(mathView, "math", 0)).toBe(false);
+      expect(canInsertCommandAt(mathView, "image", 0)).toBe(false);
+      expect(canInsertCommandAt(paragraphView, "code", 1)).toBe(true);
+      expect(canInsertCommandAt(inlineView, "code", 1)).toBe(true);
+      expect(canInsertCommandAt(yamlView, "frontmatter", 1)).toBe(false);
+      expect(canInsertCommandAt(yamlView, "image", 0)).toBe(false);
+      expect(canInsertCommandAt(yamlView, "code", 0)).toBe(false);
+      expect(canInsertCommandAt(tocView, "image", 0)).toBe(false);
+      expect(canInsertCommandAt(tocView, "code", 0)).toBe(false);
+      expect(canInsertCommandAt(tableView, "code", 4)).toBe(false);
+    } finally {
+      codeView.destroy();
+      mathView.destroy();
+      paragraphView.destroy();
+      inlineView.destroy();
+      yamlView.destroy();
+      tocView.destroy();
+      tableView.destroy();
+    }
+  });
+
+  it("disables only paragraph-above insertion on Front Matter", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("yaml", { value: "title: test" }),
+      schema.node("paragraph", null, schema.text("body")),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const target = view.dom.querySelector<HTMLElement>(".mt-frontmatter")!;
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 1, inside: -1 });
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+      const item = (label: string) =>
+        Array.from(
+          document.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+
+      expect(item("图像")).toBeUndefined();
+      expect(item("脚注")).toBeUndefined();
+      expect(item("代码块")).toBeUndefined();
+      expect(item("段落（上方）")?.disabled).toBe(true);
+      expect(item("段落（下方）")?.disabled).toBe(false);
+      item("段落（下方）")!.click();
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(0).type.name).toBe("yaml");
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("enables paragraph insertion around a table of contents", () => {
+    const tocSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        toc: {
+          group: "block",
+          atom: true,
+          toDOM: () => ["div", { class: "mt-toc" }],
+        },
+        text: { group: "inline" },
+      },
+    });
+    const doc = tocSchema.node("doc", null, [
+      tocSchema.node("toc"),
+      tocSchema.node("paragraph", null, tocSchema.text("body")),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: tocSchema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const target = view.dom.querySelector<HTMLElement>(".mt-toc")!;
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 0, inside: -1 });
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+      const item = (label: string) =>
+        Array.from(
+          document.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+
+      expect(item("图像")).toBeUndefined();
+      expect(item("脚注")).toBeUndefined();
+      expect(item("代码块")).toBeUndefined();
+      expect(item("段落（上方）")?.disabled).toBe(false);
+      expect(item("段落（下方）")?.disabled).toBe(false);
+      item("段落（上方）")!.click();
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(0).type.name).toBe("paragraph");
+      expect(view.state.doc.child(1).type.name).toBe("toc");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("enables paragraph insertion around a code block", () => {
+    const codeSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        code_block: {
+          group: "block",
+          content: "text*",
+          attrs: { language: { default: "" } },
+          toDOM: () => [
+            "div",
+            { class: "milkdown-code-block" },
+            ["pre", { class: "milkdown-code-block-placeholder" }, 0],
+          ],
+        },
+        text: { group: "inline" },
+      },
+    });
+    const doc = codeSchema.node("doc", null, [
+      codeSchema.node(
+        "code_block",
+        { language: "javascript" },
+        codeSchema.text("keep()")
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: codeSchema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const target = view.dom.querySelector(".milkdown-code-block")!;
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 1, inside: -1 });
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+      const insert = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          ".mt-context-menu__item"
+        )
+      ).find(
+        (item) =>
+          item.querySelector(".mt-context-menu__label")?.textContent ===
+          "代码块"
+      );
+      const paragraph = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          ".mt-context-menu__item"
+        )
+      ).find(
+        (item) =>
+          item.querySelector(".mt-context-menu__label")?.textContent ===
+          "段落（下方）"
+      );
+      const paragraphBefore = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          ".mt-context-menu__item"
+        )
+      ).find(
+        (item) =>
+          item.querySelector(".mt-context-menu__label")?.textContent ===
+          "段落（上方）"
+      );
+      expect(insert).toBeUndefined();
+      expect(paragraph?.disabled).toBe(false);
+      expect(paragraphBefore?.disabled).toBe(false);
+      expect(view.state.doc.childCount).toBe(1);
+      expect(view.state.doc.child(0).attrs.language).toBe("javascript");
+      expect(view.state.doc.child(0).textContent).toBe("keep()");
+      paragraph!.click();
+      expect(view.state.doc.childCount).toBe(2);
+      expect(view.state.doc.child(0).type.name).toBe("code_block");
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("enables paragraph insertion around a math block", () => {
+    const doc = schema.node("doc", null, [schema.node("mathBlock")]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const target = view.dom.querySelector(".milkdown-math-block")!;
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 1, inside: -1 });
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+
+      item("插入")?.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(".mt-context-menu__submenu")
+      ).find((panel) => !panel.hidden && item("段落（下方）", panel));
+      expect(insertPanel).toBeDefined();
+      const insertItem = (label: string) => item(label, insertPanel);
+
+      expect(insertItem("图像")).toBeUndefined();
+      expect(insertItem("脚注")).toBeUndefined();
+      expect(insertItem("链接引用")).toBeUndefined();
+      expect(insertItem("水平分割线")).toBeUndefined();
+      expect(insertItem("表格")).toBeUndefined();
+      expect(insertItem("代码块")).toBeUndefined();
+      expect(insertItem("公式块")).toBeUndefined();
+      expect(insertItem("内容目录")).toBeUndefined();
+      expect(insertItem("YAML Front Matter")).toBeUndefined();
+      expect(insertItem("段落（上方）")?.disabled).toBe(false);
+      expect(insertItem("段落（下方）")?.disabled).toBe(false);
+      insertItem("段落（下方）")!.click();
+      expect(view.state.doc.childCount).toBe(2);
+      expect(view.state.doc.child(0).type.name).toBe("mathBlock");
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("enables paragraph insertion around a normal text block", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, schema.text("body")),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      vi.spyOn(view, "posAtCoords").mockReturnValue({ pos: 2, inside: -1 });
+      view.dom.querySelector("p")!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+
+      item("插入")?.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(".mt-context-menu__submenu")
+      ).find((panel) => !panel.hidden && item("段落（下方）", panel));
+      expect(insertPanel).toBeDefined();
+      const paragraphBefore = item("段落（上方）", insertPanel)!;
+      const paragraphAfter = item("段落（下方）", insertPanel)!;
+      expect(paragraphBefore.disabled).toBe(false);
+      expect(paragraphAfter.disabled).toBe(false);
+
+      paragraphAfter.click();
+      expect(view.state.doc.childCount).toBe(2);
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("copies the quick-copy source with Markdown fences", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", {
@@ -1805,6 +2290,60 @@ describe("code block context menu", () => {
 });
 
 describe("table quick copy", () => {
+  it("hides footnote and link-reference insertion inside table cells", () => {
+    const { view, host } = createTableView();
+
+    try {
+      const table = view.state.doc.firstChild!;
+      const map = TableMap.get(table);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: map.map[0] + 3,
+        inside: -1,
+      });
+      view.dom.querySelector("td")!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        })
+      );
+
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+
+      item("插入")?.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(".mt-context-menu__submenu")
+      ).find((panel) => !panel.hidden && item("段落（下方）", panel));
+      expect(insertPanel).toBeDefined();
+      expect(item("脚注", insertPanel)).toBeUndefined();
+      expect(item("链接引用", insertPanel)).toBeUndefined();
+      const paragraphBefore = item("段落（上方）", insertPanel)!;
+      const paragraphAfter = item("段落（下方）", insertPanel)!;
+      expect(paragraphBefore.disabled).toBe(false);
+      expect(paragraphAfter.disabled).toBe(false);
+      paragraphAfter.click();
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(0).type.name).toBe("table");
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it.each(["粘贴为纯文本", "粘贴"])(
     "strips the clipboard trailing newline when using %s in a table",
     async (label) => {

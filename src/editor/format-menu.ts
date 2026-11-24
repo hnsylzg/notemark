@@ -234,6 +234,7 @@ let menuHandle: ContextMenuHandle | null = null;
 let activeView: EditorView | null = null;
 /** 当前右键目标是否为公式；用于生成对象专属的剪贴板子菜单。 */
 let activeMath: HTMLElement | null = null;
+let activeInsertContextBlock: string | null = null;
 /** 菜单统一使用的合法光标位置（已规范到鼠标所在文本块内部） */
 let hitPos = -1;
 let hitSourceControl: TextSourceControl | null = null;
@@ -263,6 +264,7 @@ const isTauri =
 function resetMenuState(): void {
   activeView = null;
   activeMath = null;
+  activeInsertContextBlock = null;
   hitPos = -1;
   hitSourceControl = null;
   activeTextblock = null;
@@ -962,6 +964,25 @@ function resolveBlockNodeAt(
     if (candidate < 0 || candidate > view.state.doc.content.size) continue;
     const node = view.state.doc.nodeAt(candidate);
     if (node?.isBlock) return { node, pos: candidate };
+  }
+  return null;
+}
+
+function resolveAncestorBlockNodeAt(
+  view: EditorView,
+  pos: number,
+  nodeName: string
+): { node: PMNode; pos: number } | null {
+  const safe = Math.max(
+    0,
+    Math.min(pos, view.state.doc.content.size)
+  );
+  const $pos = view.state.doc.resolve(safe);
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const node = $pos.node(depth);
+    if (node.type.name === nodeName) {
+      return { node, pos: $pos.before(depth) };
+    }
   }
   return null;
 }
@@ -1735,11 +1756,157 @@ function applyHeadingLevel(level: 1 | 2 | 3 | 4 | 5 | 6): void {
   view.focus();
 }
 
+const BLOCK_INSERT_TYPES: Partial<
+  Record<EditorInsertCommand, string>
+> = {
+  hr: "hr",
+  table: "table",
+  code: "code_block",
+  math: "math_block",
+  toc: "toc",
+  frontmatter: "yaml",
+};
+
+const PARAGRAPH_ONLY_INSERT_CONTEXT_BLOCKS = new Set([
+  "yaml",
+  "toc",
+  "code_block",
+  "math_block",
+]);
+
+const TABLE_CELL_ROLES = new Set(["cell", "header_cell"]);
+
+function isParagraphOnlyInsertContextBlock(
+  blockName: string | null | undefined
+): boolean {
+  return !!blockName && PARAGRAPH_ONLY_INSERT_CONTEXT_BLOCKS.has(blockName);
+}
+
+function isInsideTableCell(view: EditorView, pos: number): boolean {
+  const safe = Math.max(
+    0,
+    Math.min(pos, view.state.doc.content.size)
+  );
+  const $pos = view.state.doc.resolve(safe);
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const tableRole = $pos.node(depth).type.spec.tableRole;
+    if (typeof tableRole === "string" && TABLE_CELL_ROLES.has(tableRole)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function paragraphInsertionPositionAt(
+  view: EditorView,
+  pos: number,
+  before: boolean,
+  contextBlockName?: string | null
+): number | null {
+  const safe = Math.max(
+    0,
+    Math.min(pos, view.state.doc.content.size)
+  );
+  const block =
+    contextBlockName === "table"
+      ? resolveAncestorBlockNodeAt(view, safe, "table")
+      : resolveBlockNodeAt(view, safe);
+  if (!block) return null;
+
+  const isSpecialContext =
+    isParagraphOnlyInsertContextBlock(contextBlockName);
+  if (contextBlockName === "yaml" && before) return null;
+  if (
+    !isSpecialContext &&
+    contextBlockName !== "table" &&
+    !block.node.isTextblock
+  ) {
+    return null;
+  }
+
+  const paragraphType = view.state.schema.nodes.paragraph;
+  if (!paragraphType) return null;
+  const $block = view.state.doc.resolve(block.pos);
+  const siblingIndex = before ? $block.index() : $block.index() + 1;
+  if (
+    !$block.parent.canReplaceWith(
+      siblingIndex,
+      siblingIndex,
+      paragraphType
+    )
+  ) {
+    return null;
+  }
+  return before ? block.pos : block.pos + block.node.nodeSize;
+}
+
+function canInsertParagraphNearAt(
+  view: EditorView,
+  pos: number,
+  before: boolean,
+  contextBlockName?: string | null
+): boolean {
+  return (
+    paragraphInsertionPositionAt(
+      view,
+      pos,
+      before,
+      contextBlockName
+    ) !== null
+  );
+}
+
+export function canInsertCommandAt(
+  view: EditorView,
+  id: EditorInsertCommand,
+  pos: number,
+  contextBlockName?: string | null
+): boolean {
+  const safe = Math.max(
+    0,
+    Math.min(pos, view.state.doc.content.size)
+  );
+  const block = resolveBlockNodeAt(view, safe);
+  const blockName = contextBlockName ?? block?.node.type.name;
+  if (!block || isParagraphOnlyInsertContextBlock(blockName)) {
+    return false;
+  }
+  const $hit = view.state.doc.resolve(safe);
+  if (id === "image") {
+    const imageType = view.state.schema.nodes.image;
+    return imageType
+      ? $hit.parent.canReplaceWith(
+          $hit.index(),
+          $hit.index(),
+          imageType
+        )
+      : false;
+  }
+  if (id === "frontmatter") {
+    return view.state.doc.firstChild?.type.name !== "yaml";
+  }
+  const typeName = BLOCK_INSERT_TYPES[id];
+  const type = typeName ? view.state.schema.nodes[typeName] : null;
+  if (!type) return false;
+
+  if (block.node.isTextblock) {
+    const $block = view.state.doc.resolve(block.pos);
+    return $block.parent.canReplaceWith(
+      $block.index(),
+      $block.index(),
+      type
+    );
+  }
+  return block.node.type.contentMatch.matchType(type) != null;
+}
+
 function runInsertCommand(id: EditorInsertCommand): void {
   const view = activeView;
   const pos = hitPos;
+  const contextBlockName = activeInsertContextBlock;
   closeMenu();
   if (!view || pos < 0) return;
+  if (!canInsertCommandAt(view, id, pos, contextBlockName)) return;
   view.focus();
   placeCaretAt(view, pos);
   runEditorCommand(view, id);
@@ -1748,18 +1915,20 @@ function runInsertCommand(id: EditorInsertCommand): void {
 function insertParagraphNear(before: boolean): void {
   const view = activeView;
   const pos = hitPos;
+  const contextBlockName = activeInsertContextBlock;
   closeMenu();
   if (!view || pos < 0) return;
+  const insertPos = paragraphInsertionPositionAt(
+    view,
+    pos,
+    before,
+    contextBlockName
+  );
+  if (insertPos === null) return;
   view.focus();
-  if (!hitOnSelection(view, pos)) placeCaretAt(view, pos);
 
   const paragraph = view.state.schema.nodes.paragraph;
-  const { $from } = view.state.selection;
-  let depth = $from.depth;
-  while (depth > 0 && !$from.node(depth).isTextblock) depth -= 1;
-  if (depth === 0) return;
-
-  const insertPos = before ? $from.before(depth) : $from.after(depth);
+  if (!paragraph) return;
   let tr = view.state.tr.insert(insertPos, paragraph.create());
   tr = tr
     .setSelection(TextSelection.near(tr.doc.resolve(insertPos + 1)))
@@ -1859,6 +2028,18 @@ function openMenu(
   closeMenu();
   activeView = view;
   activeMath = math ?? inlineMath;
+  activeInsertContextBlock =
+    tableCell
+      ? "table"
+      : objectMenu?.kind === "frontmatter"
+      ? "yaml"
+      : objectMenu?.kind === "toc"
+        ? "toc"
+        : codeBlock
+          ? "code_block"
+          : math?.classList.contains("milkdown-math-block")
+            ? "math_block"
+            : null;
   hitPos = pos;
   hitSourceControl = sourceControl;
   activeTextblock = textblock;
@@ -2860,45 +3041,88 @@ function openMenu(
     }
   }
 
+  const insertContextBlock =
+    activeInsertContextBlock ??
+    resolveBlockNodeAt(view, pos)?.node.type.name;
+  const canInsert = (id: EditorInsertCommand): boolean =>
+    canInsertCommandAt(view, id, pos, insertContextBlock);
+  const insertContextOnlyParagraph =
+    isParagraphOnlyInsertContextBlock(insertContextBlock);
+  const insertContextAllowsReferenceInsertions =
+    !insertContextOnlyParagraph && !isInsideTableCell(view, pos);
   const inserts = addSubmenu("", "插入");
-  addTextAction(inserts, "图像", () => runInsertCommand("image"), {
-    shortcut: "Ctrl+Shift+I",
-  });
-  addSeparator(inserts);
-  addTextAction(inserts, "脚注", () => runFootnote());
-  addTextAction(inserts, "链接引用", () => {
-    closeMenu();
-    closeActiveMarkSource(view);
-    // A collapsed inline source session removes temporary delimiters and
-    // shifts positions. Re-hit the original pointer coordinates so a line-start
-    // insertion still lands before the paragraph.
-    const current = view.posAtCoords({
-      left: clientX,
-      top: clientY,
+  let hasInsertItems = false;
+  const addInsertSeparator = (): void => {
+    const last = inserts.lastElementChild;
+    if (!last || last.classList.contains("mt-context-menu__sep")) return;
+    addSeparator(inserts);
+  };
+  if (canInsert("image")) {
+    addTextAction(inserts, "图像", () => runInsertCommand("image"), {
+      shortcut: "Ctrl+Shift+I",
     });
-    const insertionPos = current?.pos ?? pos;
-    if (!hitOnSelection(view, insertionPos)) {
-      placeCaretAt(view, insertionPos, true);
-    }
-    insertLinkReferenceDefinition(view);
-  });
-  addTextAction(inserts, "水平分割线", () => runInsertCommand("hr"));
-  addTextAction(inserts, "表格", () => runInsertCommand("table"), {
-    shortcut: "Ctrl+T",
-  });
-  addTextAction(inserts, "代码块", () => runInsertCommand("code"), {
-    shortcut: "Ctrl+Shift+K",
-  });
-  addTextAction(inserts, "公式块", () => runInsertCommand("math"), {
-    shortcut: "Ctrl+Shift+M",
-  });
-  addTextAction(inserts, "内容目录", () => runInsertCommand("toc"));
-  addTextAction(inserts, "YAML Front Matter", () =>
-    runInsertCommand("frontmatter")
+    hasInsertItems = true;
+  }
+  if (insertContextAllowsReferenceInsertions) {
+    addInsertSeparator();
+    addTextAction(inserts, "脚注", () => runFootnote());
+    addTextAction(inserts, "链接引用", () => {
+      closeMenu();
+      closeActiveMarkSource(view);
+      // A collapsed inline source session removes temporary delimiters and
+      // shifts positions. Re-hit the original pointer coordinates so a line-start
+      // insertion still lands before the paragraph.
+      const current = view.posAtCoords({
+        left: clientX,
+        top: clientY,
+      });
+      const insertionPos = current?.pos ?? pos;
+      if (!hitOnSelection(view, insertionPos)) {
+        placeCaretAt(view, insertionPos, true);
+      }
+      insertLinkReferenceDefinition(view);
+    });
+    hasInsertItems = true;
+  }
+  let hasBlockInsertItems = false;
+  const addBlockInsert = (
+    id: EditorInsertCommand,
+    label: string,
+    shortcut?: string
+  ): void => {
+    if (!canInsert(id)) return;
+    if (!hasBlockInsertItems) addInsertSeparator();
+    addTextAction(inserts, label, () => runInsertCommand(id), {
+      shortcut,
+    });
+    hasBlockInsertItems = true;
+    hasInsertItems = true;
+  };
+  addBlockInsert("hr", "水平分割线");
+  addBlockInsert("table", "表格", "Ctrl+T");
+  addBlockInsert("code", "代码块", "Ctrl+Shift+K");
+  addBlockInsert("math", "公式块", "Ctrl+Shift+M");
+  addBlockInsert("toc", "内容目录");
+  addBlockInsert("frontmatter", "YAML Front Matter");
+  if (hasInsertItems) addInsertSeparator();
+  const canInsertParagraphBefore = canInsertParagraphNearAt(
+    view,
+    pos,
+    true,
+    insertContextBlock
   );
-  addSeparator(inserts);
-  addTextAction(inserts, "段落（上方）", () => insertParagraphNear(true));
-  addTextAction(inserts, "段落（下方）", () => insertParagraphNear(false));
+  const canInsertParagraphAfter = canInsertParagraphNearAt(
+    view,
+    pos,
+    false,
+    insertContextBlock
+  );
+  addTextAction(inserts, "段落（上方）", () => insertParagraphNear(true), {
+    disabled: !canInsertParagraphBefore,
+  });
+  addTextAction(inserts, "段落（下方）", () => insertParagraphNear(false), {
+    disabled: !canInsertParagraphAfter,
+  });
   }
 
   finishMenu();

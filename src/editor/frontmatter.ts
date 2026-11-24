@@ -22,6 +22,7 @@ import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import type { RemarkPluginRaw } from "@milkdown/transformer";
 import remarkFrontmatter from "remark-frontmatter";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
+import { handleSourceKeydown } from "./source-tab";
 
 /** remark-frontmatter 配置：yaml 块、`---` 分隔（index.ts 重建序列化器时复用，须保持一致） */
 export const FRONTMATTER_OPTIONS = { type: "yaml", marker: "-" };
@@ -194,6 +195,7 @@ export const createFrontmatterNodeView: NodeViewConstructor = (
     // 否则会被编辑器的 keymap 拦截、导致 textarea 内退格等按键失效；
     // 带修饰键（Ctrl / Cmd / Alt，如 Ctrl+S 保存、Ctrl+C/V）则放行给全局快捷键
     const onKeyDown = (e: KeyboardEvent) => {
+      if (handleSourceKeydown(e, body)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         finish(false, true);

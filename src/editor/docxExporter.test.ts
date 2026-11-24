@@ -950,6 +950,7 @@ describe("Word Mermaid diagrams", () => {
         name.startsWith("word/media/")
       );
 
+      expect(documentXml).toContain('<w:jc w:val="center"/>');
       expect(media.some((name) => name.endsWith(".svg"))).toBe(true);
       expect(media.some((name) => name.endsWith(".png"))).toBe(true);
       expect(documentXml).toContain("<asvg:svgBlip");
@@ -1052,6 +1053,7 @@ describe("Word Mermaid diagrams", () => {
         name.startsWith("word/media/")
       );
 
+      expect(documentXml).toContain('<w:jc w:val="center"/>');
       expect(media.some((name) => name.endsWith(".svg"))).toBe(true);
       expect(media.some((name) => name.endsWith(".png"))).toBe(true);
       expect(documentXml).toContain("<asvg:svgBlip");
@@ -1226,6 +1228,7 @@ describe("Word Mermaid diagrams", () => {
       const documentXml = await zip
         .file("word/document.xml")!
         .async("string");
+      expect(documentXml).toContain('<w:jc w:val="center"/>');
       const svgName = Object.keys(zip.files).find(
         (name) => name.startsWith("word/media/") && name.endsWith(".svg")
       );

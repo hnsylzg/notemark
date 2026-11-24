@@ -291,6 +291,7 @@
 :where(.milkdown .editor) .cm-editor .cm-content {
   padding: 0;
   caret-color: var(--mt-color-primary);
+  tab-size: var(--mt-tab-size);
 }
 
 :where(.milkdown .editor) .cm-editor .cm-line {

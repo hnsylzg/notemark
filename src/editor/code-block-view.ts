@@ -34,6 +34,7 @@ import {
   renderMarkmapSvg,
   subscribeMarkmapTheme,
 } from "./markmap-renderer";
+import { applySourceEnter, applySourceTab } from "./source-tab";
 
 type CodeMirrorBlockArgs = ConstructorParameters<typeof CodeMirrorBlock>;
 type CodeMirrorBlockInternals = {
@@ -274,6 +275,8 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
   private readonly handleLanguagePickerKeydown = (
     event: KeyboardEvent
   ): void => {
+    if (this.applyCodeMirrorEnter(event)) return;
+    if (this.applyCodeMirrorTab(event)) return;
     if (event.key === "Escape" && this.diagramSourceOpen) {
       event.preventDefault();
       event.stopPropagation();
@@ -299,6 +302,78 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
       this.selectActiveLanguage();
     }
   };
+
+  private applyCodeMirrorEnter(event: KeyboardEvent): boolean {
+    const target = event.target;
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      !(target instanceof Element) ||
+      !target.closest(".cm-content") ||
+      !this.view.editable
+    ) {
+      return false;
+    }
+
+    const range = this.cm.state.selection.main;
+    const value = this.cm.state.doc.toString();
+    const edit = applySourceEnter(
+      value,
+      range.from,
+      range.to,
+      false
+    );
+    const insert = edit
+      ? edit.value.slice(range.from, edit.selectionStart)
+      : "\n";
+    event.preventDefault();
+    event.stopPropagation();
+    this.cm.dispatch({
+      changes: { from: range.from, to: range.to, insert },
+      selection: { anchor: range.from + insert.length },
+      scrollIntoView: true,
+    });
+    return true;
+  }
+
+  private applyCodeMirrorTab(event: KeyboardEvent): boolean {
+    const target = event.target;
+    if (
+      event.key !== "Tab" ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      !(target instanceof Element) ||
+      !target.closest(".cm-content") ||
+      !this.view.editable
+    ) {
+      return false;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const range = this.cm.state.selection.main;
+    const value = this.cm.state.doc.toString();
+    const edit = applySourceTab(
+      value,
+      range.from,
+      range.to,
+      event.shiftKey
+    );
+    if (edit.value !== value) {
+      this.cm.dispatch({
+        changes: { from: 0, to: value.length, insert: edit.value },
+        selection: {
+          anchor: edit.selectionStart,
+          head: edit.selectionEnd,
+        },
+        scrollIntoView: true,
+      });
+    }
+    return true;
+  }
 
   private readonly handleLanguagePickerInput = (event: Event): void => {
     const target = event.target;

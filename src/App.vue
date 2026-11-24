@@ -120,6 +120,7 @@ import {
   writeClipboardText,
 } from "@/editor/clipboard-text";
 import { closeActiveMarkSource } from "@/editor/mark-source";
+import { handleSourceKeydown } from "@/editor/source-tab";
 
 // 是否处于 Tauri 环境（纯浏览器 vite dev 下不调用 Tauri API）
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -748,6 +749,14 @@ function onSourceInput(e: Event) {
   // 查找栏打开时重算匹配：以光标为锚点，边输入边跟随结果
   if (findOpen.value) syncSourceFind();
   void nextTick(syncSourceGutterScroll);
+}
+
+/** 主窗口源码编辑：Tab 缩进当前行/选区，Shift+Tab 反缩进。 */
+function onSourceKeydown(e: KeyboardEvent) {
+  handleSourceKeydown(
+    e,
+    e.currentTarget as HTMLTextAreaElement
+  );
 }
 
 let sourceContextMenu: ContextMenuHandle | null = null;
@@ -2795,6 +2804,7 @@ onBeforeUnmount(() => {
               spellcheck="false"
               wrap="soft"
               @input="onSourceInput"
+              @keydown="onSourceKeydown"
               @scroll="syncSourceGutterScroll"
               @contextmenu.prevent="openSourceContextMenu"
             ></textarea>
@@ -3282,6 +3292,7 @@ onBeforeUnmount(() => {
   );
   font-size: 14px;
   line-height: 1.7;
+  tab-size: var(--mt-tab-size);
 }
 
 .mt-source-lines {
@@ -3353,7 +3364,6 @@ onBeforeUnmount(() => {
   background: var(--mt-bg, #ffffff);
   color: var(--mt-fg, #333);
   font: inherit;
-  tab-size: 4;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -19,6 +19,7 @@ import type { RemarkPluginRaw } from "@milkdown/transformer";
 import { $nodeSchema, $remark, $view } from "@milkdown/kit/utils";
 import { sanitizeHtmlBlock } from "./html-view";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
+import { handleSourceKeydown } from "./source-tab";
 
 export const HTML_SOURCE_CONTEXTMENU_EVENT =
   "notemark-html-source-contextmenu";
@@ -213,6 +214,7 @@ export const createHtmlBlockNodeView: NodeViewConstructor = (
     ta.addEventListener("contextmenu", openSourceMenu);
     ta.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      if (handleSourceKeydown(e, ta)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         finish(false, true);

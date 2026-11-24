@@ -18,6 +18,7 @@ import type { EditorView, NodeViewConstructor } from "@milkdown/prose/view";
 import { mathInlineSchema } from "./math-schema";
 import { renderMathJaxSvg } from "./mathjax";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
+import { handleSourceKeydown } from "./source-tab";
 
 const BLOCK_NAME = "math_block";
 
@@ -160,6 +161,7 @@ export const mathBlockView = $view(mathBlockSchema, () => {
       textarea.addEventListener("mousedown", (e) => e.stopPropagation());
       textarea.addEventListener("keydown", (e) => {
         e.stopPropagation();
+        if (handleSourceKeydown(e, textarea)) return;
         if (e.key === "Escape") {
           e.preventDefault();
           finish(false, true);

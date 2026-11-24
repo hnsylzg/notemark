@@ -1369,6 +1369,7 @@ async function convertBlock(
           return [
             createParagraph(ctx, {
               style: FIGURE_STYLE,
+              alignment: AlignmentType.CENTER,
               children: [
                 new ImageRun({
                   type: "svg",
@@ -1507,6 +1508,7 @@ async function convertBlock(
         return [
           createParagraph(ctx, {
             style: FIGURE_STYLE,
+            alignment: AlignmentType.CENTER,
             children: [
               new ImageRun({
                 type: "svg",

@@ -1,11 +1,30 @@
 /** Word 白底页面或无法从 DOM 读取背景时使用的兜底颜色。 */
 export const DEFAULT_MERMAID_EXPORT_BACKGROUND = "#ffffff";
+const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
 
 function normalizeCssColor(value: string): string {
   if (!value || value === "none" || value === "transparent") return value;
   const probe = document.createElement("span");
   probe.style.color = value;
   return probe.style.color || value;
+}
+
+/**
+ * Mermaid kanban serializes ticket links with xlink:href but does not always
+ * declare the prefix on the root SVG. Browsers can display the in-memory DOM,
+ * while image decoding and Word reject the serialized SVG as malformed XML.
+ */
+export function ensureMermaidXlinkNamespace(svg: string): string {
+  if (!/\bxlink:[\w-]+\s*=/i.test(svg)) return svg;
+  const rootTag = svg.match(/<svg\b[^>]*>/i)?.[0];
+  if (!rootTag || /\bxmlns:xlink\s*=/i.test(rootTag)) return svg;
+  return svg.replace(
+    rootTag,
+    rootTag.replace(
+      /<svg\b/i,
+      `<svg xmlns:xlink="${XLINK_NAMESPACE}"`
+    )
+  );
 }
 
 const HSL_COLOR_PATTERN = /hsla?\([^)]*\)/gi;
@@ -101,6 +120,112 @@ export function preserveMermaidGanttGridLines(root: Element): void {
         shapeRendering,
         "important"
       );
+    }
+  }
+}
+
+/**
+ * Mermaid venn-beta places the title baseline near y=0 while using a large
+ * font size. Browsers may paint outside the SVG viewport, but Word clips it.
+ * Shift the whole rendered Venn diagram down when the title baseline cannot
+ * fit the font ascent, then grow the viewBox by the same inset. Moving only
+ * the title would reduce the original gap between the title and circles.
+ */
+export function preserveMermaidVennTitle(root: Element): void {
+  const titles = Array.from(
+    root.querySelectorAll<SVGTextElement>(".venn-title")
+  );
+  if (titles.length === 0) return;
+  const declarations = readCssRuleDeclarations(root, ".venn-title");
+  const fontSize = Number.parseFloat(declarations["font-size"] ?? "");
+  if (!Number.isFinite(fontSize) || fontSize <= 0) return;
+  const baselines = titles
+    .map((title) => Number.parseFloat(title.getAttribute("y") ?? ""))
+    .filter((value) => Number.isFinite(value));
+  if (baselines.length === 0) return;
+  const inset = Math.max(0, fontSize - Math.min(...baselines));
+  if (inset <= 0) return;
+
+  const content = Array.from(root.children).filter(
+    (child) => !["style", "defs", "title", "desc"].includes(child.localName)
+  );
+  if (content.length > 0) {
+    const wrapper = root.ownerDocument.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "g"
+    );
+    wrapper.setAttribute("data-mermaid-export-offset", "true");
+    wrapper.setAttribute("transform", `translate(0 ${inset})`);
+    root.insertBefore(wrapper, content[0]);
+    for (const child of content) wrapper.appendChild(child);
+  }
+
+  const values = (root.getAttribute("viewBox") ?? "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (
+    values.length === 4 &&
+    values.every((value) => Number.isFinite(value))
+  ) {
+    root.setAttribute(
+      "viewBox",
+      `${values[0]} ${values[1]} ${values[2]} ${values[3] + inset}`
+    );
+  }
+  const height = Number.parseFloat(root.getAttribute("height") ?? "");
+  if (Number.isFinite(height)) {
+    root.setAttribute("height", String(height + inset));
+  }
+}
+
+/**
+ * Word does not consistently honor Mermaid Ishikawa's CSS
+ * `dominant-baseline: middle/hanging`, so text renders slightly above its box.
+ * Convert those labels to explicit baseline offsets in the export copy.
+ */
+export function preserveMermaidIshikawaTextBaseline(root: Element): void {
+  if (root.getAttribute("aria-roledescription") !== "ishikawa") return;
+  const textDeclarations = readCssRuleDeclarations(root, ".ishikawa text");
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const fontSize = Number.parseFloat(textDeclarations["font-size"] ?? "");
+  if (!Number.isFinite(fontSize) || fontSize <= 0) return;
+  const fontFamily =
+    textDeclarations["font-family"] ||
+    "sans-serif";
+  const offsetFor = (baseline: "middle" | "hanging"): number | null => {
+    context.font = `${fontSize}px ${fontFamily}`;
+    context.textBaseline = baseline;
+    const metrics = context.measureText("Hgj");
+    const offset = Math.abs(metrics.alphabeticBaseline);
+    return Number.isFinite(offset) && offset > 0
+      ? Number(offset.toFixed(4))
+      : null;
+  };
+  for (const text of root.querySelectorAll<SVGTextElement>(
+    ".ishikawa-head-label, .ishikawa-label"
+  )) {
+    const classes = text.classList;
+    const baseline = classes.contains("down")
+      ? "hanging"
+      : classes.contains("up")
+        ? null
+        : classes.contains("ishikawa-head-label") ||
+            classes.contains("cause") ||
+            classes.contains("align")
+          ? "middle"
+          : null;
+    const offset = baseline ? offsetFor(baseline) : null;
+    if (offset == null) continue;
+    text.style.setProperty("dominant-baseline", "auto", "important");
+    text.setAttribute("dominant-baseline", "auto");
+    const textY = Number.parseFloat(text.getAttribute("y") ?? "");
+    if (Number.isFinite(textY)) {
+      text.setAttribute("y", String(Number((textY + offset).toFixed(4))));
+    } else if (!text.hasAttribute("dy")) {
+      text.setAttribute("dy", String(offset));
     }
   }
 }
@@ -298,13 +423,18 @@ export function normalizeMermaidSvgForExport(
   background: string
 ): string {
   try {
-    const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+    const doc = new DOMParser().parseFromString(
+      ensureMermaidXlinkNamespace(svg),
+      "image/svg+xml"
+    );
     const root = doc.documentElement;
     if (root.localName !== "svg" || doc.querySelector("parsererror")) {
       return svg;
     }
     applyMermaidEdgeLabelBackground(root, background);
     preserveMermaidGanttGridLines(root);
+    preserveMermaidVennTitle(root);
+    preserveMermaidIshikawaTextBaseline(root);
     preserveMermaidStateMarkers(root);
     normalizeSvgPathNumbers(root);
     return new XMLSerializer().serializeToString(root);

@@ -16,6 +16,7 @@ import { loadMathJax } from "./mathjax";
 import { diagramSchema } from "@milkdown/plugin-diagram";
 import type { NodeViewConstructor } from "@milkdown/prose/view";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
+import { handleSourceKeydown } from "./source-tab";
 
 type MermaidLike = {
   initialize(config: unknown): void;
@@ -320,6 +321,7 @@ export const diagramView = $view(diagramSchema.node, () => {
       textarea.addEventListener("mousedown", (e) => e.stopPropagation());
       textarea.addEventListener("keydown", (e) => {
         e.stopPropagation();
+        if (handleSourceKeydown(e, textarea)) return;
         if (e.key === "Escape") {
           e.preventDefault();
           finish(false, true);

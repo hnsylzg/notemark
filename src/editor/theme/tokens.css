@@ -7,6 +7,10 @@
  * 默认（无 data-theme 或 light）走 :root 兜底值。
  */
 
+:root {
+  --mt-tab-size: 4;
+}
+
 .milkdown {
   /* ============ 基础色彩（亮色） ============ */
   --mt-color-fg: #2c3e50;
