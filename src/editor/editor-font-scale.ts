@@ -9,7 +9,7 @@ const DEFAULT_CODE_FONT_SIZE = "14px";
 
 export const DEFAULT_EDITOR_FONT_SCALE = 1;
 export const MIN_EDITOR_FONT_SCALE = 0.8;
-export const MAX_EDITOR_FONT_SCALE = 1.4;
+export const MAX_EDITOR_FONT_SCALE = 2;
 export const EDITOR_FONT_SCALE_STEP = 0.05;
 
 export interface AppliedEditorFontSizes {

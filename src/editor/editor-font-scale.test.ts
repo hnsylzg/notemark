@@ -16,6 +16,7 @@ describe("editor font scale", () => {
     expect(normalizeEditorFontScale(1.12)).toBe(1.1);
     expect(normalizeEditorFontScale(0.5)).toBe(MIN_EDITOR_FONT_SCALE);
     expect(normalizeEditorFontScale(2)).toBe(MAX_EDITOR_FONT_SCALE);
+    expect(normalizeEditorFontScale(2.1)).toBe(MAX_EDITOR_FONT_SCALE);
     expect(normalizeEditorFontScale("large")).toBe(
       DEFAULT_EDITOR_FONT_SCALE
     );
