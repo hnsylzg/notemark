@@ -180,6 +180,32 @@ export function preserveMermaidVennTitle(root: Element): void {
 }
 
 /**
+ * Apply the Venn title viewport correction to an SVG string.
+ *
+ * Word export already calls preserveMermaidVennTitle while normalizing the
+ * embedded SVG. HTML export inserts Mermaid's SVG directly, so without this
+ * wrapper the HTML snapshot keeps the original viewBox and CJK glyphs can be
+ * clipped at the top even though the editor preview paints them.
+ */
+export function preserveMermaidVennTitleInSvg(svg: string): string {
+  if (!svg.includes("venn-title")) return svg;
+  try {
+    const doc = new DOMParser().parseFromString(
+      ensureMermaidXlinkNamespace(svg),
+      "image/svg+xml"
+    );
+    const root = doc.documentElement;
+    if (root.localName !== "svg" || doc.querySelector("parsererror")) {
+      return svg;
+    }
+    preserveMermaidVennTitle(root);
+    return new XMLSerializer().serializeToString(root);
+  } catch {
+    return svg;
+  }
+}
+
+/**
  * Word does not consistently honor Mermaid Ishikawa's CSS
  * `dominant-baseline: middle/hanging`, so text renders slightly above its box.
  * Convert those labels to explicit baseline offsets in the export copy.

@@ -359,11 +359,37 @@ body,
   background: transparent;
 }
 
-/* 正文宽度：恢复为内置主题的页面列宽度（860px 居中）。 */
+/* 正文宽度：标准模式使用主题页面列；自适应模式按 Typora 的三档页面宽度
+   分段展开；全宽模式填满编辑区。max-width 的 100% 相对 .milkdown 内容盒
+   计算，因此侧边栏展开/收拢都会自然参与布局。 */
 .milkdown > * {
-  max-width: 860px;
+  max-width: min(100%, var(--mt-content-width, 860px));
   margin-left: auto;
   margin-right: auto;
+}
+
+.milkdown[data-content-width="adaptive"] > * {
+  max-width: min(100%, var(--mt-content-width, 860px));
+}
+
+/* 窗口断点与 Typora 默认主题一致；媒体查询条件不能引用 CSS 变量。 */
+@media (min-width: 1400px) {
+  .milkdown[data-content-width="adaptive"] > * {
+    max-width: min(
+      100%,
+      var(--mt-content-width-adaptive-medium, 1024px)
+    );
+  }
+}
+
+@media (min-width: 1800px) {
+  .milkdown[data-content-width="adaptive"] > * {
+    max-width: min(100%, var(--mt-content-width-adaptive-max, 1200px));
+  }
+}
+
+.milkdown[data-content-width="full"] > * {
+  max-width: 100%;
 }
 
 /* ============================================================

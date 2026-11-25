@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import {
+  MAX_EDITOR_FONT_SCALE,
+  MIN_EDITOR_FONT_SCALE,
+  formatEditorFontScale,
+} from "@/editor/editor-font-scale";
+import type { EditorContentWidthMode } from "@/editor/editor-content-width";
 import type { RecentFile } from "@/editor/workspace";
 
 interface InstalledTheme {
@@ -20,6 +26,8 @@ defineProps<{
   saveMenuOpen: boolean;
   exportMenuOpen: boolean;
   themeMenuOpen: boolean;
+  fontScale: number;
+  contentWidth: EditorContentWidthMode;
 }>();
 
 const emit = defineEmits<{
@@ -35,6 +43,10 @@ const emit = defineEmits<{
   toggleExportMenu: [];
   export: [format: "html" | "pdf" | "docx" | "txt"];
   toggleThemeMenu: [];
+  decreaseFontScale: [];
+  increaseFontScale: [];
+  resetFontScale: [];
+  setContentWidth: [mode: EditorContentWidthMode];
   toggleDarkMode: [];
   useDefaultTheme: [];
   switchTheme: [theme: InstalledTheme];
@@ -59,6 +71,15 @@ function isThemeActive(
 ): boolean {
   return activeThemePath?.toLowerCase() === theme.filePath.toLowerCase();
 }
+
+const contentWidthOptions: Array<{
+  value: EditorContentWidthMode;
+  label: string;
+}> = [
+  { value: "standard", label: "标准" },
+  { value: "adaptive", label: "自适应" },
+  { value: "full", label: "全宽" },
+];
 </script>
 
 <template>
@@ -189,6 +210,59 @@ function isThemeActive(
           </svg>
         </button>
         <div v-if="themeMenuOpen" class="mt-theme-menu" role="menu">
+          <div class="mt-theme-menu__font-row" role="group" aria-label="字号">
+            <span class="mt-theme-menu__font-label">字号</span>
+            <button
+              class="mt-theme-menu__font-step"
+              title="缩小字号 (Ctrl+-)"
+              aria-label="缩小字号"
+              role="menuitem"
+              :disabled="fontScale <= MIN_EDITOR_FONT_SCALE"
+              @click="emit('decreaseFontScale')"
+            >
+              A−
+            </button>
+            <button
+              class="mt-theme-menu__font-value"
+              title="恢复 100%（跟随主题）"
+              aria-label="恢复默认字号"
+              role="menuitem"
+              @click="emit('resetFontScale')"
+            >
+              {{ formatEditorFontScale(fontScale) }}
+            </button>
+            <button
+              class="mt-theme-menu__font-step"
+              title="放大字号 (Ctrl+=)"
+              aria-label="放大字号"
+              role="menuitem"
+              :disabled="fontScale >= MAX_EDITOR_FONT_SCALE"
+              @click="emit('increaseFontScale')"
+            >
+              A+
+            </button>
+          </div>
+          <div
+            class="mt-theme-menu__width-row"
+            role="group"
+            aria-label="文档宽度"
+          >
+            <span class="mt-theme-menu__font-label">宽度</span>
+            <button
+              v-for="option in contentWidthOptions"
+              :key="option.value"
+              class="mt-theme-menu__width-option"
+              :class="{
+                'mt-theme-menu__width-option--active':
+                  contentWidth === option.value,
+              }"
+              role="menuitemradio"
+              :aria-checked="contentWidth === option.value"
+              @click="emit('setContentWidth', option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
           <button class="mt-theme-menu__item" role="menuitem" @click="emit('toggleDarkMode')">
             深色模式：{{ isDark ? "开" : "关" }}
           </button>
@@ -424,6 +498,86 @@ function isThemeActive(
   max-width: 220px;
 }
 
+.mt-theme-menu__font-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px 42px 26px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+}
+
+.mt-theme-menu__font-label {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--mt-fg, #333);
+  white-space: nowrap;
+}
+
+.mt-theme-menu__font-step,
+.mt-theme-menu__font-value {
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mt-fg, #333);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mt-theme-menu__font-step:hover,
+.mt-theme-menu__font-value:hover {
+  background: var(--mt-hover, #f0f0f0);
+}
+
+.mt-theme-menu__font-step:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.mt-theme-menu__font-value {
+  color: var(--mt-muted, #888);
+  font-variant-numeric: tabular-nums;
+}
+
+.mt-theme-menu__width-row {
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 4px 10px;
+}
+
+.mt-theme-menu__width-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mt-fg, #333);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mt-theme-menu__width-option:hover {
+  background: var(--mt-hover, #f0f0f0);
+}
+
+.mt-theme-menu__width-option--active {
+  background: var(--mt-color-primary-soft, #e8f0fe);
+  color: var(--mt-color-primary, #2563eb);
+}
+
 .mt-theme-menu__item {
   text-align: left;
   background: transparent;
@@ -443,7 +597,6 @@ function isThemeActive(
 
 .mt-theme-menu__item--active {
   color: var(--mt-accent, #2563eb);
-  font-weight: 600;
 }
 
 .mt-theme-menu__item--active::before {

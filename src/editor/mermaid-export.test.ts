@@ -6,6 +6,7 @@ import {
   normalizeMermaidSvgForExport,
   preserveMermaidIshikawaTextBaseline,
   preserveMermaidVennTitle,
+  preserveMermaidVennTitleInSvg,
   resolveMermaidExportBackground,
 } from "./mermaid-export";
 
@@ -96,6 +97,33 @@ describe("Mermaid export", () => {
     expect(parsed.documentElement.getAttribute("viewBox")).toBe(
       "0 0 800 450"
     );
+  });
+
+  it("preserves a CJK venn title in the HTML export SVG string", () => {
+    const source =
+      '<svg xmlns="http://www.w3.org/2000/svg" height="450" viewBox="0 0 800 450">' +
+      "<style>.venn-title{font-size:32px;fill:#000000}</style>" +
+      '<text class="venn-title" x="50%" y="16">团队重合</text>' +
+      '<circle cx="400" cy="213" r="198"/>' +
+      "</svg>";
+
+    const normalized = preserveMermaidVennTitleInSvg(source);
+    const parsed = new DOMParser().parseFromString(
+      normalized,
+      "image/svg+xml"
+    );
+
+    expect(parsed.querySelector("parsererror")).toBeNull();
+    expect(parsed.querySelector(".venn-title")?.textContent).toBe("团队重合");
+    expect(parsed.documentElement.getAttribute("viewBox")).toBe(
+      "0 0 800 466"
+    );
+    expect(parsed.documentElement.getAttribute("height")).toBe("466");
+    expect(
+      parsed
+        .querySelector('g[data-mermaid-export-offset="true"]')
+        ?.getAttribute("transform")
+    ).toBe("translate(0 16)");
   });
 
   it("declares XLink before parsing a kanban ticket link SVG", () => {

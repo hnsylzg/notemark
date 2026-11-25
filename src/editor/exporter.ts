@@ -35,6 +35,7 @@ import {
 import { renderMermaidSvg } from "./diagram-view";
 import { diagramLanguage } from "./diagram-language";
 import { renderMarkmapSvg } from "./markmap-renderer";
+import { preserveMermaidVennTitleInSvg } from "./mermaid-export";
 
 /** 是否处于 Tauri 环境 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -287,7 +288,10 @@ export async function getExportHtml(editor: Editor): Promise<string> {
       if (!block || result?.status !== "fulfilled") continue;
       const diagram = document.createElement("div");
       diagram.className = `diagram ${block.kind}-preview`;
-      diagram.innerHTML = result.value;
+      diagram.innerHTML =
+        block.kind === "mermaid"
+          ? preserveMermaidVennTitleInSvg(result.value)
+          : result.value;
       blocks[index].replaceWith(diagram);
     }
   }

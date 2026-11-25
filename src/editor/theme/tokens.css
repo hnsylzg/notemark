@@ -52,7 +52,9 @@
   --mt-heading-4-size: 1.0625em;
   --mt-heading-5-size: 1em;
   --mt-heading-6-size: 1em;
-  --mt-content-width: 800px;
+  --mt-content-width: 860px;
+  --mt-content-width-adaptive-medium: 1024px;
+  --mt-content-width-adaptive-max: 1200px;
   --mt-content-padding: 48px;
   /* 滚动条统一尺寸：所有主题和滚动容器共用，避免切换时槽宽变化。 */
   --mt-scrollbar-size: 0.5rem;

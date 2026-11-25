@@ -262,14 +262,14 @@
 /* 代码块预览态（非编辑态渲染的 <pre>）也要等宽，否则回退比例字体 */
 :where(.milkdown .editor) .milkdown-code-block pre {
   font-family: var(--mt-font-mono);
-  font-size: 14px;
+  font-size: var(--mt-code-font-size, 14px);
   line-height: 1.6;
 }
 :where(.milkdown .editor) .cm-editor {
   background: transparent;
   color: var(--mt-code-fg);
   font-family: var(--mt-font-mono);
-  font-size: 14px;
+  font-size: var(--mt-code-font-size, 14px);
   line-height: 1.6;
 }
 :where(.milkdown .editor) .cm-editor .cm-scroller {
@@ -304,7 +304,7 @@
   color: var(--mt-code-gutter-fg);
   border: none; /* 去掉行号与代码之间的竖分隔线 */
   font-family: var(--mt-font-mono);
-  font-size: 14px;
+  font-size: var(--mt-code-font-size, 14px);
 }
 :where(.milkdown .editor) .cm-editor .cm-lineNumbers .cm-gutterElement {
   padding: 0 8px 0 12px;

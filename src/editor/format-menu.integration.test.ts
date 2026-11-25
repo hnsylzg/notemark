@@ -2,6 +2,7 @@ import { editorViewCtx } from "@milkdown/kit/core";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { describe, expect, it, vi } from "vitest";
 import { createEditor, getMarkdown, setMarkdown } from "./index";
+import { mergeMarkdown } from "./md-merge";
 
 class StubObserver {
   observe(): void {}
@@ -97,11 +98,68 @@ describe("format menu with the application schema", () => {
       expect(markdown).not.toContain("<br");
       expect(markdown).toContain("first");
       expect(markdown).toContain("second");
+      expect(mergeMarkdown("first\n\nsecond", markdown)).toBe(
+        "first\n\n\n\nsecond"
+      );
 
       setMarkdown(editor, markdown);
       expect(view.state.doc.childCount).toBe(3);
       expect(view.state.doc.child(1).type.name).toBe("paragraph");
       expect(view.state.doc.child(1).textContent).toBe("");
+
+      // 空段落必须可重复往返：源码模式切回、保存后重新打开都走
+      // setMarkdown(相同 Markdown)，不能每轮再解析出一层空段落。
+      const secondPass = getMarkdown(editor);
+      setMarkdown(editor, secondPass);
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(1).textContent).toBe("");
+
+      const thirdPass = getMarkdown(editor);
+      setMarkdown(editor, thirdPass);
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(1).textContent).toBe("");
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("keeps consecutive empty paragraphs stable across reloads", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "first\n\nsecond");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      ) as EditorView;
+      const first = view.state.doc.firstChild!;
+
+      view.dispatch(
+        view.state.tr.insert(
+          first.nodeSize,
+          view.state.schema.nodes.paragraph.create()
+        )
+      );
+      const firstBlankPos = first.nodeSize;
+      view.dispatch(
+        view.state.tr.insert(
+          firstBlankPos + 2,
+          view.state.schema.nodes.paragraph.create()
+        )
+      );
+      expect(view.state.doc.childCount).toBe(4);
+
+      const markdown = getMarkdown(editor);
+      setMarkdown(editor, markdown);
+      expect(view.state.doc.childCount).toBe(4);
+
+      const secondPass = getMarkdown(editor);
+      setMarkdown(editor, secondPass);
+      expect(view.state.doc.childCount).toBe(4);
     } finally {
       await editor.destroy();
       root.remove();

@@ -112,6 +112,22 @@ import {
   saveDarkModePreference,
 } from "@/editor/themeManager";
 import {
+  DEFAULT_EDITOR_FONT_SCALE,
+  applyEditorFontScale,
+  applySourceFontScale,
+  loadEditorFontScale,
+  normalizeEditorFontScale,
+  saveEditorFontScale,
+  stepEditorFontScale,
+} from "@/editor/editor-font-scale";
+import {
+  DEFAULT_EDITOR_CONTENT_WIDTH,
+  applyEditorContentWidth,
+  loadEditorContentWidth,
+  saveEditorContentWidth,
+} from "@/editor/editor-content-width";
+import type { EditorContentWidthMode } from "@/editor/editor-content-width";
+import {
   presentContextMenu,
   type ContextMenuHandle,
 } from "@/editor/context-menu-controller";
@@ -130,6 +146,8 @@ const INITIAL_CONTENT = "";
 
 // 编辑器挂载容器
 const editorHost = ref<HTMLElement | null>(null);
+/** 包含可视编辑器和源码编辑器的外层容器，用于字号缩放。 */
+const editorWrap = ref<HTMLElement | null>(null);
 // 持有 editor 实例，便于卸载时销毁与读写
 let editorInstance: ReturnType<typeof createEditor> | null = null;
 
@@ -440,6 +458,21 @@ let headingTimer: number | null = null;
 const themeMenuOpen = ref(false);
 /** 固定主题目录下已安装的主题列表（打开菜单时刷新） */
 const installedThemes = ref<{ name: string; filePath: string }[]>([]);
+/** 用户设置的正文字号比例；100% 表示完全跟随当前主题。 */
+const editorFontScale = ref(DEFAULT_EDITOR_FONT_SCALE);
+/** 正文列宽模式；只影响编辑区显示，不修改文档内容。 */
+const editorContentWidth = ref<EditorContentWidthMode>(
+  DEFAULT_EDITOR_CONTENT_WIDTH
+);
+const FONT_SCALE_SAVE_DELAY_MS = 180;
+const FONT_WHEEL_STEP_THRESHOLD = 24;
+const FONT_WHEEL_IDLE_MS = 240;
+const WHEEL_LINE_HEIGHT = 16;
+const FALLBACK_VIEWPORT_HEIGHT = 800;
+let editorFontScaleSaveTimer: number | null = null;
+let pendingEditorFontScale = DEFAULT_EDITOR_FONT_SCALE;
+let fontWheelDelta = 0;
+let fontWheelResetTimer: number | null = null;
 
 /** 刷新固定主题目录下的已安装主题列表 */
 async function refreshThemeList() {
@@ -454,6 +487,118 @@ async function toggleDarkMode() {
   isDark.value = !isDark.value;
   applyDarkMode(isDark.value);
   await saveDarkModePreference(isDark.value);
+}
+
+/** 从当前主题读取基准字号，并应用用户字号比例。 */
+function applyCurrentEditorFontScale(): void {
+  const milkdown =
+    editorHost.value?.querySelector<HTMLElement>(".milkdown") ?? null;
+  const sizes = applyEditorFontScale(milkdown, editorFontScale.value);
+  applySourceFontScale(editorWrap.value, sizes.source);
+  if (sourceMode.value) {
+    void nextTick(measureSourceLinePositions);
+  }
+}
+
+function applyCurrentEditorContentWidth(): void {
+  const milkdown =
+    editorHost.value?.querySelector<HTMLElement>(".milkdown") ?? null;
+  applyEditorContentWidth(milkdown, editorContentWidth.value);
+}
+
+function setEditorContentWidth(mode: EditorContentWidthMode): void {
+  editorContentWidth.value = mode;
+  applyCurrentEditorContentWidth();
+  void saveEditorContentWidth(mode).catch((error) =>
+    console.warn("[NoteMark] save editor content width failed:", error)
+  );
+}
+
+/** 字号写入做短暂防抖，连续滚轮操作只落一次状态库。 */
+function scheduleEditorFontScaleSave(): void {
+  pendingEditorFontScale = editorFontScale.value;
+  if (editorFontScaleSaveTimer !== null) {
+    clearTimeout(editorFontScaleSaveTimer);
+  }
+  editorFontScaleSaveTimer = window.setTimeout(() => {
+    editorFontScaleSaveTimer = null;
+    void saveEditorFontScale(pendingEditorFontScale).catch((error) =>
+      console.warn("[NoteMark] save editor font scale failed:", error)
+    );
+  }, FONT_SCALE_SAVE_DELAY_MS);
+}
+
+async function flushEditorFontScaleSave(): Promise<void> {
+  if (editorFontScaleSaveTimer !== null) {
+    clearTimeout(editorFontScaleSaveTimer);
+    editorFontScaleSaveTimer = null;
+  }
+  await saveEditorFontScale(pendingEditorFontScale).catch((error) =>
+    console.warn("[NoteMark] save editor font scale failed:", error)
+  );
+}
+
+function setEditorFontScale(value: number): void {
+  const next = normalizeEditorFontScale(value);
+  if (next === editorFontScale.value) return;
+  editorFontScale.value = next;
+  applyCurrentEditorFontScale();
+  scheduleEditorFontScaleSave();
+}
+
+function decreaseEditorFontScale(): void {
+  setEditorFontScale(stepEditorFontScale(editorFontScale.value, -1));
+}
+
+function increaseEditorFontScale(): void {
+  setEditorFontScale(stepEditorFontScale(editorFontScale.value, 1));
+}
+
+function resetEditorFontScale(): void {
+  setEditorFontScale(DEFAULT_EDITOR_FONT_SCALE);
+}
+
+function clearFontWheelGesture(): void {
+  fontWheelDelta = 0;
+  if (fontWheelResetTimer !== null) {
+    clearTimeout(fontWheelResetTimer);
+    fontWheelResetTimer = null;
+  }
+}
+
+function onEditorFontWheel(event: WheelEvent): void {
+  if (!event.ctrlKey && !event.metaKey) {
+    if (fontWheelDelta !== 0) clearFontWheelGesture();
+    return;
+  }
+  event.preventDefault();
+  const unit =
+    event.deltaMode === 1
+      ? WHEEL_LINE_HEIGHT
+      : event.deltaMode === 2
+        ? Math.max(
+            1,
+            editorWrap.value?.clientHeight ?? FALLBACK_VIEWPORT_HEIGHT
+          )
+        : 1;
+  const delta = -event.deltaY * unit;
+  if (delta === 0) return;
+  if (fontWheelDelta !== 0 && Math.sign(delta) !== Math.sign(fontWheelDelta)) {
+    fontWheelDelta = 0;
+  }
+  fontWheelDelta += delta;
+  if (Math.abs(fontWheelDelta) < FONT_WHEEL_STEP_THRESHOLD) {
+    if (fontWheelResetTimer !== null) clearTimeout(fontWheelResetTimer);
+    fontWheelResetTimer = window.setTimeout(
+      clearFontWheelGesture,
+      FONT_WHEEL_IDLE_MS
+    );
+    return;
+  }
+  setEditorFontScale(
+    stepEditorFontScale(editorFontScale.value, delta > 0 ? 1 : -1)
+  );
+  clearFontWheelGesture();
 }
 
 /**
@@ -2189,6 +2334,7 @@ function toggleThemeMenu() {
 async function useDefaultTheme() {
   themeMenuOpen.value = false;
   await resetToDefaultTheme();
+  applyCurrentEditorFontScale();
 }
 
 /** 切换到固定主题目录中的某个已安装主题 */
@@ -2196,6 +2342,7 @@ async function switchTheme(theme: { name: string; filePath: string }) {
   themeMenuOpen.value = false;
   try {
     await applyInstalledTheme(theme.filePath);
+    applyCurrentEditorFontScale();
   } catch (err) {
     console.error("[NoteMark] apply theme failed:", err);
     alert(`切换主题失败：${err instanceof Error ? err.message : String(err)}`);
@@ -2215,6 +2362,7 @@ async function importTheme() {
   try {
     const count = await importCustomTheme();
     if (count > 0) {
+      applyCurrentEditorFontScale();
       // 刷新列表，让新导入的主题立刻出现在菜单里（带 ✓ 标记）
       await refreshThemeList().catch((e) =>
         console.warn("[NoteMark] refresh theme list failed:", e)
@@ -2359,7 +2507,20 @@ function onKeydown(e: KeyboardEvent) {
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const key = e.key.toLowerCase();
-  if (mod && e.shiftKey && key === "t") {
+  if (
+    key === "=" ||
+    key === "+" ||
+    e.code === "NumpadAdd"
+  ) {
+    e.preventDefault();
+    increaseEditorFontScale();
+  } else if (key === "-" || e.code === "NumpadSubtract") {
+    e.preventDefault();
+    decreaseEditorFontScale();
+  } else if (key === "0" || e.code === "Numpad0") {
+    e.preventDefault();
+    resetEditorFontScale();
+  } else if (mod && e.shiftKey && key === "t") {
     // 打开主题菜单（浏览器默认的"恢复已关闭标签页"会被覆盖）
     e.preventDefault();
     toggleThemeMenu();
@@ -2417,6 +2578,9 @@ onMounted(() => {
   window.addEventListener("pointerdown", markStartupInteraction, true);
   window.addEventListener("keydown", markStartupInteraction, true);
   window.addEventListener("contextmenu", markStartupInteraction, true);
+  editorWrap.value?.addEventListener("wheel", onEditorFontWheel, {
+    passive: false,
+  });
   try {
     recoveryScope = isTauri ? getCurrentWebviewWindow().label : "browser";
     if (!editorHost.value) return;
@@ -2473,6 +2637,9 @@ onMounted(() => {
 
         // 真正创建编辑器（视图在这里挂载）
         editorInstance.create().then(async () => {
+          // .milkdown 根节点在 create() 完成后才存在；提前应用会静默找不到节点。
+          applyCurrentEditorFontScale();
+          applyCurrentEditorContentWidth();
           // 初始内容不算"未保存修改"：create 完成后建立内容快照
           if (editorInstance) {
             savedContent.value = getMarkdown(editorInstance);
@@ -2519,6 +2686,13 @@ onMounted(() => {
       // 先加载深色模式与自定义主题，再创建编辑器渲染内容
       (async () => {
         try {
+          const [fontScale, contentWidth] = await Promise.all([
+            loadEditorFontScale(),
+            loadEditorContentWidth(),
+          ]);
+          editorFontScale.value = fontScale;
+          pendingEditorFontScale = editorFontScale.value;
+          editorContentWidth.value = contentWidth;
           const dark = await loadDarkModePreference();
           if (dark !== null) {
             isDark.value = dark;
@@ -2532,7 +2706,13 @@ onMounted(() => {
         }
       })();
     } else {
-      startEditor();
+      void Promise.all([loadEditorFontScale(), loadEditorContentWidth()])
+        .then(([fontScale, contentWidth]) => {
+          editorFontScale.value = fontScale;
+          pendingEditorFontScale = fontScale;
+          editorContentWidth.value = contentWidth;
+        })
+        .finally(startEditor);
     }
   } catch (err) {
     console.error("[NoteMark] editor init failed:", err);
@@ -2662,8 +2842,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   void flushWorkspaceLastDirPersistence();
+  void flushEditorFontScaleSave();
   sourceLineResizeObserver?.disconnect();
   sourceLineResizeObserver = null;
+  editorWrap.value?.removeEventListener("wheel", onEditorFontWheel);
+  clearFontWheelGesture();
   window.removeEventListener("pointerdown", markStartupInteraction, true);
   window.removeEventListener("keydown", markStartupInteraction, true);
   window.removeEventListener("contextmenu", markStartupInteraction, true);
@@ -2703,6 +2886,8 @@ onBeforeUnmount(() => {
       :save-menu-open="saveMenuOpen"
       :export-menu-open="exportMenuOpen"
       :theme-menu-open="themeMenuOpen"
+      :font-scale="editorFontScale"
+      :content-width="editorContentWidth"
       @toggle-sidebar="toggleSidebar"
       @new-file="handleNew"
       @open-file="handleOpen"
@@ -2715,6 +2900,10 @@ onBeforeUnmount(() => {
       @toggle-export-menu="toggleExportMenu"
       @export="runExport"
       @toggle-theme-menu="toggleThemeMenu"
+      @decrease-font-scale="decreaseEditorFontScale"
+      @increase-font-scale="increaseEditorFontScale"
+      @reset-font-scale="resetEditorFontScale"
+      @set-content-width="setEditorContentWidth"
       @toggle-dark-mode="toggleDarkMode"
       @use-default-theme="useDefaultTheme"
       @switch-theme="switchTheme"
@@ -2769,7 +2958,7 @@ onBeforeUnmount(() => {
       />
 
       <!-- 编辑区：占据工具栏下方全部剩余高度 -->
-      <main class="mt-editor-wrap">
+      <main ref="editorWrap" class="mt-editor-wrap">
         <div
           ref="editorHost"
           class="mt-editor"
@@ -3290,7 +3479,7 @@ onBeforeUnmount(() => {
     Courier,
     monospace
   );
-  font-size: 14px;
+  font-size: var(--mt-source-font-size, 14px);
   line-height: 1.7;
   tab-size: var(--mt-tab-size);
 }
