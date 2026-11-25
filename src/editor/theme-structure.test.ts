@@ -50,7 +50,9 @@ describe("theme structural spacing", () => {
       const paragraph = root.querySelector(".content-dom > p")!;
       const nestedList = root.querySelector(".content-dom > ul")!;
       expect(getComputedStyle(paragraph).marginBottom).toBe("0px");
-      expect(getComputedStyle(nestedList).marginBlockStart).toBe("0px");
+      expect(
+        parseFloat(getComputedStyle(nestedList).marginBlockStart)
+      ).toBeGreaterThan(0);
       expect(getComputedStyle(nestedList).marginBlockEnd).toBe("0px");
       expect(parseFloat(getComputedStyle(secondItem).marginTop)).toBeGreaterThan(
         0

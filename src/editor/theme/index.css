@@ -117,7 +117,7 @@
   .milkdown-list-item-block
   .content-dom
   :is(ul, ol) {
-  margin-block: 0;
+  margin-block: 0.25em 0;
 }
 
 /* HTML 块预览渲染的是 HTML 内容，而不是 ProseMirror 的源码文本。
