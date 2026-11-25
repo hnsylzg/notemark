@@ -9,6 +9,7 @@ import { EditorView } from "@milkdown/prose/view";
 import { describe, expect, it, vi } from "vitest";
 import {
   createInlineMathTransaction,
+  createMathBlockNodeView,
   createMathInlineCursorPlugin,
   createMathInlineNodeView,
 } from "./math-view";
@@ -897,6 +898,90 @@ describe("inline math source insertion", () => {
 
       expect(view.state.doc.textContent).toBe("普通文本");
       expect(view.state.doc.firstChild?.firstChild?.type.name).toBe("text");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+});
+
+describe("math block editing", () => {
+  it("undoes a newly inserted empty block from its focused editor", () => {
+    const blockSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        math_block: {
+          group: "block",
+          content: "text*",
+          marks: "",
+          atom: true,
+          attrs: { value: { default: "" } },
+          toDOM: () => [
+            "div",
+            { class: "milkdown-math-block" },
+          ],
+        },
+        text: { group: "inline" },
+      },
+    });
+    const original = blockSchema.node("doc", null, [
+      blockSchema.node(
+        "paragraph",
+        null,
+        blockSchema.text("body")
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: blockSchema,
+        doc: original,
+        selection: TextSelection.create(original, 5),
+        plugins: [history()],
+      }),
+      nodeViews: {
+        math_block: createMathBlockNodeView,
+      },
+    });
+
+    try {
+      view.dispatch(
+        view.state.tr.replaceSelectionWith(
+          blockSchema.nodes.math_block.create()
+        )
+      );
+      let mathBlockCount = 0;
+      view.state.doc.descendants((node) => {
+        if (node.type.name === "math_block") mathBlockCount += 1;
+      });
+      expect(mathBlockCount).toBe(1);
+      const mathBlock = view.dom.querySelector<HTMLElement>(
+        ".milkdown-math-block"
+      )!;
+      mathBlock.dispatchEvent(
+        new MouseEvent("click", { bubbles: true })
+      );
+      const textarea = mathBlock.querySelector<HTMLTextAreaElement>(
+        ".math-block-editor"
+      )!;
+      expect(textarea.value).toBe("");
+
+      const undoEvent = new KeyboardEvent("keydown", {
+        key: "z",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      textarea.dispatchEvent(undoEvent);
+
+      expect(undoEvent.defaultPrevented).toBe(true);
+      expect(view.state.doc.toJSON()).toEqual(original.toJSON());
     } finally {
       view.destroy();
       host.remove();

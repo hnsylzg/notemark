@@ -101,6 +101,75 @@ function contentPosition(
 }
 
 describe("clicking an inline mark must not modify the document", () => {
+  it("does not expand a nearby mark when clicking inline math", async () => {
+    const source = "**bold** $x$\n";
+    const editor = await openEditor(source);
+    try {
+      const view = editor.view;
+      const math = view.dom.querySelector<HTMLElement>(
+        ".milkdown-math-inline"
+      )!;
+      expect(math).not.toBeNull();
+      const mathPos = view.posAtDOM(math, 0, 1);
+      view.dispatch(
+        view.state.tr
+          .setSelection(
+            TextSelection.create(view.state.doc, mathPos)
+          )
+          .setMeta("pointer", true)
+      );
+      math.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        })
+      );
+
+      expect(markSourceKey.getState(view.state)).toBeNull();
+      expect(view.dom.querySelector("strong")?.textContent).toBe(
+        "bold"
+      );
+      expect(editor.markdown()).toBe(source);
+    } finally {
+      await editor.dispose();
+    }
+  });
+
+  it("expands a rendered mark when the caret is placed at its right edge", async () => {
+    const source = "**bold** text\n";
+    const editor = await openEditor(source);
+    try {
+      const view = editor.view;
+      const paragraph = view.dom.querySelector<HTMLElement>("p")!;
+      clickElement(view, paragraph, 5);
+
+      expect(markSourceKey.getState(view.state)?.markName).toBe(
+        "strong"
+      );
+      expect(view.dom.querySelector("p")?.textContent).toBe(
+        "**bold** text"
+      );
+      const session = markSourceKey.getState(view.state)!;
+      expect(view.state.selection.from).toBe(session.to);
+      expect(
+        view.someProp("handleTextInput", (handler) =>
+          handler(
+            view,
+            session.to,
+            session.to,
+            "X",
+            () => view.state.tr
+          )
+        )
+      ).toBe(true);
+      expect(view.state.doc.textContent).toBe("boldX text");
+      expect(editor.markdown()).toBe("**bold**X text\n");
+    } finally {
+      await editor.dispose();
+    }
+  });
+
   it("keeps inline code nested inside strong untouched", async () => {
     const source = "**加粗里有*斜体*与`代码`**\n";
     const editor = await openEditor(source);

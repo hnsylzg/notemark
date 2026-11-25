@@ -32,7 +32,11 @@ import {
   type Transaction,
 } from "@milkdown/prose/state";
 import { GapCursor } from "@milkdown/prose/gapcursor";
-import type { Node as PMNode } from "@milkdown/prose/model";
+import type {
+  Node as PMNode,
+  NodeType,
+  ResolvedPos,
+} from "@milkdown/prose/model";
 import type { EditorView } from "@milkdown/prose/view";
 import { EditorView as CodeMirrorView } from "@codemirror/view";
 import {
@@ -238,6 +242,10 @@ let activeMath: HTMLElement | null = null;
 let activeInsertContextBlock: string | null = null;
 /** 特殊块右键时绑定真实节点，避免覆盖层坐标把句柄带到相邻段落。 */
 let activeInsertBlockTarget: { node: PMNode; pos: number } | null = null;
+/** Explicit gap target used only by block-boundary context menus. */
+let activeGapInsertPos: number | null = null;
+/** 行内内容右侧留白处：仅用于把块插入到整段之后，不改变行内编辑落点。 */
+let activeBlockInsertAtEnd = false;
 /** 列表首项前/末项后的整体边界，用于在列表外插入块。 */
 let activeListInsertBoundary: {
   node: PMNode;
@@ -257,6 +265,7 @@ let pendingRightClick: {
   clientX: number;
   clientY: number;
   caretPos: number;
+  blockInsertAtEnd: boolean;
   textblock: TextblockTarget | null;
 } | null = null;
 type MarkdownSourceSerializer = (node: PMNode) => string;
@@ -273,11 +282,105 @@ interface CodeBlockMenuContext {
 const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+function gapCursorNeedsGap(type: NodeType): boolean {
+  return type.isAtom || type.spec.isolating || type.spec.createGapCursor;
+}
+
+function gapCursorClosedBefore($pos: ResolvedPos): boolean {
+  for (let depth = $pos.depth; depth >= 0; depth -= 1) {
+    const index = $pos.index(depth);
+    const parent = $pos.node(depth);
+    if (index === 0) {
+      if (parent.type.spec.isolating) return true;
+      continue;
+    }
+    for (
+      let before = parent.child(index - 1);
+      ;
+      before = before.lastChild!
+    ) {
+      if (
+        (before.childCount === 0 && !before.inlineContent) ||
+        gapCursorNeedsGap(before.type)
+      ) {
+        return true;
+      }
+      if (before.inlineContent) return false;
+    }
+  }
+  return true;
+}
+
+function gapCursorClosedAfter($pos: ResolvedPos): boolean {
+  for (let depth = $pos.depth; depth >= 0; depth -= 1) {
+    const index = $pos.indexAfter(depth);
+    const parent = $pos.node(depth);
+    if (index === parent.childCount) {
+      if (parent.type.spec.isolating) return true;
+      continue;
+    }
+    for (
+      let after = parent.child(index);
+      ;
+      after = after.firstChild!
+    ) {
+      if (
+        (after.childCount === 0 && !after.inlineContent) ||
+        gapCursorNeedsGap(after.type)
+      ) {
+        return true;
+      }
+      if (after.inlineContent) return false;
+    }
+  }
+  return true;
+}
+
+function isGapCursorPosition($pos: ResolvedPos): boolean {
+  const parent = $pos.parent;
+  if (
+    parent.isTextblock ||
+    !gapCursorClosedBefore($pos) ||
+    !gapCursorClosedAfter($pos)
+  ) {
+    return false;
+  }
+  const override = parent.type.spec.allowGapCursor;
+  if (override != null) return override;
+  return (
+    parent.contentMatchAt($pos.index()).defaultType?.isTextblock ===
+    true
+  );
+}
+
+/**
+ * Resolve only the clicked boundary or its immediate neighbors. This helper is
+ * used exclusively by explicit gap menus, never by inline text right-clicks.
+ */
+function gapCursorPositionNear(
+  view: EditorView,
+  pos: number
+): number | null {
+  const safe = Math.max(0, Math.min(pos, view.state.doc.content.size));
+  const candidates = [safe, safe - 1, safe + 1];
+  for (const candidate of candidates) {
+    if (candidate < 0 || candidate > view.state.doc.content.size) {
+      continue;
+    }
+    if (isGapCursorPosition(view.state.doc.resolve(candidate))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function resetMenuState(): void {
   activeView = null;
   activeMath = null;
   activeInsertContextBlock = null;
   activeInsertBlockTarget = null;
+  activeGapInsertPos = null;
+  activeBlockInsertAtEnd = false;
   activeListInsertBoundary = null;
   hitPos = -1;
   hitClientX = 0;
@@ -344,6 +447,90 @@ function nativeSelectionIntersectsTarget(
 }
 
 const TEXTBLOCK_SELECTOR = "p, h1, h2, h3, h4, h5, h6";
+const INLINE_BOUNDARY_SELECTOR = [
+  ...Object.values(MARK_SOURCE_SYNTAX).map(
+    (syntax) => syntax.selector
+  ),
+  ".milkdown-math-inline",
+  "img",
+  ".mt-image-node",
+].join(", ");
+
+/**
+ * Detect whether the pointer is in the blank area to the right of the last
+ * rendered inline boundary in the containing textblock.
+ *
+ * This is deliberately independent from the caret captured for formatting and
+ * inline editing. A right-click at the end of `**text**` must still enter the
+ * mark normally; only a block-insert command may use this paragraph-end hint.
+ */
+function isBlockInsertAtInlineTail(
+  view: EditorView,
+  textblockDom: HTMLElement | null,
+  clientX: number,
+  clientY: number
+): boolean {
+  if (!textblockDom || !view.dom.contains(textblockDom)) return false;
+  const outerInlineElements = Array.from(
+    textblockDom.querySelectorAll<HTMLElement>(
+      INLINE_BOUNDARY_SELECTOR
+    )
+  ).filter((element) => {
+    const outer = element.parentElement?.closest(
+      INLINE_BOUNDARY_SELECTOR
+    );
+    return !outer || !textblockDom.contains(outer);
+  });
+  const lastInline = outerInlineElements.at(-1);
+  if (!lastInline) return false;
+  const trailingRange = textblockDom.ownerDocument.createRange();
+  trailingRange.setStartAfter(lastInline);
+  trailingRange.setEnd(
+    textblockDom,
+    textblockDom.childNodes.length
+  );
+  if (
+    trailingRange.toString().trim() ||
+    trailingRange.cloneContents().querySelector(
+      INLINE_BOUNDARY_SELECTOR
+    )
+  ) {
+    return false;
+  }
+  const clientRects = Array.from(
+    lastInline.getClientRects()
+  ).filter(
+    (candidate) =>
+      candidate.width > 0 && candidate.height > 0
+  );
+  const lineRect = clientRects.find(
+    (candidate) =>
+      clientY >= candidate.top && clientY <= candidate.bottom
+  );
+  const rect =
+    clientRects.length > 0
+      ? lineRect
+      : lastInline.getBoundingClientRect();
+  if (!rect) return false;
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  if (clientY < rect.top || clientY > rect.bottom) return false;
+  return clientX >= rect.right;
+}
+
+function textblockEndNear(
+  view: EditorView,
+  pos: number
+): number | null {
+  const safe = Math.max(
+    0,
+    Math.min(pos, view.state.doc.content.size)
+  );
+  const $pos = view.state.doc.resolve(safe);
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    if ($pos.node(depth).isTextblock) return $pos.end(depth);
+  }
+  return null;
+}
 
 /** 展开行内源码时，把光标限制在分隔符内部。 */
 function clampToActiveMarkSource(view: EditorView, pos: number): number {
@@ -374,6 +561,7 @@ function captureRightClick(
   clientX: number;
   clientY: number;
   caretPos: number;
+  blockInsertAtEnd: boolean;
   textblock: TextblockTarget | null;
 } | null {
   const hit = view.posAtCoords({ left: clientX, top: clientY });
@@ -392,6 +580,7 @@ function captureRightClick(
       clientX,
       clientY,
       caretPos: position,
+      blockInsertAtEnd: false,
       textblock: null,
     };
   }
@@ -423,6 +612,16 @@ function captureRightClick(
   if (!textblock) return null;
 
   const position = hit?.pos ?? textblock.contentStart;
+  const blockDom = view.nodeDOM(textblock.blockPos);
+  const textblockDom =
+    domBlock ??
+    (blockDom instanceof HTMLElement ? blockDom : null);
+  const blockInsertAtEnd = isBlockInsertAtInlineTail(
+    view,
+    textblockDom,
+    clientX,
+    clientY
+  );
   const contentEnd = textblock.contentStart + textblock.contentSize;
   textblock.caretOffset = Math.max(
     0,
@@ -453,6 +652,7 @@ function captureRightClick(
     clientX,
     clientY,
     caretPos,
+    blockInsertAtEnd,
     textblock,
   };
 }
@@ -2041,6 +2241,9 @@ function runInsertCommand(id: EditorInsertCommand): void {
   const pos = hitPos;
   const contextBlockName = activeInsertContextBlock;
   const listBoundary = activeListInsertBoundary;
+  const gapInsertPos = activeGapInsertPos;
+  const blockInsertAtEnd =
+    id in BLOCK_INSERT_TYPES && activeBlockInsertAtEnd;
   const sourceControl = hitSourceControl;
   const clientX = hitClientX;
   const clientY = hitClientY;
@@ -2058,6 +2261,8 @@ function runInsertCommand(id: EditorInsertCommand): void {
   const hadMarkSource = !!markSourceKey.getState(view.state);
   const blocked = listBoundary
     ? !canInsertBlockAtPosition(view, id, listBoundary.insertPos)
+    : gapInsertPos != null
+      ? !canInsertBlockAtPosition(view, id, gapInsertPos)
     : !canInsertCommandAt(view, id, pos, contextBlockName);
   if (blocked) return;
   if (sourceControl?.isConnected) sourceControl.blur();
@@ -2065,10 +2270,14 @@ function runInsertCommand(id: EditorInsertCommand): void {
     ? closeActiveMarkSourceAtPosition(view, pos)
     : null;
   if (!hadMarkSource) closeActiveMarkSource(view);
+  const blockInsertPos = blockInsertAtEnd
+    ? textblockEndNear(view, mappedMarkSourcePos ?? pos)
+    : null;
   const inlineMathInsertPos = inlineMathSource
     ? splitInlineMathSourceForBlockInsertion(view, inlineMathSource)
     : null;
   const effectivePos =
+    blockInsertPos ??
     mappedMarkSourcePos ??
     inlineMathInsertPos ??
     (sourceControl
@@ -2079,6 +2288,12 @@ function runInsertCommand(id: EditorInsertCommand): void {
     view.dispatch(
       view.state.tr.setSelection(
         new GapCursor(view.state.doc.resolve(listBoundary.insertPos))
+      )
+    );
+  } else if (gapInsertPos != null) {
+    view.dispatch(
+      view.state.tr.setSelection(
+        new GapCursor(view.state.doc.resolve(gapInsertPos))
       )
     );
   } else if (!hitOnSelection(view, effectivePos)) {
@@ -2096,26 +2311,38 @@ function insertParagraphNear(before: boolean): void {
   const pos = hitPos;
   const contextBlockName = activeInsertContextBlock;
   const blockTarget = activeInsertBlockTarget;
+  const gapInsertPos = activeGapInsertPos;
   closeMenu();
   if (!view || pos < 0) return;
-  const insertPos = paragraphInsertionPositionAt(
-    view,
-    pos,
-    before,
-    contextBlockName,
-    blockTarget
-  );
+  const insertPos =
+    gapInsertPos ??
+    paragraphInsertionPositionAt(
+      view,
+      pos,
+      before,
+      contextBlockName,
+      blockTarget
+    );
   if (insertPos === null) return;
   view.focus();
 
   const paragraph = view.state.schema.nodes.paragraph;
   if (!paragraph) return;
   let tr = view.state.tr.insert(insertPos, paragraph.create());
-  tr = tr
-    .setSelection(TextSelection.near(tr.doc.resolve(insertPos + 1)))
-    .scrollIntoView();
+  let selection = TextSelection.near(
+    tr.doc.resolve(insertPos + 1)
+  );
+  try {
+    selection = TextSelection.create(tr.doc, insertPos + 1);
+  } catch {
+    /* Keep the nearest legal text position. */
+  }
+  tr = tr.setSelection(selection).scrollIntoView();
   view.dispatch(tr);
   view.focus();
+  requestAnimationFrame(() => {
+    if (!view.isDestroyed) view.focus();
+  });
 }
 
 /** 给选中文字加链接（与 /链接 的"插入占位"不同：保留并转换已有文字） */
@@ -2204,7 +2431,9 @@ function openMenu(
   inlineImage: HTMLImageElement | null = null,
   sourceEditor: HTMLTextAreaElement | null = null,
   imageSourceEditor: HTMLElement | null = null,
-  sourceControl: TextSourceControl | null = null
+  sourceControl: TextSourceControl | null = null,
+  blockInsertAtEnd = false,
+  forcedGapInsertPos: number | null = null
 ): void {
   closeMenu();
   activeView = view;
@@ -2277,6 +2506,14 @@ function openMenu(
     activeInsertContextBlock = activeListInsertBoundary.node.type.name;
     activeInsertBlockTarget = activeListInsertBoundary;
   }
+  activeBlockInsertAtEnd =
+    !activeInsertContextBlock && !activeListInsertBoundary
+      ? blockInsertAtEnd
+      : false;
+  activeGapInsertPos =
+    !activeInsertContextBlock && !activeListInsertBoundary
+      ? forcedGapInsertPos
+      : null;
   hitPos = pos;
   hitSourceControl = sourceControl;
   activeTextblock = textblock;
@@ -3271,11 +3508,15 @@ function openMenu(
   const canInsert = (id: EditorInsertCommand): boolean =>
     activeListInsertBoundary
       ? canInsertBlockAtPosition(view, id, activeListInsertBoundary.insertPos)
+      : activeGapInsertPos != null
+        ? canInsertBlockAtPosition(view, id, activeGapInsertPos)
       : canInsertCommandAt(view, id, pos, insertContextBlock);
   const insertContextOnlyParagraph =
     isParagraphOnlyInsertContextBlock(insertContextBlock);
   const insertContextAllowsReferenceInsertions =
-    !insertContextOnlyParagraph && !isInsideTableCell(view, pos);
+    activeGapInsertPos == null &&
+    !insertContextOnlyParagraph &&
+    !isInsideTableCell(view, pos);
   const inserts = addSubmenu("", "插入", menu, {
     // Keep an active inline source intact while navigating to a block command.
     // runInsertCommand closes it through the transaction mapping so the click
@@ -3338,20 +3579,36 @@ function openMenu(
   addBlockInsert("toc", "内容目录");
   addBlockInsert("frontmatter", "YAML Front Matter");
   if (hasInsertItems) addInsertSeparator();
-  const canInsertParagraphBefore = canInsertParagraphNearAt(
-    view,
-    pos,
-    true,
-    insertContextBlock,
-    activeInsertBlockTarget
-  );
-  const canInsertParagraphAfter = canInsertParagraphNearAt(
-    view,
-    pos,
-    false,
-    insertContextBlock,
-    activeInsertBlockTarget
-  );
+  const paragraphType = view.state.schema.nodes.paragraph;
+  let canInsertParagraphAtGap = false;
+  if (activeGapInsertPos != null && paragraphType) {
+    const $gap = view.state.doc.resolve(activeGapInsertPos);
+    canInsertParagraphAtGap = $gap.parent.canReplaceWith(
+      $gap.index(),
+      $gap.index(),
+      paragraphType
+    );
+  }
+  const canInsertParagraphBefore =
+    activeGapInsertPos != null
+      ? canInsertParagraphAtGap
+      : canInsertParagraphNearAt(
+          view,
+          pos,
+          true,
+          insertContextBlock,
+          activeInsertBlockTarget
+        );
+  const canInsertParagraphAfter =
+    activeGapInsertPos != null
+      ? canInsertParagraphAtGap
+      : canInsertParagraphNearAt(
+          view,
+          pos,
+          false,
+          insertContextBlock,
+          activeInsertBlockTarget
+        );
   addTextAction(inserts, "段落（上方）", () => insertParagraphNear(true), {
     disabled: !canInsertParagraphBefore,
   });
@@ -3505,6 +3762,41 @@ export function createFormatMenuProsePlugin(
             ".milkdown-math-block"
           );
           if (math) {
+            const blockTarget = sourceNodeTargetAt(
+              editorView,
+              math,
+              new Set(["math_block", "mathBlock"])
+            );
+            const rect = math.getBoundingClientRect();
+            if (
+              blockTarget &&
+              rect.height > 0 &&
+              event.clientY >= rect.bottom
+            ) {
+              const gapPos =
+                blockTarget.pos + blockTarget.node.nodeSize;
+              event.preventDefault();
+              event.stopPropagation();
+              openMenu(
+                editorView,
+                event.clientX,
+                event.clientY,
+                gapPos,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                gapPos
+              );
+              return;
+            }
             const captured = captureRightClick(
               editorView,
               target,
@@ -3565,7 +3857,42 @@ export function createFormatMenuProsePlugin(
           const codeBlock = target.closest<HTMLElement>(
             ".milkdown-code-block"
           );
-          if (!codeBlock) return;
+          if (!codeBlock) {
+            if (target.closest(TEXTBLOCK_SELECTOR)) return;
+            const selection = editorView.state.selection;
+            const hit = editorView.posAtCoords({
+              left: event.clientX,
+              top: event.clientY,
+            });
+            const gapPos =
+              selection instanceof GapCursor
+                ? selection.from
+                : hit
+                  ? gapCursorPositionNear(editorView, hit.pos)
+                  : null;
+            if (gapPos == null) return;
+            event.preventDefault();
+            event.stopPropagation();
+            openMenu(
+              editorView,
+              event.clientX,
+              event.clientY,
+              gapPos,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              false,
+              gapPos
+            );
+            return;
+          }
           const codeEditor = codeBlock.querySelector<HTMLElement>(".cm-editor");
           const codeView = codeEditor
             ? CodeMirrorView.findFromDOM(codeEditor)
@@ -3756,7 +4083,8 @@ export function createFormatMenuProsePlugin(
               inlineImage,
               null,
               null,
-              sourceControlAtTarget(target)
+              sourceControlAtTarget(target),
+              captured.blockInsertAtEnd
             );
             return true;
           },

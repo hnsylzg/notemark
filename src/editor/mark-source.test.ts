@@ -3,6 +3,7 @@ import {
   EditorState,
   TextSelection,
 } from "@milkdown/prose/state";
+import { history, undo } from "@milkdown/prose/history";
 import { EditorView } from "@milkdown/prose/view";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -99,6 +100,75 @@ function formatState(state: EditorState): EditorState {
 }
 
 describe("Typora-style mark source editing", () => {
+  it("inserts text after an expanded mark instead of after the next inline mark", () => {
+    const strong = schema.marks.strong.create();
+    const emphasis = schema.marks.emphasis.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.text("粗体", [strong]),
+        schema.text("强调", [emphasis]),
+      ]),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [history(), createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      Object.defineProperty(view, "scrollToSelection", {
+        configurable: true,
+        value: () => {},
+      });
+      expect(startMarkSourceRange(view, "strong", 1, 3)).toBe(true);
+      const session = markSourceKey.getState(view.state)!;
+      view.dispatch(
+        view.state.tr.setSelection(
+          TextSelection.create(view.state.doc, session.to)
+        )
+      );
+      const inputFrom = session.to;
+      const inputTo = session.to;
+      const handled = view.someProp("handleTextInput", (handler) =>
+        handler(
+          view,
+          inputFrom,
+          inputTo,
+          "X",
+          () =>
+            view.state.tr.insertText(
+              "X",
+              inputFrom,
+              inputTo
+            )
+        )
+      );
+      if (!handled) {
+        view.dispatch(
+          view.state.tr.insertText("X", inputFrom, inputTo)
+        );
+      }
+
+      expect(view.state.doc.textContent).toBe("粗体X强调");
+      let typedMarks: readonly import("@milkdown/prose/model").Mark[] =
+        [];
+      view.state.doc.descendants((node) => {
+        if (node.isText && node.text === "X") typedMarks = node.marks;
+      });
+      expect(typedMarks).toEqual([]);
+      expect(undo(view.state, view.dispatch)).toBe(true);
+      expect(view.state.doc.textContent).toBe("粗体强调");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("formats plain markdown when the missing opening star is added", () => {
     const state = stateWithText("*xx**", 2);
     const inserted = state.applyTransaction(
@@ -1458,4 +1528,45 @@ describe("Typora-style mark source editing", () => {
       }
     }
   );
+
+  it("expands a trailing mark from a window click over paragraph whitespace", () => {
+    const strong = schema.marks.strong.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.text("粗体", [strong]),
+        schema.text("   "),
+      ]),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, doc.content.size - 1),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      view.dom.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        })
+      );
+
+      expect(markSourceKey.getState(view.state)?.markName).toBe(
+        "strong"
+      );
+      expect(view.dom.querySelector("p")?.textContent).toBe(
+        "**粗体**   "
+      );
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
 });

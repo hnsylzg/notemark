@@ -7,6 +7,7 @@
  */
 import { $node, $view, $inputRule, $prose } from "@milkdown/utils";
 import { InputRule } from "@milkdown/prose/inputrules";
+import { undoNoScroll } from "@milkdown/prose/history";
 import {
   NodeSelection,
   Plugin,
@@ -70,8 +71,11 @@ export const mathBlockInputRule = $inputRule((ctx) => {
   });
 });
 
-export const mathBlockView = $view(mathBlockSchema, () => {
-  const nodeView: NodeViewConstructor = (node, view, getPos) => {
+export const createMathBlockNodeView: NodeViewConstructor = (
+  node,
+  view,
+  getPos
+) => {
     const dom = document.createElement("div");
     dom.className = "milkdown-math-block";
     dom.dataset.type = BLOCK_NAME;
@@ -161,6 +165,36 @@ export const mathBlockView = $view(mathBlockSchema, () => {
       textarea.addEventListener("mousedown", (e) => e.stopPropagation());
       textarea.addEventListener("keydown", (e) => {
         e.stopPropagation();
+        if (
+          (e.ctrlKey || e.metaKey) &&
+          !e.shiftKey &&
+          e.key.toLowerCase() === "z" &&
+          textarea.value === ((node.attrs.value as string) ?? "")
+        ) {
+          const captured: { transaction: Transaction | null } = {
+            transaction: null,
+          };
+          const canUndo = undoNoScroll(
+            view.state,
+            (next) => {
+              captured.transaction = next;
+            }
+          );
+          const transaction = captured.transaction;
+          if (canUndo && transaction) {
+            e.preventDefault();
+            editing = false;
+            dom.classList.remove("is-editing");
+            view.dispatch(
+              transaction.setMeta(
+                "scrollIntoView",
+                false
+              )
+            );
+            view.focus();
+            return;
+          }
+        }
         if (handleSourceKeydown(e, textarea)) return;
         if (e.key === "Escape") {
           e.preventDefault();
@@ -199,9 +233,12 @@ export const mathBlockView = $view(mathBlockSchema, () => {
         renderVersion += 1;
       },
     };
-  };
-  return nodeView;
-});
+};
+
+export const mathBlockView = $view(
+  mathBlockSchema,
+  () => createMathBlockNodeView
+);
 
 /*
  * mathInlineView — 接管 plugin-math 的行内公式（math_inline）编辑。

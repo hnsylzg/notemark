@@ -95,6 +95,13 @@ export const MARK_SOURCE_SYNTAX: Readonly<Record<string, MarkSyntax>> = {
 };
 
 const SOURCE_TEXTBLOCK_SELECTOR = "p, h1, h2, h3, h4, h5, h6";
+const NON_MARK_INLINE_SELECTOR = [
+  ".milkdown-math-inline",
+  ".milkdown-math-inline-input",
+  ".mt-image-node",
+  ".mt-footnote-reference",
+  "img",
+].join(", ");
 
 type MarkSourceMeta =
   | { type: "start"; session: MarkSourceSession }
@@ -434,33 +441,117 @@ function activateMarkRange(
   return true;
 }
 
-function activateLinkAtPosition(
+function activateMarkAtPosition(
   view: EditorView,
   pos: number
 ): boolean {
-  for (const markName of [
-    LINK_REFERENCE_MARK_NAME,
-    "link",
-  ]) {
-    const type = markTypeFor(view.state, markName);
-    if (!type) continue;
-    const range =
-      markRangeAt(view.state.doc, pos, type) ??
-      markRangeAt(view.state.doc, Math.max(1, pos - 1), type);
-    if (!range) continue;
-    const attrs = markAttrsAtRange(
-      view.state.doc,
-      type,
-      range.from,
-      range.to
-    );
-    if (!attrs) continue;
+  const candidates = [pos, Math.max(1, pos - 1)];
+  for (const candidate of candidates) {
+    for (const preferEnding of [true, false]) {
+      for (const markName of Object.keys(MARK_SOURCE_SYNTAX)) {
+        const type = markTypeFor(view.state, markName);
+        if (!type) continue;
+        const range = markRangeAt(
+          view.state.doc,
+          candidate,
+          type
+        );
+        if (
+          !range ||
+          (preferEnding && range.to !== candidate)
+        ) {
+          continue;
+        }
+        const attrs = markAttrsAtRange(
+          view.state.doc,
+          type,
+          range.from,
+          range.to
+        );
+        if (markName === "link" && !attrs) continue;
+        if (
+          activateMarkRange(
+            view,
+            markName,
+            range.from,
+            range.to,
+            pos
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+
+  const state = view.state;
+  const $pos = state.doc.resolve(
+    Math.max(1, Math.min(pos, state.doc.content.size))
+  );
+  let textblockDepth = $pos.depth;
+  while (
+    textblockDepth > 0 &&
+    !$pos.node(textblockDepth).isTextblock
+  ) {
+    textblockDepth -= 1;
+  }
+  if (textblockDepth === 0) return false;
+
+  const candidatesInBlock: Array<{
+    markName: string;
+    from: number;
+    to: number;
+    attrs: Readonly<Record<string, unknown>> | undefined;
+  }> = [];
+  const seen = new Set<string>();
+  state.doc.nodesBetween(
+    $pos.start(textblockDepth),
+    $pos.end(textblockDepth),
+    (node, nodePos) => {
+      if (!node.isText) return;
+      for (const markName of Object.keys(MARK_SOURCE_SYNTAX)) {
+        const type = markTypeFor(state, markName);
+        if (!type) continue;
+        const range = markRangeAt(state.doc, nodePos, type);
+        if (!range || range.to > pos) continue;
+        const trailing = state.doc.textBetween(
+          range.to,
+          pos,
+          "\n",
+          "\n"
+        );
+        if (trailing.trim()) continue;
+        const key = `${markName}:${range.from}:${range.to}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidatesInBlock.push({
+          markName,
+          from: range.from,
+          to: range.to,
+          attrs: markAttrsAtRange(
+            state.doc,
+            type,
+            range.from,
+            range.to
+          ),
+        });
+      }
+    }
+  );
+  candidatesInBlock.sort((a, b) => b.to - a.to);
+  for (const candidate of candidatesInBlock) {
+    if (
+      candidate.markName === "link" &&
+      !candidate.attrs
+    ) {
+      continue;
+    }
     if (
       activateMarkRange(
         view,
-        markName,
-        range.from,
-        range.to,
+        candidate.markName,
+        candidate.from,
+        candidate.to,
         pos
       )
     ) {
@@ -665,6 +756,41 @@ function closeMarkSource(view: EditorView): void {
   view.dispatch(finishMarkSourceTransaction(view.state, session));
 }
 
+function closeMarkSourceAndInsertText(
+  view: EditorView,
+  session: MarkSourceSession,
+  text: string,
+  before: boolean
+): void {
+  const closeTransaction = finishMarkSourceTransaction(
+    view.state,
+    session
+  );
+  const sourceBoundary = before ? session.from : session.to;
+  const insertPos = closeTransaction.mapping.map(
+    sourceBoundary,
+    before ? -1 : 1
+  );
+  view.dispatch(closeTransaction);
+
+  const $insert = view.state.doc.resolve(insertPos);
+  const marksBefore = $insert.nodeBefore?.marks ?? [];
+  const marksAfter = $insert.nodeAfter?.marks ?? [];
+  const boundaryMarks = marksBefore.filter((mark) =>
+    mark.isInSet(marksAfter)
+  );
+  let tr = view.state.tr.replaceRangeWith(
+    insertPos,
+    insertPos,
+    view.state.schema.text(text, boundaryMarks)
+  );
+  tr = tr.setSelection(
+    TextSelection.create(tr.doc, insertPos + text.length)
+  );
+  view.dispatch(tr);
+  view.focus();
+}
+
 /** Finish the active inline source session before leaving visual editing. */
 export function closeActiveMarkSource(view: EditorView): boolean {
   if (!markSourceKey.getState(view.state)) return false;
@@ -713,6 +839,7 @@ function clickedMark(
   target: Element | null
 ): { markName: string; element: HTMLElement } | null {
   if (!target) return null;
+  if (target.closest(NON_MARK_INLINE_SELECTOR)) return null;
   // 代码块里的 <code>（CodeMirror 编辑器或占位 <pre><code>）不是行内代码。
   // 误判会把代码块正文当成行内代码插入反引号，而关闭时的正则又匹配不上
   // （正文里有换行/反引号），反引号就永久留在代码里——点一下即脏。
@@ -1164,6 +1291,29 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
         }
         closeMarkSource(editorView);
       };
+      const activateMarkAfterTailClick = (event: Event): void => {
+        const click = event as MouseEvent;
+        const target = click.target;
+        if (
+          click.button !== 0 ||
+          !(target instanceof Element) ||
+          !editorView.dom.contains(target) ||
+          !(
+            target === editorView.dom ||
+            target.closest(SOURCE_TEXTBLOCK_SELECTOR)
+          ) ||
+          target.closest(NON_MARK_INLINE_SELECTOR) ||
+          clickedMark(target) ||
+          markSourceKey.getState(editorView.state) ||
+          !editorView.state.selection.empty
+        ) {
+          return;
+        }
+        activateMarkAtPosition(
+          editorView,
+          editorView.state.selection.from
+        );
+      };
       document.addEventListener(
         "pointerdown",
         closeOnOutsidePointer,
@@ -1175,6 +1325,7 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
         true
       );
       document.addEventListener("click", closeOnOutsidePointer, true);
+      window.addEventListener("click", activateMarkAfterTailClick);
       return {
         destroy() {
           document.removeEventListener(
@@ -1188,6 +1339,10 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             true
           );
           document.removeEventListener("click", closeOnOutsidePointer, true);
+          window.removeEventListener(
+            "click",
+            activateMarkAfterTailClick
+          );
         },
       };
     },
@@ -1332,8 +1487,13 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
             INLINE_SYNTAX_INPUT_CHARS.has(character)
           )
         ) {
-          closeMarkSource(view);
-          return false;
+          closeMarkSourceAndInsertText(
+            view,
+            session,
+            text,
+            true
+          );
+          return true;
         }
         if (
           session &&
@@ -1359,7 +1519,13 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
               INLINE_SYNTAX_INPUT_CHARS.has(character)
             )
           ) {
-            closeMarkSource(view);
+            closeMarkSourceAndInsertText(
+              view,
+              session,
+              text,
+              false
+            );
+            return true;
           }
         } else if (!session) {
           const $from = view.state.selection.$from;
@@ -1476,6 +1642,17 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
       },
       handleClick(view, pos, event) {
         if (event.button !== 0) return false;
+        const target = event.target;
+        if (
+          !(target instanceof Element) ||
+          !(
+            target === view.dom ||
+            target.closest(SOURCE_TEXTBLOCK_SELECTOR)
+          ) ||
+          target.closest(NON_MARK_INLINE_SELECTOR)
+        ) {
+          return false;
+        }
         const active = markSourceKey.getState(view.state);
         if (active) {
           if (
@@ -1489,7 +1666,7 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
         }
 
         const mark = clickedMark(event.target as Element | null);
-        if (!mark) return activateLinkAtPosition(view, pos);
+        if (!mark) return activateMarkAtPosition(view, pos);
         try {
           const from = view.posAtDOM(mark.element, 0, 1);
           const to = view.posAtDOM(

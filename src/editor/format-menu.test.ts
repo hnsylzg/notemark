@@ -2078,6 +2078,182 @@ describe("code block context menu", () => {
     }
   });
 
+  it("offers block insertion in the gap below a math block", () => {
+    const gapSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        math_block: {
+          group: "block",
+          atom: true,
+          selectable: true,
+          toDOM: () => [
+            "div",
+            { class: "milkdown-math-block" },
+          ],
+        },
+        code_block: {
+          group: "block",
+          content: "text*",
+          marks: "",
+          toDOM: () => ["pre", 0],
+        },
+        text: { group: "inline" },
+      },
+    });
+    const doc = gapSchema.node("doc", null, [
+      gapSchema.node("math_block"),
+      gapSchema.node(
+        "paragraph",
+        null,
+        gapSchema.text("below")
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: gapSchema,
+        doc,
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const mathBlock = view.dom.querySelector<HTMLElement>(
+        ".milkdown-math-block"
+      )!;
+      vi.spyOn(
+        mathBlock,
+        "getBoundingClientRect"
+      ).mockReturnValue({
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 200,
+        bottom: 20,
+        left: 0,
+        width: 200,
+        height: 20,
+        toJSON: () => ({}),
+      });
+      mathBlock.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 30,
+        })
+      );
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+      item("插入")!.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".mt-context-menu__submenu"
+        )
+      ).find(
+        (panel) => !panel.hidden && item("代码块", panel)
+      );
+      expect(insertPanel).toBeDefined();
+      item("代码块", insertPanel)!.click();
+
+      expect(view.state.doc.childCount).toBe(3);
+      expect(view.state.doc.child(0).type.name).toBe("math_block");
+      expect(view.state.doc.child(1).type.name).toBe("code_block");
+      expect(view.state.doc.child(2).textContent).toBe("below");
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+        })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("offers block insertion from a GapCursor at a math block boundary", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("mathBlock"),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: NodeSelection.create(doc, 0),
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 1,
+        inside: -1,
+      });
+      view.dom.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 30,
+        })
+      );
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+      item("插入")!.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".mt-context-menu__submenu"
+        )
+      ).find(
+        (panel) => !panel.hidden && item("段落（下方）", panel)
+      );
+      expect(insertPanel).toBeDefined();
+      item("段落（下方）", insertPanel)!.click();
+
+      expect(view.state.doc.childCount).toBe(2);
+      expect(view.state.doc.child(0).type.name).toBe("mathBlock");
+      expect(view.state.doc.child(1).type.name).toBe("paragraph");
+      expect(view.state.selection.empty).toBe(true);
+      expect(view.state.selection.$from.parent.type.name).toBe(
+        "paragraph"
+      );
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+        })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("enables paragraph insertion around a normal text block", () => {
     const doc = schema.node("doc", null, [
       schema.node("paragraph", null, schema.text("body")),
@@ -2617,6 +2793,267 @@ describe("block insertion from the context menu", () => {
     } finally {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it.each([
+    ["代码块", "code_block"],
+    ["公式块", "math_block"],
+    ["水平分割线", "hr"],
+  ])(
+    "inserts %s after a bold-only line without splitting the bold mark",
+    (label, insertedNodeName) => {
+    const boldSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        code_block: {
+          group: "block",
+          content: "text*",
+          marks: "",
+          toDOM: () => ["pre", 0],
+        },
+        math_block: {
+          group: "block",
+          content: "text*",
+          atom: true,
+          attrs: { value: { default: "" } },
+          toDOM: () => [
+            "div",
+            { class: "milkdown-math-block" },
+          ],
+        },
+        hr: {
+          group: "block",
+          atom: true,
+          toDOM: () => ["hr"],
+        },
+        text: { group: "inline" },
+      },
+      marks: {
+        strong: { toDOM: () => ["strong", 0] },
+      },
+    });
+    const strong = boldSchema.marks.strong.create();
+    const doc = boldSchema.node("doc", null, [
+      boldSchema.node(
+        "paragraph",
+        null,
+        boldSchema.text("图片：", [strong])
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: boldSchema,
+        doc,
+        selection: TextSelection.create(doc, 4),
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      Object.defineProperty(view, "scrollToSelection", {
+        configurable: true,
+        value: () => {},
+      });
+      const strongElement = view.dom.querySelector("strong")!;
+      vi.spyOn(
+        strongElement,
+        "getBoundingClientRect"
+      ).mockReturnValue({
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 100,
+        bottom: 20,
+        left: 0,
+        width: 100,
+        height: 20,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 3,
+        inside: 1,
+      });
+      const paragraphElement = view.dom.querySelector("p")!;
+      vi.spyOn(
+        paragraphElement,
+        "getBoundingClientRect"
+      ).mockReturnValue({
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 200,
+        bottom: 20,
+        left: 0,
+        width: 200,
+        height: 20,
+        toJSON: () => ({}),
+      });
+      view.dom.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 110,
+          clientY: 10,
+        })
+      );
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+      item("插入")!.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".mt-context-menu__submenu"
+        )
+      ).find(
+        (panel) => !panel.hidden && item(label, panel)
+      );
+      item(label, insertPanel)!.click();
+
+      const types = Array.from(
+        { length: view.state.doc.childCount },
+        (_, index) => view.state.doc.child(index).type.name
+      );
+      const insertedIndex = types.indexOf(insertedNodeName);
+      expect(insertedIndex).toBeGreaterThan(0);
+      const paragraph = view.state.doc.child(insertedIndex - 1);
+      expect(paragraph.textContent).toBe("图片：");
+      expect(
+        paragraph.firstChild?.marks.some(
+          (mark) => mark.type.name === "strong"
+        )
+      ).toBe(true);
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+        })
+      );
+      view.destroy();
+      host.remove();
+    }
+    }
+  );
+
+  it("inserts a block after a paragraph containing only inline code", () => {
+    const codeSchema = new Schema({
+      nodes: {
+        doc: { content: "block+" },
+        paragraph: {
+          group: "block",
+          content: "inline*",
+          toDOM: () => ["p", 0],
+        },
+        code_block: {
+          group: "block",
+          content: "text*",
+          marks: "",
+          toDOM: () => ["pre", 0],
+        },
+        text: { group: "inline" },
+      },
+      marks: {
+        inlineCode: { toDOM: () => ["code", 0] },
+      },
+    });
+    const inlineCode = codeSchema.marks.inlineCode.create();
+    const doc = codeSchema.node("doc", null, [
+      codeSchema.node(
+        "paragraph",
+        null,
+        codeSchema.text("code", [inlineCode])
+      ),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema: codeSchema,
+        doc,
+        selection: TextSelection.create(doc, 5),
+        plugins: [createFormatMenuProsePlugin()],
+      }),
+    });
+
+    try {
+      const paragraph = view.dom.querySelector("p")!;
+      const code = paragraph.querySelector("code")!;
+      vi.spyOn(code, "getBoundingClientRect").mockReturnValue({
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 100,
+        bottom: 20,
+        left: 0,
+        width: 100,
+        height: 20,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 3,
+        inside: 1,
+      });
+      paragraph.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 110,
+          clientY: 10,
+        })
+      );
+      const item = (label: string, root: ParentNode = document) =>
+        Array.from(
+          root.querySelectorAll<HTMLButtonElement>(
+            ".mt-context-menu__item"
+          )
+        ).find(
+          (candidate) =>
+            candidate.querySelector(".mt-context-menu__label")
+              ?.textContent === label
+        );
+      item("插入")!.click();
+      const insertPanel = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".mt-context-menu__submenu"
+        )
+      ).find(
+        (panel) => !panel.hidden && item("代码块", panel)
+      );
+      item("代码块", insertPanel)!.click();
+
+      expect(view.state.doc.childCount).toBe(2);
+      const sourceParagraph = view.state.doc.child(0);
+      expect(sourceParagraph.textContent).toBe("code");
+      expect(view.state.doc.child(1).type.name).toBe("code_block");
+      expect(
+        sourceParagraph.firstChild?.marks.some(
+          (mark) => mark.type.name === "inlineCode"
+        )
+      ).toBe(true);
+    } finally {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+        })
       );
       view.destroy();
       host.remove();

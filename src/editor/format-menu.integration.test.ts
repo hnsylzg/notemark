@@ -18,6 +18,109 @@ if (!globals.IntersectionObserver) globals.IntersectionObserver = StubObserver;
 if (!globals.ResizeObserver) globals.ResizeObserver = StubObserver;
 
 describe("format menu with the application schema", () => {
+  it.each([
+    ["**图片：**", "strong", "图片："],
+    ["*图片：*", "em", "图片："],
+    ["`图片：`", "code", "图片："],
+    ["~~图片：~~", "del", "图片："],
+    ["==图片：==", "mark.md-highlight", "图片："],
+    ["<u>图片：</u>", "u", "图片："],
+    ["图片：^2^", "sup", "图片：2"],
+    ["图片：~2~", "sub", "图片：2"],
+    ["<kbd>图片：</kbd>", "[data-inline-html-mark]", "图片："],
+    ["[图片：](https://example.com)", "a[href]", "图片："],
+  ])(
+    "inserts a block after the whole %s paragraph",
+    async (markdown, inlineSelector, expectedText) => {
+      const root = document.createElement("div");
+      root.className = "milkdown";
+      document.body.appendChild(root);
+      const editor = createEditor(root);
+
+      try {
+        await editor.create();
+        setMarkdown(editor, markdown);
+        const view = editor.action((ctx) =>
+          ctx.get(editorViewCtx)
+        ) as EditorView;
+        const paragraph =
+          view.dom.querySelector<HTMLElement>("p")!;
+        const inline =
+          paragraph.querySelector<HTMLElement>(inlineSelector)!;
+        expect(inline).not.toBeNull();
+        vi.spyOn(inline, "getBoundingClientRect").mockReturnValue({
+          x: 0,
+          y: 0,
+          top: 0,
+          right: 100,
+          bottom: 20,
+          left: 0,
+          width: 100,
+          height: 20,
+          toJSON: () => ({}),
+        });
+        vi.spyOn(view, "posAtCoords").mockReturnValue({
+          pos: view.posAtDOM(inline, 0, 1),
+          inside: 1,
+        });
+
+        const rightClick = new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          buttons: 2,
+          clientX: 110,
+          clientY: 10,
+        });
+        view.dom.dispatchEvent(rightClick);
+        view.dom.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            button: 2,
+            clientX: 110,
+            clientY: 10,
+          })
+        );
+        const item = (
+          label: string,
+          rootNode: ParentNode = document
+        ) =>
+          Array.from(
+            rootNode.querySelectorAll<HTMLButtonElement>(
+              ".mt-context-menu__item"
+            )
+          ).find(
+            (candidate) =>
+              candidate.querySelector(".mt-context-menu__label")
+                ?.textContent === label
+          );
+        item("插入")!.click();
+        const insertPanel = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            ".mt-context-menu__submenu"
+          )
+        ).find(
+          (panel) => !panel.hidden && item("代码块", panel)
+        );
+        item("代码块", insertPanel)!.click();
+
+        expect(view.state.doc.childCount).toBe(2);
+        expect(view.state.doc.child(0).textContent).toBe(expectedText);
+        expect(view.state.doc.child(1).type.name).toBe("code_block");
+      } finally {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            bubbles: true,
+          })
+        );
+        await editor.destroy();
+        root.remove();
+      }
+    }
+  );
+
   it("enables paragraph insertion in a normal paragraph", async () => {
     const root = document.createElement("div");
     root.className = "milkdown";
