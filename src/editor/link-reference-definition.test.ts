@@ -232,6 +232,70 @@ describe("link reference definitions", () => {
     }
   });
 
+  it("undoes a newly inserted definition from its focused input", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView"
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: () => {},
+    });
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "");
+      const view = editor.action((ctx) =>
+        ctx.get(editorViewCtx)
+      ) as EditorView;
+      (
+        view as unknown as { scrollToSelection: () => void }
+      ).scrollToSelection = () => {};
+
+      expect(insertLinkReferenceDefinition(view)).toBe(true);
+      const input = await vi.waitFor(() => {
+        const element = view.dom.querySelector<HTMLInputElement>(
+          '.mt-link-reference-definition__identifier'
+        );
+        expect(element).not.toBeNull();
+        expect(document.activeElement).toBe(element);
+        return element!;
+      });
+      const undoEvent = new KeyboardEvent("keydown", {
+        key: "z",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      input.dispatchEvent(undoEvent);
+
+      expect(undoEvent.defaultPrevented).toBe(true);
+      expect(
+        view.dom.querySelector(".mt-link-reference-definition")
+      ).toBeNull();
+      expect(getMarkdown(editor)).toBe("");
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          originalScrollIntoView
+        );
+      } else {
+        Reflect.deleteProperty(
+          HTMLElement.prototype,
+          "scrollIntoView"
+        );
+      }
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
   it("inserts before the current paragraph when invoked at its start", async () => {
     const root = document.createElement("div");
     root.className = "milkdown";

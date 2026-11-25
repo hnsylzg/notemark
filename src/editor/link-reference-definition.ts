@@ -18,7 +18,9 @@ import {
 import {
   TextSelection,
   type EditorState,
+  type Transaction,
 } from "@milkdown/kit/prose/state";
+import { undoNoScroll } from "@milkdown/prose/history";
 import type {
   EditorView,
   NodeViewConstructor,
@@ -192,6 +194,22 @@ export const createLinkReferenceDefinitionNodeView: NodeViewConstructor = (
     !!url.value.trim() ||
     !!title.value.trim();
 
+  const inputsMatchAttrs = (): boolean => {
+    const pos = getPos();
+    if (typeof pos !== "number") return false;
+    const live = view.state.doc.nodeAt(pos);
+    if (live?.type.name !== LINK_REFERENCE_DEFINITION_NAME) {
+      return false;
+    }
+    return (
+      identifier.value.trim() ===
+        String(live.attrs.identifier ?? "") &&
+      url.value.trim() === String(live.attrs.url ?? "") &&
+      title.value.trim() ===
+        String(live.attrs.title ?? "")
+    );
+  };
+
   const removeIncompleteDefinition = (focusEditor: boolean): boolean => {
     const pos = getPos();
     if (typeof pos !== "number") return false;
@@ -278,6 +296,30 @@ export const createLinkReferenceDefinitionNodeView: NodeViewConstructor = (
     });
   };
   const onKeyDown = (event: KeyboardEvent): void => {
+    const mod = event.ctrlKey || event.metaKey;
+    if (
+      mod &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "z" &&
+      inputsMatchAttrs()
+    ) {
+      const captured: {
+        transaction: Transaction | null;
+      } = { transaction: null };
+      const canUndo = undoNoScroll(view.state, (transaction) => {
+        captured.transaction = transaction;
+      });
+      const transaction = captured.transaction;
+      if (canUndo && transaction) {
+        event.preventDefault();
+        event.stopPropagation();
+        view.dispatch(
+          transaction.setMeta("scrollIntoView", false)
+        );
+        view.focus();
+        return;
+      }
+    }
     event.stopPropagation();
     const input = event.target as HTMLInputElement;
     const fields = [identifier, url, title];
