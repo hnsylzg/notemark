@@ -720,13 +720,9 @@
   /* Markmap 主题可通过 --markmap-theme（classic/cards/minimal）、
      --markmap-layout（tree/two-sided/org-chart）、
      --markmap-color-scheme 和 --markmap-wrap-width 覆盖。 */
-  /* Mermaid 渲染配置（CSS 变量形式，diagram-view.ts 读取，用法同 Typora）：
-     --mermaid-theme: 可覆盖 Mermaid 主题（如 neutral/dark）
-     --mermaid-look: 可覆盖图形外观（classic/neo/handDrawn）
-     --mermaid-layout: 可覆盖布局引擎（dagre/elk）
-     --mermaid-flowchart-curve: 连线曲线 linear/basis；basis 为 Mermaid 默认曲线
-     --mermaid-flowchart-html-labels: 节点/连线标签是否用 HTML 渲染（true/false）
-     --mermaid-flowchart-node-spacing / --mermaid-flowchart-rank-spacing: 节点间距 */
+  /* 主题只能通过 --mermaid-theme 选择 Mermaid 配色板。
+     字体、布局、外观、曲线、标签模式和间距由编辑器固定，保证所有主题
+     使用一致的 SVG 文字度量与图形几何。 */
   margin: 1em auto;
   text-align: center;
   overflow-x: auto;

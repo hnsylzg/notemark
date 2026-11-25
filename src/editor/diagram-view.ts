@@ -17,6 +17,7 @@ import { diagramSchema } from "@milkdown/plugin-diagram";
 import type { NodeViewConstructor } from "@milkdown/prose/view";
 import { deleteEmptyEditableBlock, exitToNextLine } from "./block-exit";
 import { handleSourceKeydown } from "./source-tab";
+import { preserveMermaidVennTitleInSvg } from "./mermaid-export";
 
 type MermaidLike = {
   initialize(config: unknown): void;
@@ -27,76 +28,31 @@ const isDarkTheme = () =>
   document.documentElement.dataset.theme === "dark";
 
 /**
- * 读取主题 CSS 中声明的 mermaid 配置（CSS 变量形式，用法同 Typora 主题）。
- * 变量可声明在 .milkdown .editor .diagram 或其任意祖先上，例如：
- *   --mermaid-theme: neutral;                  // 固定 mermaid 主题名
- *   --mermaid-look: classic;                   // 图形外观
- *   --mermaid-layout: dagre;                   // 布局引擎
- *   --mermaid-font-family: ...;                // 图表字体
- *   --mermaid-flowchart-curve: basis;           // 连线曲线（linear/basis）
- *   --mermaid-flowchart-html-labels: true;     // 标签是否用 HTML 渲染
- *   --mermaid-flowchart-node-spacing: 60;      // 同层节点间距
- *   --mermaid-flowchart-rank-spacing: 90;      // 相邻层级间距
- * 未声明的变量不参与覆盖（保持内置默认 / 自动跟随明暗）。
+ * Mermaid 的 SVG 几何由字体度量参与计算。固定为内置主题使用的字体栈，
+ * 可保证所有主题的框、文字基线和导出结果一致；主题只负责配色。
  */
-function readMermaidCssConfig(): Record<string, unknown> {
+export const MERMAID_FONT_FAMILY =
+  '"Open Sans", "Clear Sans", "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", "Segoe UI Emoji", sans-serif';
+
+function readMermaidTheme(): string | null {
   const el = document.querySelector<HTMLElement>(".milkdown .diagram");
-  if (!el) return {};
+  if (!el) return null;
   const style = getComputedStyle(el);
-  const pick = (name: string) => style.getPropertyValue(name).trim();
-
-  const cfg: Record<string, unknown> = {};
-  const flowchart: Record<string, unknown> = {};
-  const theme = pick("--mermaid-theme");
-  if (theme) cfg.theme = theme;
-  const look = pick("--mermaid-look");
-  if (look) {
-    cfg.look = look;
-    flowchart.look = look;
-  }
-  const layout = pick("--mermaid-layout");
-  if (layout) cfg.layout = layout;
-
-  // 显式指定字体，避免 Mermaid 中文被浏览器回退到另一套字体后，
-  // 节点尺寸按一种字体计算、PDF 却用另一种字形绘制，造成文字边缘裁切。
-  const fontFamily = pick("--mermaid-font-family") || style.fontFamily;
-  if (fontFamily) cfg.fontFamily = fontFamily;
-
-  const curve = pick("--mermaid-flowchart-curve");
-  if (curve) flowchart.curve = curve;
-  const htmlLabels = pick("--mermaid-flowchart-html-labels");
-  if (htmlLabels) {
-    cfg.htmlLabels = htmlLabels === "true";
-  }
-  const nodeSpacing = pick("--mermaid-flowchart-node-spacing");
-  if (nodeSpacing) flowchart.nodeSpacing = Number(nodeSpacing);
-  const rankSpacing = pick("--mermaid-flowchart-rank-spacing");
-  if (rankSpacing) flowchart.rankSpacing = Number(rankSpacing);
-  if (Object.keys(flowchart).length > 0) cfg.flowchart = flowchart;
-
-  return cfg;
+  return style.getPropertyValue("--mermaid-theme").trim() || null;
 }
 
-/** 组装当前主题对应的 mermaid 配置：内置默认 + 主题 CSS 变量覆盖 */
-function getMermaidConfig(): Record<string, unknown> {
-  const base: Record<string, unknown> = {
+/** 组装 Mermaid 配置：主题只覆盖配色，字体和图形几何保持全局一致。 */
+export function getMermaidConfig(): Record<string, unknown> {
+  return {
     startOnLoad: false,
-    // 使用 Mermaid 内置 Redux 主题、classic 外观、dagre 布局和默认曲线。
-    theme: isDarkTheme() ? "dark" : "redux",
+    theme: readMermaidTheme() ?? (isDarkTheme() ? "dark" : "redux"),
     look: "classic",
     layout: "dagre",
+    fontFamily: MERMAID_FONT_FAMILY,
     // 用纯 SVG <text> 渲染标签，避免 foreignObject 导致 Word/PDF 文字裁切。
     htmlLabels: false,
     flowchart: { look: "classic" },
   };
-  const overrides = readMermaidCssConfig();
-  if (overrides.flowchart) {
-    overrides.flowchart = {
-      ...(base.flowchart as Record<string, unknown>),
-      ...(overrides.flowchart as Record<string, unknown>),
-    };
-  }
-  return { ...base, ...overrides };
 }
 
 let mermaidPromise: Promise<MermaidLike> | null = null;
@@ -246,7 +202,7 @@ export const diagramView = $view(diagramSchema.node, () => {
           // 渲染期间用户可能已点进编辑态（textarea 已替换 dom 子节点），
           // 此时不要把 SVG 写回去，否则 textarea（及其光标）会被吞掉。
           if (editing) return;
-          dom.innerHTML = svg;
+          dom.innerHTML = preserveMermaidVennTitleInSvg(svg);
         })
         .catch((error) => {
           if (current !== token) return;

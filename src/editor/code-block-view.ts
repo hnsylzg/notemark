@@ -34,6 +34,7 @@ import {
   renderMarkmapSvg,
   subscribeMarkmapTheme,
 } from "./markmap-renderer";
+import { preserveMermaidVennTitleInSvg } from "./mermaid-export";
 import { applySourceEnter, applySourceTab } from "./source-tab";
 
 type CodeMirrorBlockArgs = ConstructorParameters<typeof CodeMirrorBlock>;
@@ -113,7 +114,11 @@ export function createDiagramCodeBlockPreview(): DiagramCodeBlockPreview {
     void render
       .then((svg) => {
         if (requestRevision !== revision) return;
-        request.apply(diagramPreviewMarkup(request.kind, svg));
+        const previewSvg =
+          request.kind === "mermaid"
+            ? preserveMermaidVennTitleInSvg(svg)
+            : svg;
+        request.apply(diagramPreviewMarkup(request.kind, previewSvg));
       })
       .catch((error) => {
         if (requestRevision !== revision) return;

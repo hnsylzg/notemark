@@ -2377,9 +2377,9 @@ function serializeRenderedSvg(container: HTMLElement | null): string | null {
   } catch {
     svg = el.outerHTML;
   }
-  // foreignObject 在 <img> 中被沙箱化，通常渲染不出来（主题开启
-  // --mermaid-flowchart-html-labels 时会出现）。此时放弃复用，改由
-  // renderMermaid（固定 htmlLabels:false）输出纯 SVG 文本节点，保证可栅格化。
+  // foreignObject 在 <img> 中被沙箱化，通常渲染不出来。此时放弃复用，
+  // 改由 renderMermaid（固定 htmlLabels:false）输出纯 SVG 文本节点，
+  // 保证可栅格化。
   if (/<foreignObject[\s>]/i.test(svg)) return null;
   const normalized = normalizeMermaidHslColors(
     normalizeMermaidSvgForExport(svg, background)

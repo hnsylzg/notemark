@@ -748,6 +748,8 @@ html[data-theme="dark"] {
   text-align: center;
 }
 
+/* Mermaid 字体、布局和图形几何由编辑器固定；主题只可通过
+   --mermaid-theme 选择配色板。 */
 .milkdown .diagram {
   margin: 1em 0;
   background: transparent;

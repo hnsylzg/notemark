@@ -24,7 +24,7 @@
  *   11. 代码块
  *   12. 代码语法高亮 token
  *   13. 数学公式（KaTeX）
- *   14. Mermaid 图表（默认继承，可选覆盖）
+ *   14. Mermaid 图表（主题配色）
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -579,19 +579,12 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * 14. Mermaid 图表（默认继承，可选覆盖）
- *     默认使用内置配置。需要单独覆盖本主题时，取消整段注释。
+ * 14. Mermaid 图表（仅允许选择配色板）
+ *     字体、布局、外观、曲线、标签模式和间距由编辑器固定，主题不得覆盖。
  *     注意：显式设置 --mermaid-theme 后，暗色不会自动切换到 dark。
  *
 .milkdown .diagram {
   --mermaid-theme: redux;
-  --mermaid-look: classic;
-  --mermaid-layout: dagre;
-  --mermaid-font-family: var(--mt-font-sans);
-  --mermaid-flowchart-curve: basis;
-  --mermaid-flowchart-html-labels: false;
-  --mermaid-flowchart-node-spacing: 50;
-  --mermaid-flowchart-rank-spacing: 50;
 }
  * ═══════════════════════════════════════════════════════════════ */
 

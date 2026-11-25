@@ -132,6 +132,7 @@ export function preserveMermaidGanttGridLines(root: Element): void {
  * the title would reduce the original gap between the title and circles.
  */
 export function preserveMermaidVennTitle(root: Element): void {
+  if (root.querySelector('[data-mermaid-export-offset="true"]')) return;
   const titles = Array.from(
     root.querySelectorAll<SVGTextElement>(".venn-title")
   );

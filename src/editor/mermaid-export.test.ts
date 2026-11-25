@@ -51,7 +51,7 @@ describe("Mermaid export", () => {
     );
   });
 
-  it("expands the viewBox so a venn-beta title is not clipped by Word", () => {
+  it("expands a venn-beta viewBox once without duplicate offsets", () => {
     const source =
       '<svg xmlns="http://www.w3.org/2000/svg" height="450" viewBox="0 0 800 450">' +
       "<style>.venn-title{font-size:32px;fill:#000000}</style>" +
@@ -64,18 +64,20 @@ describe("Mermaid export", () => {
     );
 
     preserveMermaidVennTitle(parsed.documentElement);
+    preserveMermaidVennTitle(parsed.documentElement);
 
     expect(parsed.querySelector(".venn-title")?.getAttribute("y")).toBe("16");
     expect(parsed.documentElement.getAttribute("viewBox")).toBe(
       "0 0 800 466"
     );
     expect(parsed.documentElement.getAttribute("height")).toBe("466");
-    const shifted = parsed.querySelector(
+    const shifted = parsed.querySelectorAll(
       'g[data-mermaid-export-offset="true"]'
     );
-    expect(shifted?.getAttribute("transform")).toBe("translate(0 16)");
-    expect(shifted?.querySelector(".venn-title")).not.toBeNull();
-    expect(shifted?.querySelector("circle")).not.toBeNull();
+    expect(shifted).toHaveLength(1);
+    expect(shifted[0]?.getAttribute("transform")).toBe("translate(0 16)");
+    expect(shifted[0]?.querySelector(".venn-title")).not.toBeNull();
+    expect(shifted[0]?.querySelector("circle")).not.toBeNull();
   });
 
   it("keeps an already fitting venn title unchanged", () => {

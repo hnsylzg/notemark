@@ -185,7 +185,7 @@ describe("Mermaid code blocks", () => {
     }
   });
 
-  it("adds top space to a CJK Venn title in the HTML export snapshot", async () => {
+  it("adds top space to a CJK Venn title in live and HTML previews", async () => {
     const root = document.createElement("div");
     root.className = "milkdown";
     document.body.appendChild(root);
@@ -211,6 +211,18 @@ describe("Mermaid code blocks", () => {
         editor,
         '```mermaid\nvenn-beta\n  title "团队重合"\n  set Frontend\n  set Backend\n  union Frontend,Backend["API 接口"]\n```'
       );
+
+      await vi.waitFor(() => {
+        const liveSvg = root.querySelector(
+          ".diagram.mermaid-preview svg"
+        );
+        expect(liveSvg?.getAttribute("viewBox")).toBe("0 0 800 466");
+        expect(
+          liveSvg
+            ?.querySelector('g[data-mermaid-export-offset="true"]')
+            ?.getAttribute("transform")
+        ).toBe("translate(0 16)");
+      });
 
       const html = await getExportHtml(editor);
       const parsed = new DOMParser().parseFromString(html, "text/html");

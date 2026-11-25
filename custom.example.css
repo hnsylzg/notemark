@@ -74,9 +74,8 @@
      配色：--mt-mermaid-fg 供 .diagram svg 使用；
      --mt-mermaid-bg / --mt-mermaid-border 为图表底色/描边（内置当前
      默认「无外框、背景透明」，不强制消费；需要统一底色时在此设置）。
-     mermaid 渲染配置（--mermaid-* 变量）必须写在 .milkdown .editor .diagram 上，
-     内置默认值也写在 .diagram，CSS 变量「自身声明优先于继承」，
-     写在 :root / .milkdown 等祖先上不会覆盖它。
+     主题只能通过 --mermaid-theme 选择配色板。字体、布局、外观、曲线、
+     标签模式和间距由编辑器固定，保证所有主题的图形几何与文字位置一致。
      示例（追加在文件末尾即可）：
        .milkdown .editor .diagram { --mermaid-theme: neutral; } */
   --mt-mermaid-fg: #d6dde6;
