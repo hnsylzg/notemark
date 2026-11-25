@@ -368,13 +368,15 @@ body,
   margin-right: auto;
 }
 
-.milkdown[data-content-width="adaptive"] > * {
+/* 外置主题通常用 `.milkdown .editor` 锁定主题宽度；这里刻意重复
+   .milkdown 提高优先级，只让用户明确选择的模式覆盖主题。 */
+.milkdown.milkdown[data-content-width="adaptive"] > * {
   max-width: min(100%, var(--mt-content-width, 860px));
 }
 
 /* 窗口断点与 Typora 默认主题一致；媒体查询条件不能引用 CSS 变量。 */
 @media (min-width: 1400px) {
-  .milkdown[data-content-width="adaptive"] > * {
+  .milkdown.milkdown[data-content-width="adaptive"] > * {
     max-width: min(
       100%,
       var(--mt-content-width-adaptive-medium, 1024px)
@@ -383,12 +385,12 @@ body,
 }
 
 @media (min-width: 1800px) {
-  .milkdown[data-content-width="adaptive"] > * {
+  .milkdown.milkdown[data-content-width="adaptive"] > * {
     max-width: min(100%, var(--mt-content-width-adaptive-max, 1200px));
   }
 }
 
-.milkdown[data-content-width="full"] > * {
+.milkdown.milkdown[data-content-width="full"] > * {
   max-width: 100%;
 }
 
