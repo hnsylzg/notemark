@@ -4,7 +4,6 @@
  * 注意：
  * - 使用 @milkdown/kit 的 preset，而非 crepe。
  * - code-block 来自 @milkdown/components/code-block（CM6 实现，根入口不导出）。
- * - diagram 来自 @milkdown/plugin-diagram（Mermaid）。
  * - math 来自 @milkdown/plugin-math（仅导出 math，内含 inline + block）。
  *
  * 这里只负责“声明”插件数组，不在本文件创建 editor 实例。
@@ -37,11 +36,6 @@ import {
   remarkMathPlugin,
 } from "./math-schema";
 import {
-  diagramSchema,
-  mermaidConfigCtx,
-} from "@milkdown/plugin-diagram";
-import { diagramView } from "./diagram-view";
-import {
   mathBlockPlugins,
   mathInlineCursorPlugin,
   mathInlineView,
@@ -71,7 +65,7 @@ import { strongParensPlugins } from "./strong-parens";
 import { persistentCodeBlockPlugins } from "./code-block-view";
 import { visualTabPlugin } from "./visual-tab";
 import { emptyParagraphPlugins } from "./empty-paragraph";
-// gapcursor：让光标可以出现在 math_block / diagram 等块级原子节点的
+// gapcursor：让光标可以出现在 math_block / HTML 等块级原子节点的
 // 前后（默认未注册，原子块周围放不进光标，也无法用箭头键跨越）。
 import { $prose } from "@milkdown/utils";
 import { gapCursor } from "@milkdown/prose/gapcursor";
@@ -85,6 +79,7 @@ import { imagePastePlugin } from "./image-paste";
 import { imageDropPlugin } from "./image-drop";
 import { imageBlockPlugin } from "./image-block";
 import { blockquoteBackspacePlugin } from "./blockquote-backspace";
+import { historyNoScrollPlugin } from "./history-no-scroll";
 import { tableSelectAllPlugin } from "./table-commands";
 import "@milkdown/prose/gapcursor/style/gapcursor.css";
 
@@ -211,6 +206,9 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     // 节点本身（footnote_reference / footnote_definition）由上面的 gfmPlugins
     // 注册，解析与序列化也由它负责，所以必须排在其后；本插件只补交互。
     ...footnotePlugins,
+    // Intercept history shortcuts before Milkdown's history keymap so undo and
+    // redo don't force a selection scroll after document reflow.
+    historyNoScrollPlugin,
     ...history,
     // MathJax 是唯一公式引擎：本项目的 schema 负责解析/序列化数据，
     // NodeView 异步用 MathJax SVG 渲染，避免任何第三方 KaTeX 默认渲染。
@@ -220,12 +218,6 @@ export function getEditorPlugins(): MilkdownPlugin[] {
     mathInlineView,
     mathInlineCursorPlugin,
     ...mathBlockPlugins,
-    // Mermaid 的唯一入口是代码块 language=mermaid。保留 diagram schema /
-    // NodeView 仅用于兼容已有节点；不再注册 remark/inputRule 把普通
-    // ```mermaid 围栏转换成独立节点。
-    mermaidConfigCtx,
-    ...diagramSchema,
-    diagramView,
     gapcursorPlugin,
     formatMenuPlugin,
     findReplacePlugin,

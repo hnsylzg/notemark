@@ -7,7 +7,6 @@ import {
 } from "./link-reference-definition";
 
 export type ObjectMenuKind =
-  | "diagram"
   | "html-block"
   | "link-reference-definition"
   | "footnote-reference"
@@ -27,9 +26,6 @@ export interface ObjectMenuContext {
 
 const NODE_SELECTORS: Array<[ObjectMenuKind, string]> = [
   ["alert-title", ".md-alert-title"],
-  // Mermaid / Markmap 代码块预览也使用 .diagram 样式；它属于代码块，不能把右键菜单
-  // 误判成旧的独立 diagram 节点。
-  ["diagram", ".diagram:not(.mermaid-preview):not(.markmap-preview)"],
   ["html-block", ".mt-html-block"],
   ["link-reference-definition", ".mt-link-reference-definition"],
   ["footnote-reference", '[data-type="footnote_reference"]'],

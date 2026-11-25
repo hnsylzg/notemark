@@ -32,7 +32,7 @@ import {
   normalizeTableClipboardHtml,
   tableHtmlToAlignedPlainText,
 } from "./table-clipboard";
-import { renderMermaidSvg } from "./diagram-view";
+import { renderMermaidSvg } from "./mermaid-renderer";
 import { diagramLanguage } from "./diagram-language";
 import { renderMarkmapSvg } from "./markmap-renderer";
 import { preserveMermaidVennTitleInSvg } from "./mermaid-export";

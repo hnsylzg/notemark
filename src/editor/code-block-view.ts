@@ -23,7 +23,10 @@ import {
 import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
 import type { NodeViewConstructor } from "@milkdown/prose/view";
 import { $view } from "@milkdown/utils";
-import { renderMermaidSvg, subscribeMermaidTheme } from "./diagram-view";
+import {
+  renderMermaidSvg,
+  subscribeMermaidTheme,
+} from "./mermaid-renderer";
 import {
   diagramLanguage,
   MARKMAP_LANGUAGE,

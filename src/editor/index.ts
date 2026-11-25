@@ -157,7 +157,7 @@ import remarkParse from "remark-parse";
 //    需要它的 stringify 扩展才能写回 --- 块；漏掉则序列化含 frontmatter 的
 //    文档抛 "Cannot handle unknown node `yaml`"（曾漏加，见 delete 同源事故）。
 // 3. remark-math：行内/块级公式（inlineMath / math）的 stringify 扩展。
-// 其余项目内 $remark（alert/toc/highlight/html-merge/strong-parens/diagram）
+// 其余项目内 $remark（alert/toc/highlight/html-merge/strong-parens）
 // 只做「解析期 mdast 变换」，序列化端由各自 schema 的 toMarkdown runner 输出
 // 标准节点（blockquote/paragraph/html/code），无需在重建链里追加。
 import remarkGfm from "remark-gfm";
@@ -1729,7 +1729,7 @@ export function createEditor(
         renderLabel: renderListItemLabel,
       });
     })
-    // 注册所有插件（commonmark/gfm/history/math/diagram/code-block）
+    // 注册所有插件（commonmark/gfm/history/math/code-block）
     .use(getEditorPlugins())
     .use(changeTracker);
 

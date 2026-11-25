@@ -31,6 +31,7 @@ import {
   type EditorState,
   type Transaction,
 } from "@milkdown/prose/state";
+import { GapCursor } from "@milkdown/prose/gapcursor";
 import type { Node as PMNode } from "@milkdown/prose/model";
 import type { EditorView } from "@milkdown/prose/view";
 import { EditorView as CodeMirrorView } from "@codemirror/view";
@@ -98,6 +99,7 @@ import { formatImageMarkdown } from "./image-markdown";
 import {
   MARK_SOURCE_SYNTAX,
   closeActiveMarkSource,
+  closeActiveMarkSourceAtPosition,
   markSourceKey,
   startMarkSource,
   startMarkSourceRange,
@@ -166,7 +168,6 @@ const DEFS: Def[] = [
 
 /** Block components whose source can be preserved while changing textblock type. */
 const BLOCK_CONVERTIBLE_OBJECT_KINDS = new Set<ObjectMenuContext["kind"]>([
-  "diagram",
   "html-block",
   "frontmatter",
   "toc",
@@ -235,8 +236,19 @@ let activeView: EditorView | null = null;
 /** 当前右键目标是否为公式；用于生成对象专属的剪贴板子菜单。 */
 let activeMath: HTMLElement | null = null;
 let activeInsertContextBlock: string | null = null;
+/** 特殊块右键时绑定真实节点，避免覆盖层坐标把句柄带到相邻段落。 */
+let activeInsertBlockTarget: { node: PMNode; pos: number } | null = null;
+/** 列表首项前/末项后的整体边界，用于在列表外插入块。 */
+let activeListInsertBoundary: {
+  node: PMNode;
+  pos: number;
+  insertPos: number;
+  before: boolean;
+} | null = null;
 /** 菜单统一使用的合法光标位置（已规范到鼠标所在文本块内部） */
 let hitPos = -1;
+let hitClientX = 0;
+let hitClientY = 0;
 let hitSourceControl: TextSourceControl | null = null;
 /** 段落转换使用右键时捕获的文本块快照，菜单打开后不再重新计算 */
 let activeTextblock: TextblockTarget | null = null;
@@ -265,7 +277,11 @@ function resetMenuState(): void {
   activeView = null;
   activeMath = null;
   activeInsertContextBlock = null;
+  activeInsertBlockTarget = null;
+  activeListInsertBoundary = null;
   hitPos = -1;
+  hitClientX = 0;
+  hitClientY = 0;
   hitSourceControl = null;
   activeTextblock = null;
 }
@@ -703,10 +719,6 @@ async function copyDiagramImageToClipboard(
 async function copyObjectToClipboard(
   context: ObjectMenuContext
 ): Promise<void> {
-  if (context.kind === "diagram") {
-    await copyDiagramImageToClipboard(context.element);
-    return;
-  }
   await writeClipboardText(objectClipboardSource(context));
 }
 
@@ -996,25 +1008,42 @@ function sourceNodeTargetAt(
   try {
     pos = view.posAtDOM(element, 0);
   } catch {
-    return null;
+    // Custom NodeViews may not expose the outer DOM as a text position.
+    // Fall through to matching the node's rendered DOM below.
   }
 
-  const safe = Math.max(0, Math.min(pos, view.state.doc.content.size));
-  const $pos = view.state.doc.resolve(safe);
-  for (let depth = $pos.depth; depth > 0; depth -= 1) {
-    const node = $pos.node(depth);
-    if (nodeNames.has(node.type.name)) {
-      return { node, pos: $pos.before(depth) };
+  if (pos >= 0) {
+    const safe = Math.max(0, Math.min(pos, view.state.doc.content.size));
+    const $pos = view.state.doc.resolve(safe);
+    for (let depth = $pos.depth; depth > 0; depth -= 1) {
+      const node = $pos.node(depth);
+      if (nodeNames.has(node.type.name)) {
+        return { node, pos: $pos.before(depth) };
+      }
+    }
+    for (const candidate of [safe, safe - 1, safe + 1]) {
+      if (candidate < 0 || candidate > view.state.doc.content.size) continue;
+      const node = view.state.doc.nodeAt(candidate);
+      if (node && nodeNames.has(node.type.name)) {
+        return { node, pos: candidate };
+      }
     }
   }
-  for (const candidate of [safe, safe - 1, safe + 1]) {
-    if (candidate < 0 || candidate > view.state.doc.content.size) continue;
-    const node = view.state.doc.nodeAt(candidate);
-    if (node && nodeNames.has(node.type.name)) {
-      return { node, pos: candidate };
+
+  let target: { node: PMNode; pos: number } | null = null;
+  view.state.doc.descendants((node, nodePos) => {
+    if (!nodeNames.has(node.type.name)) return true;
+    const dom = view.nodeDOM(nodePos);
+    if (
+      dom instanceof Element &&
+      (dom === element || dom.contains(element) || element.contains(dom))
+    ) {
+      target = { node, pos: nodePos };
+      return false;
     }
-  }
-  return null;
+    return true;
+  });
+  return target;
 }
 
 function sourceContainerTargetAt(
@@ -1199,7 +1228,6 @@ function stripTrailingClipboardLineBreak(text: string): string {
 const BLOCK_SOURCE_CONTROL_SELECTOR = [
   ".milkdown-math-inline-input",
   ".math-block-editor",
-  ".diagram-editor",
   ".mt-frontmatter-body",
   ".mt-html-block-body",
   ".mt-link-reference-definition input",
@@ -1227,6 +1255,51 @@ function sourceControlAtTarget(
     control instanceof HTMLTextAreaElement
     ? control
     : null;
+}
+
+interface InlineMathInsertSource {
+  control: TextSourceControl;
+  source: string;
+  inputOffset: number;
+}
+
+/**
+ * Split an editing inline formula into literal source text before a block is
+ * inserted. Keeping `$` with each side makes the resulting Markdown explicit
+ * instead of manufacturing two new math nodes from an incomplete expression.
+ */
+function splitInlineMathSourceForBlockInsertion(
+  view: EditorView,
+  source: InlineMathInsertSource
+): number | null {
+  const element = source.control.closest<HTMLElement>(
+    ".milkdown-math-inline"
+  );
+  if (!element) return null;
+  const target = sourceNodeTargetAt(
+    view,
+    element,
+    new Set(["math_inline"])
+  );
+  if (!target) return null;
+
+  const offset = Math.max(
+    0,
+    Math.min(source.inputOffset, source.source.length)
+  );
+  if (offset <= 0 || offset >= source.source.length) return null;
+
+  const insertionPos = target.pos + offset;
+  let tr = view.state.tr.replaceWith(
+    target.pos,
+    target.pos + target.node.nodeSize,
+    view.state.schema.text(source.source)
+  );
+  tr = tr
+    .setSelection(TextSelection.create(tr.doc, insertionPos))
+    .setMeta("pointer", true);
+  view.dispatch(tr);
+  return insertionPos;
 }
 
 function currentBlockSourceControl(): TextSourceControl | null {
@@ -1366,16 +1439,6 @@ function runObjectQuickAction(
     return;
   }
   if (action === "copy") {
-    if (context.kind === "diagram") {
-      void writeClipboardText(context.source)
-        .then(() => view?.focus())
-        .catch((error) => {
-          alert(
-            `无法写入剪贴板：${error instanceof Error ? error.message : String(error)}`
-          );
-        });
-      return;
-    }
     void copyObjectToClipboard(context).catch((error) => {
       alert(
         `对象复制失败：${error instanceof Error ? error.message : String(error)}`
@@ -1772,9 +1835,62 @@ const PARAGRAPH_ONLY_INSERT_CONTEXT_BLOCKS = new Set([
   "toc",
   "code_block",
   "math_block",
+  "htmlBlock",
+  "html_block",
+  "hr",
+  "horizontal_rule",
+  "link_reference_definition",
+  "bullet_list",
+  "ordered_list",
 ]);
 
 const TABLE_CELL_ROLES = new Set(["cell", "header_cell"]);
+const LIST_NODE_NAMES = new Set(["bullet_list", "ordered_list"]);
+
+function listInsertBoundaryAt(
+  view: EditorView,
+  pos: number
+): {
+  node: PMNode;
+  pos: number;
+  insertPos: number;
+  before: boolean;
+} | null {
+  if (!view.state.selection.empty) return null;
+  const safe = Math.max(0, Math.min(pos, view.state.doc.content.size));
+  const $pos = view.state.doc.resolve(safe);
+  let listDepth = -1;
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    if (LIST_NODE_NAMES.has($pos.node(depth).type.name)) {
+      listDepth = depth;
+    }
+  }
+  if (listDepth < 0) return null;
+
+  const node = $pos.node(listDepth);
+  const listPos = $pos.before(listDepth);
+  const listIndex = $pos.index(listDepth);
+  const first = listIndex === 0;
+  const last = listIndex === node.childCount - 1;
+  const atTextblockStart =
+    $pos.parent.isTextblock && $pos.parentOffset === 0;
+  const atTextblockEnd =
+    $pos.parent.isTextblock &&
+    $pos.parentOffset === $pos.parent.content.size;
+
+  if (first && (atTextblockStart || safe <= listPos + 2)) {
+    return { node, pos: listPos, insertPos: listPos, before: true };
+  }
+  if (last && (atTextblockEnd || safe >= listPos + node.nodeSize - 2)) {
+    return {
+      node,
+      pos: listPos,
+      insertPos: listPos + node.nodeSize,
+      before: false,
+    };
+  }
+  return null;
+}
 
 function isParagraphOnlyInsertContextBlock(
   blockName: string | null | undefined
@@ -1801,16 +1917,18 @@ function paragraphInsertionPositionAt(
   view: EditorView,
   pos: number,
   before: boolean,
-  contextBlockName?: string | null
+  contextBlockName?: string | null,
+  blockTarget?: { node: PMNode; pos: number } | null
 ): number | null {
   const safe = Math.max(
     0,
     Math.min(pos, view.state.doc.content.size)
   );
   const block =
-    contextBlockName === "table"
+    blockTarget ??
+    (contextBlockName === "table"
       ? resolveAncestorBlockNodeAt(view, safe, "table")
-      : resolveBlockNodeAt(view, safe);
+      : resolveBlockNodeAt(view, safe));
   if (!block) return null;
 
   const isSpecialContext =
@@ -1844,16 +1962,34 @@ function canInsertParagraphNearAt(
   view: EditorView,
   pos: number,
   before: boolean,
-  contextBlockName?: string | null
+  contextBlockName?: string | null,
+  blockTarget?: { node: PMNode; pos: number } | null
 ): boolean {
   return (
     paragraphInsertionPositionAt(
       view,
       pos,
       before,
-      contextBlockName
+      contextBlockName,
+      blockTarget
     ) !== null
   );
+}
+
+function canInsertBlockAtPosition(
+  view: EditorView,
+  id: EditorInsertCommand,
+  pos: number
+): boolean {
+  if (id === "frontmatter") {
+    return view.state.doc.firstChild?.type.name !== "yaml";
+  }
+  if (id === "table") return !!view.state.schema.nodes.table;
+  const typeName = BLOCK_INSERT_TYPES[id];
+  const type = typeName ? view.state.schema.nodes[typeName] : null;
+  if (!type) return false;
+  const $pos = view.state.doc.resolve(pos);
+  return $pos.parent.canReplaceWith($pos.index(), $pos.index(), type);
 }
 
 export function canInsertCommandAt(
@@ -1904,25 +2040,70 @@ function runInsertCommand(id: EditorInsertCommand): void {
   const view = activeView;
   const pos = hitPos;
   const contextBlockName = activeInsertContextBlock;
+  const listBoundary = activeListInsertBoundary;
+  const sourceControl = hitSourceControl;
+  const clientX = hitClientX;
+  const clientY = hitClientY;
+  const inlineMathSource =
+    sourceControl?.matches(".milkdown-math-inline-input")
+      ? {
+          control: sourceControl,
+          source: sourceControl.value,
+          inputOffset:
+            sourceControl.selectionStart ?? sourceControl.value.length,
+        }
+      : null;
   closeMenu();
   if (!view || pos < 0) return;
-  if (!canInsertCommandAt(view, id, pos, contextBlockName)) return;
+  const hadMarkSource = !!markSourceKey.getState(view.state);
+  const blocked = listBoundary
+    ? !canInsertBlockAtPosition(view, id, listBoundary.insertPos)
+    : !canInsertCommandAt(view, id, pos, contextBlockName);
+  if (blocked) return;
+  if (sourceControl?.isConnected) sourceControl.blur();
+  const mappedMarkSourcePos = hadMarkSource
+    ? closeActiveMarkSourceAtPosition(view, pos)
+    : null;
+  if (!hadMarkSource) closeActiveMarkSource(view);
+  const inlineMathInsertPos = inlineMathSource
+    ? splitInlineMathSourceForBlockInsertion(view, inlineMathSource)
+    : null;
+  const effectivePos =
+    mappedMarkSourcePos ??
+    inlineMathInsertPos ??
+    (sourceControl
+      ? (view.posAtCoords({ left: clientX, top: clientY })?.pos ?? pos)
+      : pos);
   view.focus();
-  placeCaretAt(view, pos);
-  runEditorCommand(view, id);
+  if (listBoundary) {
+    view.dispatch(
+      view.state.tr.setSelection(
+        new GapCursor(view.state.doc.resolve(listBoundary.insertPos))
+      )
+    );
+  } else if (!hitOnSelection(view, effectivePos)) {
+    // Closing a mark source restores its rendered node. Moving the programmatic
+    // insertion caret back into that node must not reopen its Markdown source,
+    // otherwise the following block insertion leaves the temporary delimiters
+    // behind as literal text.
+    placeCaretAt(view, effectivePos, true);
+  }
+  if (runEditorCommand(view, id)) closeActiveMarkSource(view);
 }
 
 function insertParagraphNear(before: boolean): void {
   const view = activeView;
   const pos = hitPos;
   const contextBlockName = activeInsertContextBlock;
+  const blockTarget = activeInsertBlockTarget;
   closeMenu();
   if (!view || pos < 0) return;
   const insertPos = paragraphInsertionPositionAt(
     view,
     pos,
     before,
-    contextBlockName
+    contextBlockName,
+    blockTarget
   );
   if (insertPos === null) return;
   view.focus();
@@ -2028,6 +2209,9 @@ function openMenu(
   closeMenu();
   activeView = view;
   activeMath = math ?? inlineMath;
+  hitClientX = clientX;
+  hitClientY = clientY;
+  const mathBlock = !!math?.classList.contains("milkdown-math-block");
   activeInsertContextBlock =
     tableCell
       ? "table"
@@ -2035,11 +2219,64 @@ function openMenu(
       ? "yaml"
       : objectMenu?.kind === "toc"
         ? "toc"
+        : objectMenu?.kind === "html-block"
+          ? "htmlBlock"
+        : objectMenu?.node
+          ? objectMenu.node.type.name
         : codeBlock
           ? "code_block"
-          : math?.classList.contains("milkdown-math-block")
+          : mathBlock
             ? "math_block"
             : null;
+  activeInsertBlockTarget =
+    tableCell
+      ? sourceNodeTargetAt(
+          view,
+          tableCell.closest("table") ?? tableCell,
+          new Set(["table"])
+        )
+      : objectMenu
+        ? objectMenu.node
+          ? { node: objectMenu.node, pos: objectMenu.pos }
+          : objectMenu.kind === "html-block"
+            ? sourceNodeTargetAt(
+                view,
+                objectMenu.element,
+                new Set(["htmlBlock", "html_block"])
+              )
+            : objectMenu.kind === "horizontal-rule"
+              ? sourceNodeTargetAt(
+                  view,
+                  objectMenu.element,
+                  new Set(["hr", "horizontal_rule"])
+                )
+              : objectMenu.kind === "link-reference-definition"
+                ? sourceNodeTargetAt(
+                    view,
+                    objectMenu.element,
+                    new Set(["link_reference_definition"])
+                  )
+            : null
+        : codeBlock
+          ? sourceNodeTargetAt(
+              view,
+              codeBlock.element,
+              new Set(["code_block"])
+            )
+          : mathBlock && math
+            ? sourceNodeTargetAt(
+                view,
+                math,
+                new Set(["math_block", "mathBlock"])
+              )
+            : null;
+  activeListInsertBoundary = activeInsertContextBlock
+    ? null
+    : listInsertBoundaryAt(view, pos);
+  if (activeListInsertBoundary) {
+    activeInsertContextBlock = activeListInsertBoundary.node.type.name;
+    activeInsertBlockTarget = activeListInsertBoundary;
+  }
   hitPos = pos;
   hitSourceControl = sourceControl;
   activeTextblock = textblock;
@@ -2145,9 +2382,13 @@ function openMenu(
   const addSubmenu = (
     icon: string,
     label: string,
-    parent: HTMLElement = menu
+    parent: HTMLElement = menu,
+    opts?: { preserveEditing?: boolean }
   ): HTMLDivElement => {
     const button = addRow(parent, icon, label);
+    if (opts?.preserveEditing) {
+      button.setAttribute(MENU_PRESERVE_EDITING_ATTRIBUTE, "");
+    }
     button.classList.add("mt-context-menu__item--submenu");
     const panel = document.createElement("div");
     panel.className = "mt-context-menu__submenu";
@@ -2205,7 +2446,6 @@ function openMenu(
 
   if (objectMenu) {
     const objectLabels: Record<ObjectMenuContext["kind"], string> = {
-      diagram: "代码块",
       "html-block": "HTML",
       "link-reference-definition": "链接引用",
       "footnote-reference": "脚注索引",
@@ -2245,9 +2485,6 @@ function openMenu(
       });
     };
     switch (objectMenu.kind) {
-      case "diagram": {
-        break;
-      }
       case "html-block": {
         break;
       }
@@ -2293,8 +2530,7 @@ function openMenu(
       if (
         !sourceEditor &&
         (objectMenu.kind === "alert-title" ||
-          (objectMenu.kind !== "diagram" &&
-            objectMenu.kind !== "toc" &&
+          (objectMenu.kind !== "toc" &&
             canConvertBlockSourceToHeading(conversionSource)))
       ) {
         const levels: Array<{
@@ -2475,8 +2711,6 @@ function openMenu(
         !/\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(source)
       ) {
         source = alertSourceCode(objectMenu.node);
-      } else if (objectMenu.kind === "diagram") {
-        source = withCodeFence(source, "mermaid");
       }
     } else if (tableCell) {
       const table = tableCell.closest<HTMLTableElement>("table");
@@ -2704,21 +2938,11 @@ function openMenu(
   const hasSpecificClipboardActions =
     !!diagramPreview ||
     !!clipboardMath ||
-    !!inlineImage ||
-    objectMenu?.kind === "diagram";
+    !!inlineImage;
   if (diagramPreview) {
     addTextAction(clipboardAs, "复制为图片", () => {
       closeMenu();
       void copyDiagramImageToClipboard(diagramPreview).catch((error) => {
-        alert(
-          `图片复制失败：${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-    });
-  } else if (objectMenu?.kind === "diagram") {
-    addTextAction(clipboardAs, "复制为图片", () => {
-      closeMenu();
-      void copyObjectToClipboard(objectMenu).catch((error) => {
         alert(
           `图片复制失败：${error instanceof Error ? error.message : String(error)}`
         );
@@ -3045,12 +3269,19 @@ function openMenu(
     activeInsertContextBlock ??
     resolveBlockNodeAt(view, pos)?.node.type.name;
   const canInsert = (id: EditorInsertCommand): boolean =>
-    canInsertCommandAt(view, id, pos, insertContextBlock);
+    activeListInsertBoundary
+      ? canInsertBlockAtPosition(view, id, activeListInsertBoundary.insertPos)
+      : canInsertCommandAt(view, id, pos, insertContextBlock);
   const insertContextOnlyParagraph =
     isParagraphOnlyInsertContextBlock(insertContextBlock);
   const insertContextAllowsReferenceInsertions =
     !insertContextOnlyParagraph && !isInsideTableCell(view, pos);
-  const inserts = addSubmenu("", "插入");
+  const inserts = addSubmenu("", "插入", menu, {
+    // Keep an active inline source intact while navigating to a block command.
+    // runInsertCommand closes it through the transaction mapping so the click
+    // position remains stable after temporary delimiters disappear.
+    preserveEditing: true,
+  });
   let hasInsertItems = false;
   const addInsertSeparator = (): void => {
     const last = inserts.lastElementChild;
@@ -3060,6 +3291,7 @@ function openMenu(
   if (canInsert("image")) {
     addTextAction(inserts, "图像", () => runInsertCommand("image"), {
       shortcut: "Ctrl+Shift+I",
+      preserveEditing: true,
     });
     hasInsertItems = true;
   }
@@ -3094,6 +3326,7 @@ function openMenu(
     if (!hasBlockInsertItems) addInsertSeparator();
     addTextAction(inserts, label, () => runInsertCommand(id), {
       shortcut,
+      preserveEditing: true,
     });
     hasBlockInsertItems = true;
     hasInsertItems = true;
@@ -3109,13 +3342,15 @@ function openMenu(
     view,
     pos,
     true,
-    insertContextBlock
+    insertContextBlock,
+    activeInsertBlockTarget
   );
   const canInsertParagraphAfter = canInsertParagraphNearAt(
     view,
     pos,
     false,
-    insertContextBlock
+    insertContextBlock,
+    activeInsertBlockTarget
   );
   addTextAction(inserts, "段落（上方）", () => insertParagraphNear(true), {
     disabled: !canInsertParagraphBefore,

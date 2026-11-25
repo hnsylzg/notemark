@@ -31,13 +31,7 @@ import {
   cleanMarkdownBr,
 } from "@/editor/index";
 import type { HeadingItem } from "@/editor/index";
-import {
-  commandsCtx,
-  editorViewCtx,
-  parserCtx,
-  serializerCtx,
-} from "@milkdown/kit/core";
-import { insertHrCommand } from "@milkdown/kit/preset/commonmark";
+import { editorViewCtx, parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { importImagePaths } from "@/editor/image-files";
 import {
   grantPathAccess,
@@ -2602,21 +2596,8 @@ onMounted(() => {
 
         // 斜杠菜单的「图片」命令：插件不直接调 Tauri，由这里开系统文件对话框，
         // 选完路径后交回 importImagePaths 落盘并插入文档。
-        setEditorActionHandler(async (action, view, pos) => {
+        setEditorActionHandler(async (action, _view, pos) => {
           if (!editorInstance) return;
-          if (action === "horizontalRule") {
-            // Chromium can keep a stale native caret when a block is inserted
-            // beside the active DOM selection, even though ProseMirror's
-            // state.selection is already correct. Clear the native range
-            // before the structural update so selectionToDOM must rewrite it.
-            // https://github.com/ProseMirror/prosemirror/issues/710
-            view.dom.ownerDocument.getSelection()?.removeAllRanges();
-            editorInstance.action((ctx) => {
-              ctx.get(commandsCtx).call(insertHrCommand.key);
-            });
-            view.focus();
-            return;
-          }
           if (action !== "image") return;
           const { open } = await import("@tauri-apps/plugin-dialog");
           const selected = await open({

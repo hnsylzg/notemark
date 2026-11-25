@@ -12,6 +12,7 @@ import {
   TextSelection,
   type Command,
   type EditorState,
+  type Selection,
   type Transaction,
 } from "@milkdown/prose/state";
 import type { EditorView } from "@milkdown/prose/view";
@@ -24,7 +25,7 @@ import {
 } from "./floating-layer";
 import { startMarkSource, startMarkSourceRange } from "./mark-source";
 
-export type EditorAction = "image" | "horizontalRule";
+export type EditorAction = "image";
 
 type EditorActionHandler = (
   action: EditorAction,
@@ -109,7 +110,9 @@ function insertAtom(
       tr = state.tr.replaceWith(start, end, node);
     } else {
       nodeStart = state.selection.from;
-      tr = state.tr.replaceSelectionWith(node);
+      // Structural insertion is programmatic navigation. Without this marker,
+      // the inline source plugin can reopen a mark session at the new caret.
+      tr = state.tr.replaceSelectionWith(node).setMeta("pointer", true);
     }
     const blockEnd = nodeStart + node.nodeSize;
     let paragraphInserted = false;
@@ -127,40 +130,100 @@ function insertAtom(
   };
 }
 
-function replaceWithBlockAndParagraph(
+type BlockInsertion = {
+  command: Command;
+  insertedPos: () => number | null;
+};
+
+function selectedPlainText(state: EditorState): string {
+  const { from, to, empty } = state.selection;
+  if (empty) return "";
+  return state.doc.textBetween(from, to, "\n", (leaf) =>
+    leaf.type.name === "hardbreak" || leaf.type.name === "hard_break"
+      ? "\n"
+      : ""
+  );
+}
+
+function findInsertedBlock(
+  tr: Transaction,
+  inserted: PMNode,
+  from: number,
+  to: number
+): number | null {
+  const mappedFrom = tr.mapping.map(from, -1);
+  const mappedTo = tr.mapping.map(to, 1);
+  const searchFrom = Math.max(0, Math.min(mappedFrom, mappedTo) - 4);
+  const searchTo = Math.min(
+    tr.doc.content.size,
+    Math.max(mappedFrom, mappedTo) + 4
+  );
+  let found: number | null = null;
+  tr.doc.nodesBetween(searchFrom, searchTo, (node, pos) => {
+    if (node !== inserted && !node.eq(inserted)) return true;
+    found = pos;
+    return false;
+  });
+  if (found != null) return found;
+
+  // Complex replacements can rebuild the node object outside the mapped
+  // neighborhood. Fall back to a full document scan for the same block shape.
+  tr.doc.descendants((node, pos) => {
+    if (node !== inserted && !node.eq(inserted)) return found == null;
+    found = pos;
+    return false;
+  });
+  return found;
+}
+
+/**
+ * Insert a block at the current selection.
+ *
+ * ProseMirror splits a surrounding textblock when a block node replaces an
+ * inline range or a collapsed caret. This gives one shared rule for code,
+ * math and horizontal rules: insert before at paragraph start, after at
+ * paragraph end, split in the middle, and replace only an actual selection.
+ */
+function insertBlockAtSelection(
   type: NodeType,
-  attrs: Record<string, unknown> | null
-): Command {
-  return (state, dispatch) => {
-    const paragraph = state.schema.nodes.paragraph;
-    const { $from } = state.selection;
-    let depth = $from.depth;
-    while (depth > 0 && !$from.node(depth).isTextblock) depth -= 1;
-    const current = $from.node(depth);
-    if (!current?.isTextblock) return false;
-    const pos = depth === 0 ? 0 : $from.before(depth);
-    const $pos = state.doc.resolve(pos);
-    if (!$pos.parent.canReplaceWith($pos.index(), $pos.index() + 1, type)) {
+  attrs: Record<string, unknown> | null,
+  options: { codeFromSelection?: boolean; openInside?: boolean } = {}
+): BlockInsertion {
+  let insertedPos: number | null = null;
+  const command: Command = (state, dispatch) => {
+    const text = options.codeFromSelection
+      ? selectedPlainText(state)
+      : "";
+    let node: PMNode;
+    try {
+      node = type.create(attrs, text ? state.schema.text(text) : null);
+    } catch {
       return false;
     }
 
-    let tr = state.tr.setNodeMarkup(pos, type, attrs);
-    const block = tr.doc.nodeAt(pos);
-    if (!block) return false;
-    const blockEnd = pos + block.nodeSize;
-    let paragraphInserted = false;
-    if (paragraph && blockEnd === tr.doc.content.size) {
-      tr = tr.insert(blockEnd, paragraph.create());
-      paragraphInserted = true;
+    let tr: Transaction;
+    try {
+      tr = state.tr.replaceSelectionWith(node);
+    } catch {
+      return false;
     }
-    tr = tr.setSelection(
-      paragraphInserted
-        ? TextSelection.create(tr.doc, blockEnd + 1)
-        : TextSelection.near(tr.doc.resolve(blockEnd + 1))
+    insertedPos = findInsertedBlock(
+      tr,
+      node,
+      state.selection.from,
+      state.selection.to
     );
+    if (insertedPos == null) return false;
+
+    if (options.openInside === false) {
+      setSelectionAfterBlock(tr, insertedPos + node.nodeSize);
+    } else {
+      tr.setSelection(TextSelection.create(tr.doc, insertedPos + 1));
+    }
     dispatch?.(tr.scrollIntoView());
     return true;
   };
+  return { command, insertedPos: () => insertedPos };
 }
 
 function insertTableNxM(rows: number, cols: number): Command {
@@ -429,12 +492,18 @@ function promptTableSize(view: EditorView): boolean {
   appendFloatingLayer(box);
   try {
     const coords = view.coordsAtPos(insertPos);
-    clampFloatingLayer(box, coords.left, coords.bottom + 6, 8);
+    // Typora-style table picker: cover the insertion point itself so the
+    // focused size inputs become the visual anchor while the editor loses
+    // native caret painting.
+    clampFloatingLayer(box, coords.left, coords.top, 8);
   } catch {
     /* Keep the fallback position. */
   }
 
+  let active = true;
   const cleanup = (): void => {
+    if (!active) return;
+    active = false;
     box.remove();
     document.removeEventListener("mousedown", onOutside, true);
   };
@@ -454,10 +523,25 @@ function promptTableSize(view: EditorView): boolean {
       view.focus();
       return;
     }
-    const $pos = view.state.doc.resolve(
-      Math.min(insertPos, view.state.doc.content.size)
+    const safePos = Math.min(
+      insertPos,
+      view.state.doc.content.size
     );
-    view.dispatch(view.state.tr.setSelection(TextSelection.near($pos)));
+    const $pos = view.state.doc.resolve(safePos);
+    let selection: Selection;
+    try {
+      selection = TextSelection.create(view.state.doc, safePos);
+    } catch {
+      selection = TextSelection.near($pos, -1);
+    }
+    view.dispatch(
+      view.state.tr
+        .setSelection(selection)
+        // Table insertion happens after the dialog closes. Keep the inline
+        // mark source plugin from reopening a just-closed mark while focus
+        // moves back from the dialog.
+        .setMeta("pointer", true)
+    );
     view.focus();
     insertTableNxM(rows, cols)(view.state, view.dispatch);
   };
@@ -475,8 +559,17 @@ function promptTableSize(view: EditorView): boolean {
   rowsInput.addEventListener("keydown", onKey);
   colsInput.addEventListener("keydown", onKey);
   document.addEventListener("mousedown", onOutside, true);
-  colsInput.focus();
-  colsInput.select();
+  const restoreInitialFocus = (): void => {
+    if (!box.isConnected || box.contains(document.activeElement)) return;
+    colsInput.focus();
+    colsInput.select();
+  };
+  restoreInitialFocus();
+  // The menu click and any NodeView focus restoration can finish after this
+  // function returns. Re-check once the current task settles and once more
+  // after layout, without overriding a user who already moved within the box.
+  queueMicrotask(restoreInitialFocus);
+  requestAnimationFrame(restoreInitialFocus);
   return true;
 }
 
@@ -493,21 +586,28 @@ export function runEditorCommand(
 ): boolean {
   const { nodes } = view.state.schema;
   let command: Command | null = null;
-  let openEditableBlockAt: number | null = null;
+  let getInsertedPos: (() => number | null) | null = null;
+  let openEditableBlock = false;
   if (id === "image") {
     openImagePicker(view, view.state.selection.to);
     return true;
   }
   if (id === "table") return promptTableSize(view);
-  if (id === "hr") {
-    if (!actionHandler) return false;
-    actionHandler("horizontalRule", view, view.state.selection.from);
-    return true;
+  if (id === "hr" && nodes.hr) {
+    const insertion = insertBlockAtSelection(nodes.hr, null, {
+      openInside: false,
+    });
+    command = insertion.command;
   } else if (id === "code" && nodes.code_block) {
-    command = setBlockAt(nodes.code_block, null);
+    const insertion = insertBlockAtSelection(nodes.code_block, null, {
+      codeFromSelection: true,
+    });
+    command = insertion.command;
   } else if (id === "math" && nodes.math_block) {
-    openEditableBlockAt = blockRangeAt(view.state).start;
-    command = replaceWithBlockAndParagraph(nodes.math_block, null);
+    const insertion = insertBlockAtSelection(nodes.math_block, null);
+    command = insertion.command;
+    getInsertedPos = insertion.insertedPos;
+    openEditableBlock = true;
   } else if (id === "toc" && nodes.toc) {
     command = insertAtom(nodes.toc);
   } else if (id === "frontmatter" && nodes.yaml) {
@@ -517,8 +617,8 @@ export function runEditorCommand(
   const applied = command(view.state, view.dispatch);
   if (applied) {
     view.focus();
-    if (openEditableBlockAt != null) {
-      const targetPos = openEditableBlockAt;
+    const targetPos = openEditableBlock ? getInsertedPos?.() : null;
+    if (targetPos != null) {
       requestAnimationFrame(() => {
         if (view.isDestroyed) return;
         const dom = view.nodeDOM(targetPos) as HTMLElement | null;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getMermaidConfig, MERMAID_FONT_FAMILY } from "./diagram-view";
+import { getMermaidConfig, MERMAID_FONT_FAMILY } from "./mermaid-renderer";
 
 afterEach(() => {
   document.body.replaceChildren();

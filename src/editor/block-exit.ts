@@ -4,7 +4,7 @@
  * 背景：表格、代码块这类可编辑块自带「Ctrl+Enter 跳到块后新行」的快捷键，而
  * 斜杠命令插入的这几类块没有：
  *   - yaml（元数据）、toc（目录）、hr（分割线）
- *   - math_block（公式块）、diagram（流程图）、htmlBlock（HTML 块）
+ *   - math_block（公式块）、htmlBlock（HTML 块）
  * 它们都是原子块：要么完全不可编辑（toc / hr），要么内容由 NodeView 自管的
  * textarea 接管（元数据 / 公式 / 流程 / HTML）——后者的按键被 stopPropagation
  * 拦下，ProseMirror 的 keymap 根本收不到。所以原实现里 Ctrl+Enter 只做
@@ -33,7 +33,6 @@ export const EXITABLE_BLOCKS = new Set([
   "toc", // 目录
   "hr", // 分割线
   "math_block", // 公式块
-  "diagram", // 流程图
   "htmlBlock", // HTML 块
 ]);
 

@@ -32,7 +32,7 @@ import {
   resolveMermaidExportBackground,
 } from "./mermaid-export";
 import { diagramLanguage } from "./diagram-language";
-import { renderMermaidSvg } from "./diagram-view";
+import { renderMermaidSvg } from "./mermaid-renderer";
 import { renderMarkmapSvg } from "./markmap-renderer";
 import { inlineMarkmapSvgTheme } from "./markmap-export";
 import {
@@ -1360,7 +1360,6 @@ async function convertBlock(
         ctx.diagramCodeBlockIndex += 1;
         const diagram = await diagramToImage(
           code,
-          "",
           ctx.viewDom,
           kind,
           previewIndex
@@ -1497,36 +1496,6 @@ async function convertBlock(
       const img = await formulaToImage(tex, true);
       if (img) return [createParagraph(ctx, { children: [img] })];
       return [sourceParagraph(tex, ctx)];
-    }
-
-    // Mermaid 图表：以 SVG 矢量为主，同时嵌入高分辨率 PNG 作为旧版 Word 回退。
-    case "diagram": {
-      const code = sourceOf(node);
-      const identity = String((node.attrs ?? {}).identity ?? "");
-      const diagram = await diagramToImage(code, identity, ctx.viewDom);
-      if (diagram) {
-        return [
-          createParagraph(ctx, {
-            style: FIGURE_STYLE,
-            alignment: AlignmentType.CENTER,
-            children: [
-              new ImageRun({
-                type: "svg",
-                data: svgDataUri(diagram.svg),
-                fallback: {
-                  type: "png",
-                  data: diagram.fallback,
-                },
-                transformation: {
-                  width: diagram.width,
-                  height: diagram.height,
-                },
-              }),
-            ],
-          }),
-        ];
-      }
-      return [sourceParagraph(code, ctx)];
     }
 
     // [toc] 目录节点：Word 无对应节点，改为注入原生 TOC 域
@@ -2389,18 +2358,6 @@ function serializeRenderedSvg(container: HTMLElement | null): string | null {
     : normalized;
 }
 
-function pickRenderedSvg(
-  identity: string,
-  viewDom: HTMLElement | null
-): string | null {
-  if (!viewDom || !identity) return null;
-  const container =
-    Array.from(viewDom.querySelectorAll<HTMLElement>(".diagram")).find(
-      (candidate) => candidate.dataset.diagramId === identity
-    ) ?? null;
-  return serializeRenderedSvg(container);
-}
-
 function pickRenderedCodeBlockSvg(
   index: number,
   viewDom: HTMLElement | null
@@ -2425,10 +2382,9 @@ function pickRenderedCodeBlockSvg(
  */
 async function diagramToImage(
   code: string,
-  identity: string,
   viewDom: HTMLElement | null,
   kind: "mermaid" | "markmap" = "mermaid",
-  codeBlockIndex?: number
+  codeBlockIndex: number
 ): Promise<{
   svg: string;
   fallback: Uint8Array;
@@ -2436,21 +2392,21 @@ async function diagramToImage(
   height: number;
 } | null> {
   const container =
-    codeBlockIndex != null
-      ? Array.from(
-          viewDom?.querySelectorAll<HTMLElement>(
-            ".milkdown-code-block.diagram-code-block, .milkdown-code-block.mermaid-code-block, .milkdown-code-block.markmap-code-block"
-          ) ?? []
-        )[codeBlockIndex]?.querySelector<HTMLElement>(
-          ".diagram.mermaid-preview, .diagram.markmap-preview"
-        ) ?? null
-      : null;
+    Array.from(
+      viewDom?.querySelectorAll<HTMLElement>(
+        ".milkdown-code-block.diagram-code-block, .milkdown-code-block.mermaid-code-block, .milkdown-code-block.markmap-code-block"
+      ) ?? []
+    )[codeBlockIndex]?.querySelector<HTMLElement>(
+      ".diagram.mermaid-preview, .diagram.markmap-preview"
+    ) ?? null;
   const svg =
-    (codeBlockIndex != null
-      ? pickRenderedCodeBlockSvg(codeBlockIndex, viewDom)
-      : pickRenderedSvg(identity, viewDom)) ??
+    pickRenderedCodeBlockSvg(codeBlockIndex, viewDom) ??
     (kind === "mermaid"
-      ? await renderMermaidForExport(code, identity, container)
+      ? await renderMermaidForExport(
+          code,
+          `docx-${codeBlockIndex}`,
+          container
+        )
       : await renderMarkmapForExport(code));
   if (!svg) return null;
   const png = await svgToPng(

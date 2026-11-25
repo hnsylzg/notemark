@@ -672,6 +672,27 @@ export function closeActiveMarkSource(view: EditorView): boolean {
   return true;
 }
 
+/**
+ * Close the active inline source while preserving a document position from
+ * before the temporary delimiters were removed.
+ *
+ * Re-running coordinate hit testing after the close is ambiguous because the
+ * rendered text shifts when delimiters disappear. Mapping through the close
+ * transaction keeps a click before/middle/after the source at the same logical
+ * boundary in the restored inline mark.
+ */
+export function closeActiveMarkSourceAtPosition(
+  view: EditorView,
+  pos: number
+): number | null {
+  const session = markSourceKey.getState(view.state);
+  if (!session) return null;
+  const tr = finishMarkSourceTransaction(view.state, session);
+  const mapped = tr.mapping.map(pos, -1);
+  view.dispatch(tr);
+  return mapped;
+}
+
 export function sourceSessionBlockElement(
   view: EditorView,
   session: MarkSourceSession

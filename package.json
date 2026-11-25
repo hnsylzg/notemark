@@ -22,7 +22,6 @@
     "@markmap/render": "^1.1.1",
     "@milkdown/components": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
-    "@milkdown/plugin-diagram": "^7.7.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
     "@tauri-apps/plugin-dialog": "^2",

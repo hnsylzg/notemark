@@ -11,7 +11,7 @@
  *
  * 解决：接管 Backspace / Delete —— 光标紧邻这类块且为空选区时直接删掉整块。
  * 认「块级叶子节点（isLeaf，如 hr / toc / yaml / htmlBlock）」+「特殊块
- * 名单 EXITABLE_BLOCKS（如 math_block / diagram）」。表格不在内、也非 leaf，
+ * 名单 EXITABLE_BLOCKS（如 math_block / htmlBlock）」。表格不在内、也非 leaf，
  * 保持默认「选中再删」，避免误删整表；段落 / 代码块 / 列表一律交回默认行为。
  */
 import { $prose } from "@milkdown/utils";
@@ -29,7 +29,7 @@ import { EXITABLE_BLOCKS } from "./block-exit";
  *
  * 两类都一键删：
  *  - isLeaf：无文本内容的叶子（hr / toc / yaml / htmlBlock）；
- *  - EXITABLE_BLOCKS 名单：math_block / diagram（带 content 声明、内部由
+ *  - EXITABLE_BLOCKS 名单：math_block / htmlBlock（带 content 声明、内部由
  *    NodeView 托管，但整体应作为一块一键删除）。
  * 表格（table）不在名单、也非 leaf，保持默认「选中再删」行为，避免误删整表。
  */
