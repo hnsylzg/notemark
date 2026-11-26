@@ -122,6 +122,12 @@ import {
 } from "@/editor/editor-content-width";
 import type { EditorContentWidthMode } from "@/editor/editor-content-width";
 import {
+  DEFAULT_CODE_BLOCK_LINE_WRAP,
+  applyCodeBlockLineWrap,
+  loadCodeBlockLineWrap,
+  saveCodeBlockLineWrap,
+} from "@/editor/code-block-line-wrap";
+import {
   presentContextMenu,
   type ContextMenuHandle,
 } from "@/editor/context-menu-controller";
@@ -458,6 +464,7 @@ const editorFontScale = ref(DEFAULT_EDITOR_FONT_SCALE);
 const editorContentWidth = ref<EditorContentWidthMode>(
   DEFAULT_EDITOR_CONTENT_WIDTH
 );
+const editorCodeBlockLineWrap = ref(DEFAULT_CODE_BLOCK_LINE_WRAP);
 const FONT_SCALE_SAVE_DELAY_MS = 180;
 const FONT_WHEEL_STEP_THRESHOLD = 24;
 const FONT_WHEEL_IDLE_MS = 240;
@@ -505,6 +512,15 @@ function setEditorContentWidth(mode: EditorContentWidthMode): void {
   applyCurrentEditorContentWidth();
   void saveEditorContentWidth(mode).catch((error) =>
     console.warn("[NoteMark] save editor content width failed:", error)
+  );
+}
+
+function setEditorCodeBlockLineWrap(enabled: boolean): void {
+  if (enabled === editorCodeBlockLineWrap.value) return;
+  editorCodeBlockLineWrap.value = enabled;
+  applyCodeBlockLineWrap(enabled);
+  void saveCodeBlockLineWrap(enabled).catch((error) =>
+    console.warn("[NoteMark] save code block line wrap failed:", error)
   );
 }
 
@@ -2667,13 +2683,16 @@ onMounted(() => {
       // 先加载深色模式与自定义主题，再创建编辑器渲染内容
       (async () => {
         try {
-          const [fontScale, contentWidth] = await Promise.all([
+          const [fontScale, contentWidth, codeBlockLineWrap] = await Promise.all([
             loadEditorFontScale(),
             loadEditorContentWidth(),
+            loadCodeBlockLineWrap(),
           ]);
           editorFontScale.value = fontScale;
           pendingEditorFontScale = editorFontScale.value;
           editorContentWidth.value = contentWidth;
+          editorCodeBlockLineWrap.value = codeBlockLineWrap;
+          applyCodeBlockLineWrap(codeBlockLineWrap);
           const dark = await loadDarkModePreference();
           if (dark !== null) {
             isDark.value = dark;
@@ -2687,11 +2706,17 @@ onMounted(() => {
         }
       })();
     } else {
-      void Promise.all([loadEditorFontScale(), loadEditorContentWidth()])
-        .then(([fontScale, contentWidth]) => {
+      void Promise.all([
+        loadEditorFontScale(),
+        loadEditorContentWidth(),
+        loadCodeBlockLineWrap(),
+      ])
+        .then(([fontScale, contentWidth, codeBlockLineWrap]) => {
           editorFontScale.value = fontScale;
           pendingEditorFontScale = fontScale;
           editorContentWidth.value = contentWidth;
+          editorCodeBlockLineWrap.value = codeBlockLineWrap;
+          applyCodeBlockLineWrap(codeBlockLineWrap);
         })
         .finally(startEditor);
     }
@@ -2869,6 +2894,7 @@ onBeforeUnmount(() => {
       :theme-menu-open="themeMenuOpen"
       :font-scale="editorFontScale"
       :content-width="editorContentWidth"
+      :code-block-line-wrap="editorCodeBlockLineWrap"
       @toggle-sidebar="toggleSidebar"
       @new-file="handleNew"
       @open-file="handleOpen"
@@ -2885,6 +2911,7 @@ onBeforeUnmount(() => {
       @increase-font-scale="increaseEditorFontScale"
       @reset-font-scale="resetEditorFontScale"
       @set-content-width="setEditorContentWidth"
+      @set-code-block-line-wrap="setEditorCodeBlockLineWrap"
       @toggle-dark-mode="toggleDarkMode"
       @use-default-theme="useDefaultTheme"
       @switch-theme="switchTheme"

@@ -28,6 +28,7 @@ defineProps<{
   themeMenuOpen: boolean;
   fontScale: number;
   contentWidth: EditorContentWidthMode;
+  codeBlockLineWrap: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +48,7 @@ const emit = defineEmits<{
   increaseFontScale: [];
   resetFontScale: [];
   setContentWidth: [mode: EditorContentWidthMode];
+  setCodeBlockLineWrap: [enabled: boolean];
   toggleDarkMode: [];
   useDefaultTheme: [];
   switchTheme: [theme: InstalledTheme];
@@ -263,6 +265,13 @@ const contentWidthOptions: Array<{
               {{ option.label }}
             </button>
           </div>
+          <button
+            class="mt-theme-menu__item"
+            role="menuitem"
+            @click="emit('setCodeBlockLineWrap', !codeBlockLineWrap)"
+          >
+            代码块自动换行：{{ codeBlockLineWrap ? "开" : "关" }}
+          </button>
           <button class="mt-theme-menu__item" role="menuitem" @click="emit('toggleDarkMode')">
             深色模式：{{ isDark ? "开" : "关" }}
           </button>

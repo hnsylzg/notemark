@@ -15,6 +15,8 @@ import type {
   LanguageDescription,
   LanguageSupport,
 } from "@codemirror/language";
+import { Compartment, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   CodeMirrorBlock,
   codeBlockConfig,
@@ -39,6 +41,10 @@ import {
 } from "./markmap-renderer";
 import { preserveMermaidVennTitleInSvg } from "./mermaid-export";
 import { applySourceEnter, applySourceTab } from "./source-tab";
+import {
+  getCodeBlockLineWrap,
+  subscribeCodeBlockLineWrap,
+} from "./code-block-line-wrap";
 
 type CodeMirrorBlockArgs = ConstructorParameters<typeof CodeMirrorBlock>;
 type CodeMirrorBlockInternals = {
@@ -208,6 +214,9 @@ function viewportInset(): number {
 }
 
 class PersistentCodeMirrorBlock extends CodeMirrorBlock {
+  private readonly baseExtensions: Extension[];
+  private readonly lineWrapCompartment = new Compartment();
+  private readonly unsubscribeLineWrap: () => void;
   private languagePickerTrackingCleanup: (() => void) | null = null;
   private languagePickerListObserver: MutationObserver | null = null;
   private languagePickerActiveIndex = -1;
@@ -223,9 +232,16 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
         ...language.alias,
       ]);
     }
+    this.baseExtensions = [...this.config.extensions];
     this.config = {
       ...this.config,
       renderPreview: this.diagramPreview.renderPreview,
+      extensions: [
+        ...this.baseExtensions,
+        this.lineWrapCompartment.of(
+          getCodeBlockLineWrap() ? EditorView.lineWrapping : []
+        ),
+      ],
     };
     this.syncDiagramMode(this.node);
     const internals = this as unknown as CodeMirrorBlockInternals;
@@ -252,6 +268,19 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
       this.handleDiagramPreviewClick,
       true
     );
+    this.unsubscribeLineWrap = subscribeCodeBlockLineWrap((enabled) => {
+      const extension = enabled ? EditorView.lineWrapping : [];
+      if (!this.cm) {
+        this.config.extensions = [
+          ...this.baseExtensions,
+          this.lineWrapCompartment.of(extension),
+        ];
+        return;
+      }
+      this.cm.dispatch({
+        effects: this.lineWrapCompartment.reconfigure(extension),
+      });
+    });
   }
 
   private readonly handleLanguagePickerClick = (event: MouseEvent): void => {
@@ -660,6 +689,7 @@ class PersistentCodeMirrorBlock extends CodeMirrorBlock {
       this.handleDocumentPointerDown,
       true
     );
+    this.unsubscribeLineWrap();
     this.stopLanguagePickerTracking();
     this.diagramPreview.destroy();
     super.destroy();

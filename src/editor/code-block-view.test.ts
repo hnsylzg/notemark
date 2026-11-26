@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { languages } from "@codemirror/language-data";
+import { applyCodeBlockLineWrap } from "./code-block-line-wrap";
 import {
   CodeBlockLanguageLoader,
   calculateLanguagePickerPosition,
   createMermaidCodeBlockPreview,
 } from "./code-block-view";
+import { createEditor, setMarkdown } from "./index";
 
 vi.mock("./mathjax", () => ({
   loadMathJax: vi.fn(async () => ({})),
@@ -18,6 +20,71 @@ vi.mock("mermaid", () => ({
     })),
   },
 }));
+
+class ImmediateObserver {
+  private readonly callback: IntersectionObserverCallback;
+
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe(target: Element): void {
+    queueMicrotask(() => {
+      this.callback(
+        [{ isIntersecting: true, target } as IntersectionObserverEntry],
+        this as unknown as IntersectionObserver
+      );
+    });
+  }
+
+  unobserve(): void {}
+  disconnect(): void {}
+  takeRecords(): [] {
+    return [];
+  }
+}
+
+class ControlledObserver {
+  private static pending: Array<{
+    callback: IntersectionObserverCallback;
+    target: Element;
+  }> = [];
+
+  private readonly callback: IntersectionObserverCallback;
+
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe(target: Element): void {
+    ControlledObserver.pending.push({ callback: this.callback, target });
+  }
+
+  static flush(): void {
+    const pending = ControlledObserver.pending;
+    ControlledObserver.pending = [];
+    for (const { callback, target } of pending) {
+      callback(
+        [{ isIntersecting: true, target } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      );
+    }
+  }
+
+  unobserve(): void {}
+  disconnect(): void {}
+  takeRecords(): [] {
+    return [];
+  }
+}
+
+const globals = globalThis as unknown as Record<string, unknown>;
+globals.IntersectionObserver = ImmediateObserver;
+if (!globals.ResizeObserver) globals.ResizeObserver = ImmediateObserver;
+
+afterEach(() => {
+  applyCodeBlockLineWrap(false);
+});
 
 const boundary = { top: 0, right: 1000, bottom: 800, left: 0 };
 
@@ -125,5 +192,69 @@ describe("Markmap code block language", () => {
     const loader = new CodeBlockLanguageLoader([]);
 
     await expect(loader.load("MARKMAP")).resolves.toBeUndefined();
+  });
+});
+
+describe("code block line wrapping", () => {
+  it("reconfigures mounted code blocks without recreating the editor", async () => {
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "```javascript\nconst value = 1\n```");
+      await vi.waitFor(() => {
+        expect(root.querySelector(".cm-content")).not.toBeNull();
+      });
+
+      const content = root.querySelector<HTMLElement>(".cm-content")!;
+      expect(content.classList.contains("cm-lineWrapping")).toBe(false);
+
+      applyCodeBlockLineWrap(true);
+      await vi.waitFor(() => {
+        expect(content.classList.contains("cm-lineWrapping")).toBe(true);
+      });
+
+      applyCodeBlockLineWrap(false);
+      await vi.waitFor(() => {
+        expect(content.classList.contains("cm-lineWrapping")).toBe(false);
+      });
+    } finally {
+      await editor.destroy();
+      root.remove();
+    }
+  });
+
+  it("applies the current setting when a lazy block initializes later", async () => {
+    const previousObserver = globals.IntersectionObserver;
+    globals.IntersectionObserver = ControlledObserver;
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "```javascript\nconst value = 1\n```");
+      expect(root.querySelector(".cm-content")).toBeNull();
+
+      applyCodeBlockLineWrap(true);
+      ControlledObserver.flush();
+
+      await vi.waitFor(() => {
+        expect(root.querySelector(".cm-content")).not.toBeNull();
+      });
+      expect(
+        root
+          .querySelector<HTMLElement>(".cm-content")!
+          .classList.contains("cm-lineWrapping")
+      ).toBe(true);
+    } finally {
+      await editor.destroy();
+      root.remove();
+      globals.IntersectionObserver = previousObserver;
+    }
   });
 });
