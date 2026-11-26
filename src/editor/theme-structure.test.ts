@@ -145,4 +145,86 @@ describe("theme structural spacing", () => {
       root.remove();
     }
   });
+
+  it("uses Typora heading rhythm in the built-in theme", () => {
+    const style = document.createElement("style");
+    style.textContent = [
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/tokens.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/base.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/index.css"),
+        "utf8"
+      ),
+    ].join("\n");
+    document.head.appendChild(style);
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    root.innerHTML =
+      '<div class="editor"><h1>One</h1><h2>Two</h2><h6>Six</h6></div>';
+    document.body.appendChild(root);
+
+    try {
+      for (const heading of root.querySelectorAll("h1, h2, h6")) {
+        const computed = getComputedStyle(heading);
+        expect(computed.marginBlockStart).toBe("15px");
+        expect(computed.marginBlockEnd).toBe("15px");
+        expect(
+          parseFloat(computed.lineHeight) / parseFloat(computed.fontSize)
+        ).toBeCloseTo(1.4, 3);
+      }
+    } finally {
+      root.remove();
+      style.remove();
+    }
+  });
+
+  it("lets Rose and Emerald inherit the built-in heading rhythm", () => {
+    const baseCss = [
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/tokens.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/base.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/index.css"),
+        "utf8"
+      ),
+    ].join("\n");
+
+    for (const themeFile of ["rose.css", "emerald.css"]) {
+      const style = document.createElement("style");
+      style.textContent =
+        baseCss +
+        "\n" +
+        readFileSync(resolve(process.cwd(), themeFile), "utf8");
+      document.head.appendChild(style);
+      const root = document.createElement("div");
+      root.className = "milkdown";
+      root.innerHTML = '<div class="editor"><h1>One</h1><h6>Six</h6></div>';
+      document.body.appendChild(root);
+
+      try {
+        for (const heading of root.querySelectorAll("h1, h6")) {
+          const computed = getComputedStyle(heading);
+          expect(computed.marginBlockStart).toBe("15px");
+          expect(computed.marginBlockEnd).toBe("15px");
+          expect(
+            parseFloat(computed.lineHeight) / parseFloat(computed.fontSize)
+          ).toBeCloseTo(1.4, 3);
+        }
+      } finally {
+        root.remove();
+        style.remove();
+      }
+    }
+  });
 });

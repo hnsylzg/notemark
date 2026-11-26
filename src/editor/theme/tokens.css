@@ -55,6 +55,8 @@
   --mt-heading-4-size: 1.0625em;
   --mt-heading-5-size: 1em;
   --mt-heading-6-size: 1em;
+  --mt-heading-line-height: 1.4;
+  --mt-heading-margin-block: var(--mt-font-size-base);
   --mt-content-width: 860px;
   --mt-content-width-adaptive-medium: 1024px;
   --mt-content-width-adaptive-max: 1200px;
