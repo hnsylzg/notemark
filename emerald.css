@@ -58,7 +58,7 @@
     Menlo, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
   --mt-font-size-base: 15px;
   --mt-line-height-base: 1.6;
-  --mt-content-width: 800px;
+  --mt-content-width: 860px;
   --mt-content-padding: 48px;
 
   /* ---- 代码块 ---- */
@@ -295,10 +295,10 @@
 }
 /* 列表标记统一主题色（无序圆点 / 有序数字 / 勾选框） */
 .milkdown .milkdown-list-item-block .label-wrapper .label {
-  color: var(--mt-color-primary);
+  /* color: var(--mt-color-primary); */
 }
 .milkdown .milkdown-list-item-block .label-wrapper .label.ordered {
-  font-weight: 600;
+  font-weight: 400;
 }
 
 /* ═══════════════════════════════════════════════════════════════

@@ -30,7 +30,7 @@ import {
 } from "@milkdown/kit/component/list-item-block";
 
 /** 无序列表圆点（实心圆，currentColor） */
-export const bulletIcon = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="3" fill="currentColor"/></svg>`;
+export const bulletIcon = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="2.6667" fill="currentColor"/></svg>`;
 
 /** 已勾选复选框：外框和填充跟随主题，对勾颜色可由主题变量覆盖 */
 export const checkBoxCheckedIcon = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="3.2" fill="currentColor" stroke="currentColor" stroke-width="1.5"/><path d="m4.5 8.2 2.4 2.4 4.6-5" fill="none" stroke="var(--mt-task-check-fg, #fff)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
