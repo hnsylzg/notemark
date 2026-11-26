@@ -33,7 +33,8 @@ describe("theme structural spacing", () => {
       '<div class="milkdown-list-item-block">' +
       '<div class="list-item"><div class="children">' +
       '<div class="content-dom">' +
-      "<p>item</p><p>second paragraph</p><ul><li>nested</li></ul>" +
+      "<p>item</p><p>second paragraph</p>" +
+      "<ul><li>nested</li></ul><p>after nested</p>" +
       "</div>" +
       "</div></div></div></div>";
     const editorRoot = root.querySelector<HTMLElement>(".editor")!;
@@ -51,6 +52,9 @@ describe("theme structural spacing", () => {
       const paragraph = paragraphs[0]!;
       const secondParagraph = paragraphs[1]!;
       const nestedList = root.querySelector(".content-dom > ul")!;
+      const paragraphAfterNestedList = root.querySelector(
+        ".content-dom > ul + p"
+      )!;
       expect(getComputedStyle(paragraph).marginBlockStart).toBe("0px");
       expect(getComputedStyle(paragraph).marginBottom).toBe("0px");
       expect(
@@ -62,6 +66,14 @@ describe("theme structural spacing", () => {
         parseFloat(getComputedStyle(nestedList).marginBlockStart)
       ).toBeGreaterThan(0);
       expect(getComputedStyle(nestedList).marginBlockEnd).toBe("0px");
+      expect(
+        parseFloat(
+          getComputedStyle(paragraphAfterNestedList).marginBlockStart
+        )
+      ).toBeGreaterThan(0);
+      expect(
+        getComputedStyle(paragraphAfterNestedList).marginBlockEnd
+      ).toBe("0px");
       expect(parseFloat(getComputedStyle(secondItem).marginTop)).toBeGreaterThan(
         0
       );
@@ -138,6 +150,42 @@ describe("theme structural spacing", () => {
       ).toBeGreaterThan(0);
       expect(getComputedStyle(paragraphs[1]!).marginBottom).toBe("0px");
       expect(getComputedStyle(paragraphs[1]!).marginBlockEnd).toBe("0px");
+    } finally {
+      await editor.destroy();
+      baseStyle.remove();
+      externalTheme.remove();
+      root.remove();
+    }
+  });
+
+  it("spaces an optional continuation paragraph after a nested list", async () => {
+    const themeCss = readFileSync(
+      resolve(process.cwd(), "src/editor/theme/index.css"),
+      "utf8"
+    );
+    const baseStyle = document.createElement("style");
+    baseStyle.textContent = themeCss;
+    const externalTheme = document.createElement("style");
+    externalTheme.textContent = ".milkdown p{margin:0 0 1em}";
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+    document.head.append(baseStyle, externalTheme);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "- parent\n  - nested\n\n  continuation");
+      const firstItem = root.querySelector(".milkdown-list-item-block");
+      expect(firstItem).not.toBeNull();
+      const paragraph = firstItem!.querySelector<HTMLElement>(
+        ".content-dom > ul + p"
+      );
+      expect(paragraph).not.toBeNull();
+      expect(
+        parseFloat(getComputedStyle(paragraph!).marginBlockStart)
+      ).toBeGreaterThan(0);
+      expect(getComputedStyle(paragraph!).marginBottom).toBe("0px");
     } finally {
       await editor.destroy();
       baseStyle.remove();
@@ -227,4 +275,39 @@ describe("theme structural spacing", () => {
       }
     }
   });
+
+  it("keeps GitHub code blocks on the shared block rhythm", () => {
+    const style = document.createElement("style");
+    style.textContent = [
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/tokens.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/base.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/index.css"),
+        "utf8"
+      ),
+      readFileSync(resolve(process.cwd(), "github.css"), "utf8"),
+    ].join("\n");
+    document.head.appendChild(style);
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    root.innerHTML =
+      '<div class="editor"><div class="milkdown-code-block"></div></div>';
+    document.body.appendChild(root);
+
+    try {
+      const code = root.querySelector(".milkdown-code-block")!;
+      expect(getComputedStyle(code).marginBlockStart).toBe("16px");
+      expect(getComputedStyle(code).marginBlockEnd).toBe("16px");
+    } finally {
+      root.remove();
+      style.remove();
+    }
+  });
+
 });

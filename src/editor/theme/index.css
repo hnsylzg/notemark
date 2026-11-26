@@ -118,6 +118,16 @@
 
 .milkdown .editor
   .milkdown-list-item-block
+  > .list-item
+  > .children
+  > .content-dom
+  > :is(ul, ol)
+  + p {
+  margin-block-start: var(--mt-list-paragraph-gap, 0.5em);
+}
+
+.milkdown .editor
+  .milkdown-list-item-block
   + .milkdown-list-item-block {
   margin-block-start: var(--mt-list-item-gap, 0.5em);
 }
