@@ -33,7 +33,7 @@ describe("theme structural spacing", () => {
       '<div class="milkdown-list-item-block">' +
       '<div class="list-item"><div class="children">' +
       '<div class="content-dom">' +
-      "<p>item</p><ul><li>nested</li></ul>" +
+      "<p>item</p><p>second paragraph</p><ul><li>nested</li></ul>" +
       "</div>" +
       "</div></div></div></div>";
     const editorRoot = root.querySelector<HTMLElement>(".editor")!;
@@ -47,9 +47,17 @@ describe("theme structural spacing", () => {
     document.body.appendChild(root);
 
     try {
-      const paragraph = root.querySelector(".content-dom > p")!;
+      const paragraphs = root.querySelectorAll(".content-dom > p");
+      const paragraph = paragraphs[0]!;
+      const secondParagraph = paragraphs[1]!;
       const nestedList = root.querySelector(".content-dom > ul")!;
+      expect(getComputedStyle(paragraph).marginBlockStart).toBe("0px");
       expect(getComputedStyle(paragraph).marginBottom).toBe("0px");
+      expect(
+        parseFloat(getComputedStyle(secondParagraph).marginBlockStart)
+      ).toBeGreaterThan(0);
+      expect(getComputedStyle(secondParagraph).marginBottom).toBe("0px");
+      expect(getComputedStyle(secondParagraph).marginBlockEnd).toBe("0px");
       expect(
         parseFloat(getComputedStyle(nestedList).marginBlockStart)
       ).toBeGreaterThan(0);
@@ -92,6 +100,44 @@ describe("theme structural spacing", () => {
       for (const paragraph of paragraphs) {
         expect(getComputedStyle(paragraph).marginBottom).toBe("0px");
       }
+    } finally {
+      await editor.destroy();
+      baseStyle.remove();
+      externalTheme.remove();
+      root.remove();
+    }
+  });
+
+  it("spaces multiple paragraphs inside a real list item", async () => {
+    const themeCss = readFileSync(
+      resolve(process.cwd(), "src/editor/theme/index.css"),
+      "utf8"
+    );
+    const baseStyle = document.createElement("style");
+    baseStyle.textContent = themeCss;
+    const externalTheme = document.createElement("style");
+    externalTheme.textContent = ".milkdown p{margin:0 0 1em}";
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    document.body.appendChild(root);
+    const editor = createEditor(root);
+    document.head.append(baseStyle, externalTheme);
+
+    try {
+      await editor.create();
+      setMarkdown(editor, "- first\n\n  second\n- next");
+      const firstItem = root.querySelector(".milkdown-list-item-block");
+      expect(firstItem).not.toBeNull();
+      const paragraphs = Array.from(
+        firstItem!.querySelectorAll<HTMLElement>(".content-dom > p")
+      );
+      expect(paragraphs).toHaveLength(2);
+      expect(getComputedStyle(paragraphs[0]!).marginBlockStart).toBe("0px");
+      expect(
+        parseFloat(getComputedStyle(paragraphs[1]!).marginBlockStart)
+      ).toBeGreaterThan(0);
+      expect(getComputedStyle(paragraphs[1]!).marginBottom).toBe("0px");
+      expect(getComputedStyle(paragraphs[1]!).marginBlockEnd).toBe("0px");
     } finally {
       await editor.destroy();
       baseStyle.remove();

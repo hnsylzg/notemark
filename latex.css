@@ -358,23 +358,8 @@ html[data-theme="dark"] {
  * Lists
  * ============================================================ */
 
-.milkdown ul,
-.milkdown ol {
-  margin: 0.8em 0;
-  padding-left: 2.5em;
-}
-
 .milkdown .milkdown-list-item-block > .list-item {
   padding-left: 2.5em;
-}
-
-.milkdown li {
-  margin: 0.28em 0;
-  text-indent: 0;
-}
-
-.milkdown li > p {
-  margin: 0;
 }
 
 .milkdown .milkdown-list-item-block .label-wrapper .label {

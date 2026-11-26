@@ -301,12 +301,6 @@
   margin: 0.8em 0;
 }
 
-/* 嵌套列表不再额外撑开（对齐 Typora：li>ul/li>ol { margin: 0 }） */
-:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > ul,
-:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > ol {
-  margin: 0;
-}
-
 /* 列表位于容器首尾时不留多余上下间距（对齐 Typora first/last-child 规则） */
 :where(.milkdown .editor) ul:first-child,
 :where(.milkdown .editor) ol:first-child {
@@ -319,11 +313,6 @@
 
 :where(.milkdown .editor) li {
   margin: 0; /* 列表项间距由行高承载，对齐 Typora */
-}
-
-/* 列表项内容区段落（NodeView 后 <p> 位于 .children 内） */
-:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > p {
-  margin: 0;
 }
 
 /* ============ 列表项 NodeView（list-item-block）布局 ============
@@ -349,10 +338,6 @@
 
 :where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children {
   min-width: 0; /* 防止长单词/代码块撑破布局 */
-}
-/* 消除首段顶部 margin，使文字首行顶部与 label-wrapper 顶部对齐 */
-:where(.milkdown .editor) .milkdown-list-item-block > .list-item > .children > .content-dom > p:first-child {
-  margin-top: 0;
 }
 /* marker 列：绝对定位于行首，行盒坐标系与文字一致 */
 :where(.milkdown .editor) .milkdown-list-item-block .label-wrapper {

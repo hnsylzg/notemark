@@ -49,10 +49,14 @@
     "Liberation Mono", monospace;
   --mt-font-size-base: 16px;
   --mt-line-height-base: 1.5;
+  --mt-list-item-gap: 0.25em;
+  --mt-list-paragraph-gap: 0.5em;
   /* GitHub 表格代码无边框，补少量纵向 padding 增加代码背景高度。 */
   --mt-table-inline-code-padding-block: 0.1em;
   --mt-content-width: 1012px;
   --mt-content-padding: 2rem;
+  --github-heading-margin-block-start: calc(var(--mt-font-size-base) * 1.5);
+  --github-heading-margin-block-end: var(--mt-font-size-base);
 
   --mt-code-bg: #f6f8fa;
   --mt-code-fg: #1f2328;
@@ -232,7 +236,8 @@ html[data-theme="dark"] {
 .milkdown h4,
 .milkdown h5,
 .milkdown h6 {
-  margin: 1.5em 0 1rem;
+  margin: var(--github-heading-margin-block-start) 0
+    var(--github-heading-margin-block-end);
   color: var(--mt-color-fg);
   font-family: var(--mt-font-sans);
   font-weight: 600;
@@ -282,7 +287,6 @@ html[data-theme="dark"] {
   margin: 0 0 1em;
 }
 
-.milkdown li > p,
 .milkdown th p,
 .milkdown td p,
 .milkdown .md-alert p,
@@ -383,22 +387,8 @@ html[data-theme="dark"] {
  * Lists
  * ============================================================ */
 
-.milkdown ul,
-.milkdown ol {
-  margin: 0 0 1em;
-  padding-left: 2em;
-}
-
 .milkdown .milkdown-list-item-block > .list-item {
   padding-left: 2em;
-}
-
-.milkdown li + li {
-  margin-top: 0.25em;
-}
-
-.milkdown li > p {
-  margin: 0;
 }
 
 .milkdown .milkdown-list-item-block .label-wrapper .label {

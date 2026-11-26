@@ -109,15 +109,24 @@
 
 .milkdown .editor
   .milkdown-list-item-block
+  > .list-item
+  > .children
+  > .content-dom
+  > p + p {
+  margin-block-start: var(--mt-list-paragraph-gap, 0.5em);
+}
+
+.milkdown .editor
+  .milkdown-list-item-block
   + .milkdown-list-item-block {
-  margin-top: 0.25em;
+  margin-block-start: var(--mt-list-item-gap, 0.5em);
 }
 
 .milkdown .editor
   .milkdown-list-item-block
   .content-dom
   :is(ul, ol) {
-  margin-block: 0.25em 0;
+  margin-block: var(--mt-list-item-gap, 0.5em) 0;
 }
 
 /* HTML 块预览渲染的是 HTML 内容，而不是 ProseMirror 的源码文本。
@@ -170,16 +179,16 @@
  * 默认主题在 base.css(@layer mt-theme) 内用 :where() 给 h1–h6 统一设了
  * line-height: 1.3（紧凑，对齐 Typora/GitHub）。外置主题以未分层 <style>
  * 注入 <head> 末尾，其 h1..h6 重置（如 line-height: 1.6+）会压过 @layer，
- * 把标题行距顶宽。这里把标题行距提到未分层、直接作用于 .milkdown .editor h1–h6，
- * 挡掉这类重置；主题若显式写 h1 { line-height } 仍可按「未分层 + 后出现」胜出。
+ * 把标题行距顶宽。这里把标题行距提到未分层，并用 :where() 降低特异性，
+ * 挡掉这类重置；主题显式写 h1 { line-height } 时仍可按后加载顺序覆盖。
  * 仅锁行距，字号/颜色/字重仍留给主题覆盖。
  * ============================================================ */
-.milkdown .editor h1,
-.milkdown .editor h2,
-.milkdown .editor h3,
-.milkdown .editor h4,
-.milkdown .editor h5,
-.milkdown .editor h6 {
+:where(.milkdown .editor) h1,
+:where(.milkdown .editor) h2,
+:where(.milkdown .editor) h3,
+:where(.milkdown .editor) h4,
+:where(.milkdown .editor) h5,
+:where(.milkdown .editor) h6 {
   line-height: 1.3;
 }
 

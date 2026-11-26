@@ -282,17 +282,6 @@
  *    0.8em 0，li margin 0（marker 列宽由内置 .list-item 的
  *    padding-left: 1.4em 提供，此处不再叠加缩进）
  * ═══════════════════════════════════════════════════════════════ */
-.milkdown ul,
-.milkdown ol {
-  padding-left: 0.5em;
-  margin: 0.8em 0;
-}
-.milkdown li {
-  margin: 0;
-}
-.milkdown li > p {
-  margin: 0;
-}
 /* 列表标记统一主题色（无序圆点 / 有序数字 / 勾选框） */
 .milkdown .milkdown-list-item-block .label-wrapper .label {
   /* color: var(--mt-color-primary); */
