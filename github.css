@@ -36,8 +36,6 @@
   --github-table-border-color: #d1d9e0b3;
   /* GitHub's 1px grid can resolve to two device pixels at common zoom levels. */
   --github-table-border-width: 0.75px;
-  /* 表格上下空间 8px（8 / 16）。 */
-  --github-table-cell-padding-block: 0.5em;
   --github-table-cell-padding-inline: 0.8em;
   --github-inline-code-bg: rgba(129, 139, 152, 0.12);
   --github-mark-bg: #fff8c5;
@@ -49,10 +47,10 @@
     "Liberation Mono", monospace;
   --mt-font-size-base: 16px;
   --mt-line-height-base: 1.5;
+  /* 16px 基准下等效 5.6px，保持旧版 GitHub 单行表格高度。 */
+  --mt-table-paragraph-margin-block: 0.35em;
   --mt-list-item-gap: 0.25em;
   --mt-list-paragraph-gap: 0.25em;
-  /* GitHub 表格代码无边框，补少量纵向 padding 增加代码背景高度。 */
-  --mt-table-inline-code-padding-block: 0.1em;
   --mt-content-width: 1012px;
   --mt-content-padding: 2rem;
   --github-heading-margin-block-start: calc(var(--mt-font-size-base) * 1.5);
@@ -287,8 +285,6 @@ html[data-theme="dark"] {
   margin: 0 0 1em;
 }
 
-.milkdown th p,
-.milkdown td p,
 .milkdown .md-alert p,
 .milkdown figcaption p {
   margin: 0;
@@ -484,7 +480,6 @@ html[data-theme="dark"] {
   border-spacing: 0;
   border-radius: 0;
   font-size: 1em;
-  line-height: 1.45;
 }
 
 .milkdown thead {
@@ -493,13 +488,11 @@ html[data-theme="dark"] {
 
 .milkdown th,
 .milkdown td {
-  padding: var(--github-table-cell-padding-block)
-    var(--github-table-cell-padding-inline);
+  padding: 0 var(--github-table-cell-padding-inline);
   border: var(--github-table-border-width) solid
     var(--github-table-border-color);
   background: transparent;
   text-align: left;
-  vertical-align: top;
 }
 
 .milkdown th {

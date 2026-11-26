@@ -42,13 +42,10 @@
   /* 列表项间距和同一列表项内的段落间距是不同语义。 */
   --mt-list-item-gap: 0.5em;
   --mt-list-paragraph-gap: 0.5em;
-  /* 当前正文 15px 时等效 10px；按表格继承字号缩放。 */
+  /* 表格只保留结构与横向间距；行高和行内代码继承主题正文。 */
   --mt-table-cell-padding-inline: 0.6666667em;
-  --mt-table-line-height: calc(var(--mt-font-size-base) * 1.2);
-  --mt-table-inline-code-padding-block: 0;
-  /* 表格代码行盒随主题正文字号取整，避免比例行高累计小数后，
-     换行背景在各行的像素对齐不一致。 */
-  --mt-table-inline-code-line-height: calc(var(--mt-font-size-base) * 1.2);
+  /* 15px 正文下等效 7px；配合正文行高保持紧凑的单行表格。 */
+  --mt-table-paragraph-margin-block: 0.4666667em;
   --mt-heading-1-size: 1.75em;
   --mt-heading-2-size: 1.375em;
   --mt-heading-3-size: 1.125em;

@@ -276,6 +276,97 @@ describe("theme structural spacing", () => {
     }
   });
 
+  it("shares article rhythm and inline-code spacing inside tables", () => {
+    const baseCss = [
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/tokens.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/base.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/index.css"),
+        "utf8"
+      ),
+    ].join("\n");
+
+    for (const themeFile of [
+      "github.css",
+      "latex.css",
+      "rose.css",
+      "emerald.css",
+      "forest.css",
+    ]) {
+      const paragraphMarginEm =
+        themeFile === "forest.css"
+          ? 0.5142857
+          : themeFile === "latex.css"
+            ? 0.175
+            : themeFile === "github.css"
+              ? 0.35
+              : 0.4666667;
+      const style = document.createElement("style");
+      style.textContent =
+        baseCss +
+        "\n" +
+        readFileSync(resolve(process.cwd(), themeFile), "utf8");
+      document.head.appendChild(style);
+      const root = document.createElement("div");
+      root.className = "milkdown";
+      root.innerHTML =
+        '<div class="editor">' +
+        "<p>正文 <code>outside</code></p>" +
+        "<table><tbody><tr><td><p>单元格 <code>inside</code></p></td></tr></tbody></table>" +
+        "</div>";
+      document.body.appendChild(root);
+
+      try {
+        const article = root.querySelector<HTMLElement>(".editor > p")!;
+        const cell = root.querySelector<HTMLElement>("td")!;
+        const cellParagraph = cell.querySelector<HTMLElement>("p")!;
+        const outsideCode = article.querySelector<HTMLElement>("code")!;
+        const insideCode = cellParagraph.querySelector<HTMLElement>("code")!;
+
+        expect(parseFloat(getComputedStyle(cell).lineHeight)).toBeCloseTo(
+          parseFloat(getComputedStyle(article).lineHeight),
+          3
+        );
+        expect(getComputedStyle(insideCode).paddingTop).toBe(
+          getComputedStyle(outsideCode).paddingTop
+        );
+        expect(getComputedStyle(insideCode).paddingBottom).toBe(
+          getComputedStyle(outsideCode).paddingBottom
+        );
+        expect(
+          parseFloat(getComputedStyle(cell).paddingTop)
+        ).toBeCloseTo(
+          0,
+          3
+        );
+        expect(
+          parseFloat(getComputedStyle(cell).paddingBottom)
+        ).toBeCloseTo(
+          0,
+          3
+        );
+        expect(
+          parseFloat(getComputedStyle(cellParagraph).marginBlockStart)
+        ).toBeCloseTo(
+          parseFloat(getComputedStyle(root).fontSize) * paragraphMarginEm,
+          3
+        );
+        if (themeFile === "github.css") {
+          expect(getComputedStyle(cell).verticalAlign).not.toBe("top");
+        }
+      } finally {
+        root.remove();
+        style.remove();
+      }
+    }
+  });
+
   it("keeps GitHub code blocks on the shared block rhythm", () => {
     const style = document.createElement("style");
     style.textContent = [

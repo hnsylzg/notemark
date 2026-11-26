@@ -336,7 +336,6 @@
 .milkdown td {
   border: 1px solid var(--mt-color-border);
   padding: 0 var(--mt-table-cell-padding-inline);
-  line-height: 1.2;
   text-align: left;
 }
 .milkdown th {

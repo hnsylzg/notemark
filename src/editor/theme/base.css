@@ -622,7 +622,7 @@
   position: relative;
   border: 1px solid var(--mt-color-border);
   padding: 0 var(--mt-table-cell-padding-inline);
-  line-height: 1.2; /* 表格行高紧凑，避免继承正文 1.75 */
+  line-height: inherit;
   text-align: left;
 }
 /* HTML 块预览默认字号略小；表格跟随正文基准字号，与 Markdown 表格一致。 */

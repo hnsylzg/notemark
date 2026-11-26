@@ -172,15 +172,10 @@
   background: var(--mt-table-stripe, var(--mt-color-bg-soft));
 }
 
-/* 表格行高保持紧凑：代码背景留出少量行间空隙。
-   必须未分层，才能覆盖外置主题对 padding 和 line-height 的重置。 */
-.milkdown .editor :is(th, td) {
-  line-height: var(--mt-table-line-height);
-}
-.milkdown .editor :is(th, td) :not(pre) > code,
-.milkdown .editor :is(th, td) > code {
-  padding-block: var(--mt-table-inline-code-padding-block);
-  line-height: var(--mt-table-inline-code-line-height);
+/* 表格共享主题的正文行高和通用行内代码样式，只统一单元格段落的上下间距。
+   必须未分层，才能避免外置主题的通用段落 margin 破坏表格结构。 */
+.milkdown .editor :is(th, td) > p {
+  margin-block: var(--mt-table-paragraph-margin-block, 0.4666667em);
 }
 
 /* ============================================================
