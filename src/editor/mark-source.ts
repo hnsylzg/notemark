@@ -441,6 +441,29 @@ function activateMarkRange(
   return true;
 }
 
+function isMarkTailActivation(
+  state: EditorState,
+  range: { from: number; to: number },
+  pos: number
+): boolean {
+  if (pos < range.to) return true;
+  const trailing = state.doc.textBetween(
+    range.to,
+    pos,
+    "\n",
+    "\n"
+  );
+  if (trailing.trim()) return false;
+  if (pos !== range.to) return true;
+  const next = state.doc.textBetween(
+    range.to,
+    Math.min(range.to + 1, state.doc.content.size),
+    "\n",
+    "\n"
+  );
+  return !next.trim();
+}
+
 function activateMarkAtPosition(
   view: EditorView,
   pos: number
@@ -458,7 +481,8 @@ function activateMarkAtPosition(
         );
         if (
           !range ||
-          (preferEnding && range.to !== candidate)
+          (preferEnding && range.to !== candidate) ||
+          !isMarkTailActivation(view.state, range, pos)
         ) {
           continue;
         }
@@ -514,6 +538,7 @@ function activateMarkAtPosition(
         if (!type) continue;
         const range = markRangeAt(state.doc, nodePos, type);
         if (!range || range.to > pos) continue;
+        if (!isMarkTailActivation(state, range, pos)) continue;
         const trailing = state.doc.textBetween(
           range.to,
           pos,
@@ -1261,6 +1286,15 @@ export function createMarkSourcePlugin(): Plugin<MarkSourceSession | null> {
         if (
           event.target instanceof Element &&
           event.target.closest(`[${MENU_PRESERVE_EDITING_ATTRIBUTE}]`)
+        ) {
+          return;
+        }
+        const pointerTargetInsideEditor =
+          event.target instanceof Node &&
+          editorView.dom.contains(event.target);
+        if (
+          pointerTargetInsideEditor &&
+          (event.type === "pointerdown" || event.type === "mousedown")
         ) {
           return;
         }

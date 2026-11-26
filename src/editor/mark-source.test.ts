@@ -1067,6 +1067,16 @@ describe("Typora-style mark source editing", () => {
       otherLine.dispatchEvent(
         new MouseEvent("pointerdown", { bubbles: true })
       );
+      // Pointer selection is completed by ProseMirror before the session closes.
+      expect(markSourceKey.getState(view.state)).not.toBeNull();
+      view.dispatch(
+        view.state.tr.setSelection(
+          TextSelection.create(
+            view.state.doc,
+            view.state.doc.child(0).nodeSize + 1
+          )
+        )
+      );
       expect(markSourceKey.getState(view.state)).toBeNull();
       otherLine.dispatchEvent(
         new MouseEvent("mousedown", { bubbles: true })
@@ -1563,6 +1573,44 @@ describe("Typora-style mark source editing", () => {
       expect(view.dom.querySelector("p")?.textContent).toBe(
         "**粗体**   "
       );
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not expand a mark when clicking text immediately after it", () => {
+    const strong = schema.marks.strong.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.text("教学重点", [strong]),
+        schema.text("："),
+      ]),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      const paragraph = view.dom.querySelector("p")!;
+      for (const pos of [5, 6]) {
+        const handled = view.someProp("handleClick", (handler) =>
+          handler(view, pos, {
+            button: 0,
+            target: paragraph,
+          } as unknown as MouseEvent)
+        );
+        expect(handled).toBeFalsy();
+        expect(markSourceKey.getState(view.state)).toBeNull();
+        expect(paragraph.textContent).toBe("教学重点：");
+      }
     } finally {
       view.destroy();
       host.remove();
