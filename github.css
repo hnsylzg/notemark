@@ -50,7 +50,7 @@
   --mt-font-size-base: 16px;
   --mt-line-height-base: 1.5;
   --mt-list-item-gap: 0.25em;
-  --mt-list-paragraph-gap: 0.5em;
+  --mt-list-paragraph-gap: 0.25em;
   /* GitHub 表格代码无边框，补少量纵向 padding 增加代码背景高度。 */
   --mt-table-inline-code-padding-block: 0.1em;
   --mt-content-width: 1012px;
