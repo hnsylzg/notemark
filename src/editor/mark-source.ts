@@ -453,15 +453,7 @@ function isMarkTailActivation(
     "\n",
     "\n"
   );
-  if (trailing.trim()) return false;
-  if (pos !== range.to) return true;
-  const next = state.doc.textBetween(
-    range.to,
-    Math.min(range.to + 1, state.doc.content.size),
-    "\n",
-    "\n"
-  );
-  return !next.trim();
+  return !trailing.trim();
 }
 
 function activateMarkAtPosition(

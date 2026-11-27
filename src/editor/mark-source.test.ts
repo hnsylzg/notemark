@@ -1579,6 +1579,42 @@ describe("Typora-style mark source editing", () => {
     }
   });
 
+  it("expands at the mark boundary when text follows", () => {
+    const strong = schema.marks.strong.create();
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [
+        schema.text("bold", [strong]),
+        schema.text("after"),
+      ]),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 2),
+        plugins: [createMarkSourcePlugin()],
+      }),
+    });
+
+    try {
+      const paragraph = view.dom.querySelector("p")!;
+      const handled = view.someProp("handleClick", (handler) =>
+        handler(view, 5, {
+          button: 0,
+          target: paragraph,
+        } as unknown as MouseEvent)
+      );
+      expect(handled).toBe(true);
+      expect(markSourceKey.getState(view.state)?.markName).toBe("strong");
+      expect(paragraph.textContent).toBe("**bold**after");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("does not expand a mark when clicking text immediately after it", () => {
     const strong = schema.marks.strong.create();
     const doc = schema.node("doc", null, [
@@ -1600,7 +1636,7 @@ describe("Typora-style mark source editing", () => {
 
     try {
       const paragraph = view.dom.querySelector("p")!;
-      for (const pos of [5, 6]) {
+      for (const pos of [6]) {
         const handled = view.someProp("handleClick", (handler) =>
           handler(view, pos, {
             button: 0,

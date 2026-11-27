@@ -515,6 +515,18 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     return firstTextPos(view.state.doc, pos, live.nodeSize);
   };
 
+  const explanationEntryRange = (): { from: number; to: number } | null => {
+    const pos = getPos();
+    if (typeof pos !== "number") return null;
+    const live = view.state.doc.nodeAt(pos);
+    if (!live || live.type.name !== DEF) return null;
+    return firstTextblockEntryRange(
+      view.state.doc,
+      pos,
+      live.nodeSize
+    );
+  };
+
   const labelContentRange = (): { from: number; to: number } => ({
     from: DEFINITION_SOURCE_OPEN.length,
     to: Math.max(
@@ -648,7 +660,29 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
     if (!target || source.contains(target)) return null;
     const inNumber = dt.contains(target);
     const inExplanation = dd.contains(target);
-    if (inExplanation && target !== dd) return null;
+    const explanationEntry = explanationEntryRange();
+    let clickedAtExplanationStart = false;
+    if (explanationEntry) {
+      try {
+        const clickedPos = view.posAtCoords({
+          left: event.clientX,
+          top: event.clientY,
+        })?.pos;
+        clickedAtExplanationStart =
+          clickedPos != null &&
+          clickedPos >= explanationEntry.from &&
+          clickedPos <= explanationEntry.to;
+      } catch {
+        clickedAtExplanationStart = false;
+      }
+    }
+    if (
+      inExplanation &&
+      target !== dd &&
+      !clickedAtExplanationStart
+    ) {
+      return null;
+    }
 
     const labelRect =
       firstTextClientRect(labelText) ??
@@ -694,8 +728,9 @@ export const createFootnoteDefinitionView: NodeViewConstructor = (
       contentRect.width > 0 &&
       event.clientX < contentRect.left;
     if (
-      (!inExplanation || clickedBeforeContent) &&
-      event.clientX > labelRect.right
+      !inNumber &&
+      event.clientX > labelRect.right &&
+      (clickedAtExplanationStart || clickedBeforeContent)
     ) {
       return { keyboardEntry: true, fromLeft: false };
     }
@@ -1286,6 +1321,46 @@ function firstTextPos(doc: PMNode, from: number, size: number): number | null {
 }
 
 /**
+ * The optional Markdown separator after `[^1]:` is trivia, not content.
+ * Treat every caret position across that leading whitespace as the same
+ * semantic entry boundary.
+ */
+function firstTextblockEntryRange(
+  doc: PMNode,
+  from: number,
+  size: number
+): { from: number; to: number } | null {
+  let result: { from: number; to: number } | null = null;
+  doc.nodesBetween(from, from + size, (block, blockPos) => {
+    if (!block.isTextblock) return true;
+    const entryFrom = blockPos + 1;
+    const blockEnd = blockPos + block.nodeSize - 1;
+    let entryTo: number | null = null;
+    doc.nodesBetween(entryFrom, blockEnd, (node, nodePos) => {
+      if (node.isText) {
+        const firstContent = (node.text ?? "").search(/\S/);
+        if (firstContent >= 0) {
+          entryTo = nodePos + firstContent;
+          return false;
+        }
+        return true;
+      }
+      if (node.isInline) {
+        entryTo = nodePos;
+        return false;
+      }
+      return true;
+    });
+    result = {
+      from: entryFrom,
+      to: entryTo ?? blockEnd,
+    };
+    return false;
+  });
+  return result;
+}
+
+/**
  * 一次性提示气泡：2.6 秒后自动消失，点击或按键立即消失。
  *
  * 为什么要它：插入脚注后光标会跳到文末，长文档里页面一滚，用户很容易
@@ -1483,6 +1558,17 @@ function footnoteReferenceClickTarget(
   return null;
 }
 
+function footnoteReferenceFallbackAllows(
+  referencePos: number,
+  reference: PMNode,
+  clickedPos: number
+): boolean {
+  return (
+    clickedPos === referencePos ||
+    clickedPos === referencePos + reference.nodeSize
+  );
+}
+
 function jumpToDefinition(view: EditorView, label: string): boolean {
   const hit = findFootnote(view.state.doc, DEF, label);
   if (!hit) {
@@ -1558,8 +1644,17 @@ export function createFootnoteClickPlugin(): Plugin {
             return false;
           }
           const fallback = footnoteReferenceClickTarget(view, pos);
+          const fallbackNode = fallback
+            ? state.doc.nodeAt(fallback.pos)
+            : null;
           if (
             fallback &&
+            fallbackNode?.type.name === REF &&
+            footnoteReferenceFallbackAllows(
+              fallback.pos,
+              fallbackNode,
+              pos
+            ) &&
             openFootnoteLabelEditor(
               view,
               fallback.pos,

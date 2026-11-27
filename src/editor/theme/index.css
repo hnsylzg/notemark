@@ -517,7 +517,7 @@ body,
   color: var(--mt-color-primary);
   font-weight: 600;
   cursor: text;
-  padding: 0 1px;
+  margin: 0 1px;
 }
 .milkdown .editor sup[data-type="footnote_reference"]:hover {
   text-decoration: underline;

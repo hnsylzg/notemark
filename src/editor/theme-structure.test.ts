@@ -427,6 +427,43 @@ describe("theme structural spacing", () => {
     }
   });
 
+  it("keeps footnote reference spacing outside its clickable box", () => {
+    const style = document.createElement("style");
+    style.textContent = [
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/tokens.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/base.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/index.css"),
+        "utf8"
+      ),
+    ].join("\n");
+    document.head.appendChild(style);
+    const root = document.createElement("div");
+    root.className = "milkdown";
+    root.innerHTML =
+      '<div class="editor"><p><sup data-type="footnote_reference">1</sup></p></div>';
+    document.body.appendChild(root);
+
+    try {
+      const reference = root.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      expect(getComputedStyle(reference).paddingLeft).toBe("0px");
+      expect(getComputedStyle(reference).paddingRight).toBe("0px");
+      expect(getComputedStyle(reference).marginLeft).toBe("1px");
+      expect(getComputedStyle(reference).marginRight).toBe("1px");
+    } finally {
+      root.remove();
+      style.remove();
+    }
+  });
+
   it("keeps GitHub code blocks on the shared block rhythm", () => {
     const style = document.createElement("style");
     style.textContent = [

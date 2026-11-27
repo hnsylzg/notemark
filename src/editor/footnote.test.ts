@@ -127,6 +127,7 @@ function openFootnoteDefinitionRightBoundary(
   const labelText = dt.querySelector<HTMLElement>(
     ".mt-footnote-label-text"
   )!;
+  const explanation = definitionDom.querySelector<HTMLElement>("dd")!;
   const note = definitionDom.querySelector<HTMLElement>("dd p")!;
   vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
     left: 20,
@@ -151,7 +152,7 @@ function openFootnoteDefinitionRightBoundary(
     toJSON() {},
   });
 
-  dt.dispatchEvent(
+  explanation.dispatchEvent(
     new MouseEvent("mousedown", {
       bubbles: true,
       cancelable: true,
@@ -434,7 +435,6 @@ describe("footnote definition source label", () => {
         footnote_reference: createFootnoteReferenceView,
       },
     });
-
     try {
       const enter = new KeyboardEvent("keydown", {
         key: "ArrowLeft",
@@ -531,7 +531,7 @@ describe("footnote definition source label", () => {
     }
   });
 
-  it("opens the reference from a mouse edge position", () => {
+  it("opens the reference when the caret lands after it", () => {
     const reference = schema.nodes.footnote_reference.create({ label: "1" });
     const body = schema.node(
       "paragraph",
@@ -562,9 +562,65 @@ describe("footnote definition source label", () => {
       const referenceDom = view.dom.querySelector<HTMLElement>(
         '[data-type="footnote_reference"]'
       )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+      const referenceNode = view.state.doc.nodeAt(referencePos)!;
       expect(
         view.someProp("handleClick", (handler) =>
-          handler(view, 5, {
+          handler(view, referencePos + referenceNode.nodeSize, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            clientX: 112,
+            clientY: 18,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBe(true);
+      const source = referenceDom.querySelector<HTMLInputElement>(
+        "input.mt-footnote-label-source"
+      )!;
+      expect(source.value).toBe("[^1]");
+      expect(referenceDom.ownerDocument.activeElement).toBe(source);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens the reference when the caret lands before it", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("body"), reference]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, referencePos, {
             button: 0,
             target: view.dom.querySelector("p"),
             preventDefault() {},
@@ -575,7 +631,277 @@ describe("footnote definition source label", () => {
         "input.mt-footnote-label-source"
       )!;
       expect(source.value).toBe("[^1]");
-      expect(referenceDom.ownerDocument.activeElement).toBe(source);
+      expect(source.selectionStart).toBe(0);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not open from text before the reference", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("body"), reference]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, referencePos - 1, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBeFalsy();
+      expect(
+        referenceDom.querySelector("input.mt-footnote-label-source")
+      ).toBeNull();
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not open the reference when clicking punctuation after it", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("正文"), reference, schema.text("。")]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+      const referenceNode = view.state.doc.nodeAt(referencePos)!;
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, referencePos + referenceNode.nodeSize + 1, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            clientX: 120,
+            clientY: 18,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBeFalsy();
+      expect(
+        referenceDom.querySelector(
+          "input.mt-footnote-label-source"
+        )
+      ).toBeNull();
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens when the caret stays between the reference and following text", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("正文"), reference, schema.text("后文")]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+      const referenceNode = view.state.doc.nodeAt(referencePos)!;
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, referencePos + referenceNode.nodeSize, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            clientX: 109,
+            clientY: 10,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBe(true);
+      expect(
+        referenceDom.querySelector<HTMLInputElement>(
+          "input.mt-footnote-label-source"
+        )?.value
+      ).toBe("[^1]");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens from the reference-to-text caret boundary", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("body"), reference, schema.text("after")]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+      const referenceNode = view.state.doc.nodeAt(referencePos)!;
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, referencePos + referenceNode.nodeSize, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            clientX: 117,
+            clientY: 18,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBe(true);
+      expect(
+        referenceDom.querySelector<HTMLInputElement>(
+          "input.mt-footnote-label-source"
+        )?.value
+      ).toBe("[^1]");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens from trailing blank space after the reference", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("正文"), reference]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("note"))
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      const referencePos = view.posAtDOM(referenceDom, 0);
+      const referenceNode = view.state.doc.nodeAt(referencePos)!;
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, referencePos + referenceNode.nodeSize, {
+            button: 0,
+            target: view.dom.querySelector("p"),
+            clientX: 400,
+            clientY: 18,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBe(true);
+      expect(
+        referenceDom.querySelector<HTMLInputElement>(
+          "input.mt-footnote-label-source"
+        )?.value
+      ).toBe("[^1]");
     } finally {
       view.destroy();
       host.remove();
@@ -954,13 +1280,16 @@ describe("footnote definition source label", () => {
       const note = view.dom.querySelector(
         '[data-type="footnote_definition"] dd p'
       )!;
+      const explanation = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_definition"] dd'
+      )!;
       const noteStart = view.posAtDOM(note, 0, 1);
       vi.spyOn(view, "posAtCoords").mockReturnValue({
         pos: noteStart,
         inside: noteStart - 1,
       });
 
-      dt.dispatchEvent(
+      explanation.dispatchEvent(
         new MouseEvent("mousedown", {
           bubbles: true,
           cancelable: true,
@@ -1040,6 +1369,8 @@ describe("footnote definition source label", () => {
       const labelText = definitionDom.querySelector<HTMLElement>(
         ".mt-footnote-label-text"
       )!;
+      const explanation = definitionDom.querySelector<HTMLElement>("dd")!;
+      const note = definitionDom.querySelector<HTMLElement>("dd p")!;
       vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
         left: 20,
         right: 30,
@@ -1051,8 +1382,19 @@ describe("footnote definition source label", () => {
         y: 0,
         toJSON() {},
       });
+      vi.spyOn(note, "getBoundingClientRect").mockReturnValue({
+        left: 40,
+        right: 80,
+        top: 0,
+        bottom: 20,
+        width: 40,
+        height: 20,
+        x: 40,
+        y: 0,
+        toJSON() {},
+      });
 
-      definitionDom.dispatchEvent(
+      explanation.dispatchEvent(
         new MouseEvent("mousedown", {
           bubbles: true,
           cancelable: true,
@@ -1120,6 +1462,74 @@ describe("footnote definition source label", () => {
         y: 0,
         toJSON() {},
       });
+      const explanationStart = view.posAtDOM(content, 0, 1);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: explanationStart,
+        inside: explanationStart - 1,
+      });
+
+      explanation.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 41,
+        })
+      );
+
+      const source = definitionDom.querySelector<HTMLInputElement>(
+        "input.mt-footnote-label-source"
+      )!;
+      expect(source.value).toBe("[^1]:");
+      expect(source.selectionStart).toBe(source.value.length);
+      expect(source.selectionEnd).toBe(source.value.length);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("treats leading whitespace after the colon as the same entry boundary", () => {
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text(" this"))
+    );
+    const doc = schema.node("doc", null, [definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({ schema, doc }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const definitionDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_definition"]'
+      )!;
+      const labelText = definitionDom.querySelector<HTMLElement>(
+        ".mt-footnote-label-text"
+      )!;
+      const explanation = definitionDom.querySelector<HTMLElement>("dd")!;
+      const content = definitionDom.querySelector<HTMLElement>("dd p")!;
+      vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
+        left: 20,
+        right: 30,
+        top: 0,
+        bottom: 20,
+        width: 10,
+        height: 20,
+        x: 20,
+        y: 0,
+        toJSON() {},
+      });
+      const blockStart = view.posAtDOM(content, 0, 1);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: blockStart + 1,
+        inside: blockStart,
+      });
 
       explanation.dispatchEvent(
         new MouseEvent("mousedown", {
@@ -1135,7 +1545,67 @@ describe("footnote definition source label", () => {
       )!;
       expect(source.value).toBe("[^1]:");
       expect(source.selectionStart).toBe(source.value.length);
-      expect(source.selectionEnd).toBe(source.value.length);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens when clicking immediately before explanation text in the content node", () => {
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("two"))
+    );
+    const doc = schema.node("doc", null, [definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({ schema, doc }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const definitionDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_definition"]'
+      )!;
+      const labelText = definitionDom.querySelector<HTMLElement>(
+        ".mt-footnote-label-text"
+      )!;
+      const content = definitionDom.querySelector<HTMLElement>("dd p")!;
+      vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
+        left: 20,
+        right: 30,
+        top: 0,
+        bottom: 20,
+        width: 10,
+        height: 20,
+        x: 20,
+        y: 0,
+        toJSON() {},
+      });
+      const blockStart = view.posAtDOM(content, 0, 1);
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: blockStart,
+        inside: blockStart,
+      });
+
+      content.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 35,
+        })
+      );
+
+      const source = definitionDom.querySelector<HTMLInputElement>(
+        "input.mt-footnote-label-source"
+      )!;
+      expect(source.value).toBe("[^1]:");
+      expect(source.selectionStart).toBe(source.value.length);
     } finally {
       view.destroy();
       host.remove();
@@ -1206,6 +1676,138 @@ describe("footnote definition source label", () => {
       expect(
         definitionDom.querySelector("input.mt-footnote-label-source")
       ).toBeNull();
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not open the number editor from blank space after the explanation", () => {
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph", null, schema.text("这是脚注文本。"))
+    );
+    const doc = schema.node("doc", null, [definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({ schema, doc }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const definitionDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_definition"]'
+      )!;
+      const labelText = definitionDom.querySelector<HTMLElement>(
+        ".mt-footnote-label-text"
+      )!;
+      const content = definitionDom.querySelector<HTMLElement>("dd p")!;
+      vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
+        left: 20,
+        right: 30,
+        top: 0,
+        bottom: 20,
+        width: 10,
+        height: 20,
+        x: 20,
+        y: 0,
+        toJSON() {},
+      });
+      vi.spyOn(content, "getBoundingClientRect").mockReturnValue({
+        left: 40,
+        right: 160,
+        top: 0,
+        bottom: 20,
+        width: 120,
+        height: 20,
+        x: 40,
+        y: 0,
+        toJSON() {},
+      });
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 3,
+        inside: 1,
+      });
+
+      definitionDom.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 220,
+          clientY: 10,
+        })
+      );
+
+      expect(
+        definitionDom.querySelector(
+          "input.mt-footnote-label-source"
+        )
+      ).toBeNull();
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("opens from trailing blank space when the explanation is empty", () => {
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      schema.node("paragraph")
+    );
+    const doc = schema.node("doc", null, [definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({ schema, doc }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const definitionDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_definition"]'
+      )!;
+      const labelText = definitionDom.querySelector<HTMLElement>(
+        ".mt-footnote-label-text"
+      )!;
+      vi.spyOn(labelText, "getBoundingClientRect").mockReturnValue({
+        left: 20,
+        right: 30,
+        top: 0,
+        bottom: 20,
+        width: 10,
+        height: 20,
+        x: 20,
+        y: 0,
+        toJSON() {},
+      });
+      vi.spyOn(view, "posAtCoords").mockReturnValue({
+        pos: 2,
+        inside: 1,
+      });
+
+      definitionDom.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 400,
+          clientY: 10,
+        })
+      );
+
+      const source = definitionDom.querySelector<HTMLInputElement>(
+        "input.mt-footnote-label-source"
+      )!;
+      expect(source.value).toBe("[^1]:");
+      expect(source.selectionStart).toBe(source.value.length);
     } finally {
       view.destroy();
       host.remove();
