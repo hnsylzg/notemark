@@ -1034,6 +1034,15 @@ export const footnoteDefinitionView = $view(
   () => createFootnoteDefinitionView
 );
 
+function footnotePreviewText(node: PMNode): string {
+  const blocks: string[] = [];
+  node.forEach((child) => {
+    const text = child.textContent.trim();
+    if (text) blocks.push(text);
+  });
+  return blocks.join("\n");
+}
+
 export const createFootnoteReferenceView: NodeViewConstructor = (
   initialNode,
   view,
@@ -1051,11 +1060,27 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
   source.spellcheck = false;
   source.style.display = "none";
 
+  const updateTitle = () => {
+    const definition = findFootnote(
+      view.state.doc,
+      DEF,
+      String(node.attrs.label ?? "")
+    );
+    const preview = definition
+      ? footnotePreviewText(definition.node)
+      : "";
+    if (preview) {
+      dom.title = preview;
+    } else {
+      dom.removeAttribute("title");
+    }
+  };
+
   const render = () => {
     const label = String(node.attrs.label ?? "");
     dom.dataset.type = REF;
     dom.dataset.label = label;
-    dom.title = "脚注";
+    updateTitle();
     if (!editing) {
       dom.replaceChildren(document.createTextNode(label));
       source.style.display = "none";
@@ -1125,6 +1150,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
     event.stopPropagation();
     if (!editing) startEditing();
   });
+  dom.addEventListener("mouseover", updateTitle);
   source.addEventListener("mousedown", (event) => {
     event.stopPropagation();
   });
@@ -1256,6 +1282,7 @@ export const createFootnoteReferenceView: NodeViewConstructor = (
     destroy() {
       editing = false;
       footnoteLabelOpeners.delete(dom);
+      dom.removeEventListener("mouseover", updateTitle);
       document.removeEventListener("mousedown", onOutsideMouseDown, true);
       document.removeEventListener("pointerdown", onOutsideMouseDown, true);
     },

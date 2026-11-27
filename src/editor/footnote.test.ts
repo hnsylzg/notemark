@@ -531,6 +531,51 @@ describe("footnote definition source label", () => {
     }
   });
 
+  it("shows the current definition content when hovering a reference", () => {
+    const reference = schema.nodes.footnote_reference.create({ label: "1" });
+    const body = schema.node(
+      "paragraph",
+      null,
+      [schema.text("body"), reference]
+    );
+    const definition = schema.nodes.footnote_definition.create(
+      { label: "1" },
+      [
+        schema.node("paragraph", null, schema.text("First line")),
+        schema.node("paragraph", null, schema.text("Second line")),
+      ]
+    );
+    const doc = schema.node("doc", null, [body, definition]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        plugins: [createFootnoteClickPlugin()],
+      }),
+      nodeViews: {
+        footnote_definition: createFootnoteDefinitionView,
+        footnote_reference: createFootnoteReferenceView,
+      },
+    });
+
+    try {
+      const referenceDom = view.dom.querySelector<HTMLElement>(
+        '[data-type="footnote_reference"]'
+      )!;
+      expect(referenceDom.title).toBe("First line\nSecond line");
+
+      referenceDom.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true })
+      );
+      expect(referenceDom.title).toBe("First line\nSecond line");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it("opens the reference when the caret lands after it", () => {
     const reference = schema.nodes.footnote_reference.create({ label: "1" });
     const body = schema.node(
