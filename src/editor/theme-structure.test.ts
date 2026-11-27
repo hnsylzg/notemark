@@ -257,7 +257,12 @@ describe("theme structural spacing", () => {
       document.head.appendChild(style);
       const root = document.createElement("div");
       root.className = "milkdown";
-      root.innerHTML = '<div class="editor"><h1>One</h1><h6>Six</h6></div>';
+      root.innerHTML =
+        '<div class="editor">' +
+        '<h1 id="one">One</h1><h6>Six</h6>' +
+        '<ul class="mt-toc-list"><li class="mt-toc-item">' +
+        '<a href="#one">One</a></li></ul>' +
+        "</div>";
       document.body.appendChild(root);
 
       try {
@@ -269,6 +274,11 @@ describe("theme structural spacing", () => {
             parseFloat(computed.lineHeight) / parseFloat(computed.fontSize)
           ).toBeCloseTo(1.4, 3);
         }
+        expect(
+          getComputedStyle(
+            root.querySelector<HTMLElement>(".mt-toc-item a")!
+          ).borderBottomWidth
+        ).toBe("0px");
       } finally {
         root.remove();
         style.remove();
@@ -360,6 +370,56 @@ describe("theme structural spacing", () => {
         if (themeFile === "github.css") {
           expect(getComputedStyle(cell).verticalAlign).not.toBe("top");
         }
+      } finally {
+        root.remove();
+        style.remove();
+      }
+    }
+  });
+
+  it("keeps decorative link borders out of TOC geometry", () => {
+    const baseCss = [
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/tokens.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/base.css"),
+        "utf8"
+      ),
+      readFileSync(
+        resolve(process.cwd(), "src/editor/theme/index.css"),
+        "utf8"
+      ),
+    ].join("\n");
+
+    for (const themeFile of [
+      "github.css",
+      "latex.css",
+      "rose.css",
+      "emerald.css",
+      "forest.css",
+    ]) {
+      const style = document.createElement("style");
+      style.textContent =
+        baseCss +
+        "\n" +
+        readFileSync(resolve(process.cwd(), themeFile), "utf8");
+      document.head.appendChild(style);
+      const root = document.createElement("div");
+      root.className = "milkdown";
+      root.innerHTML =
+        '<div class="editor"><ul class="mt-toc-list">' +
+        '<li class="mt-toc-item"><a href="#section">Section</a></li>' +
+        "</ul></div>";
+      document.body.appendChild(root);
+
+      try {
+        expect(
+          getComputedStyle(
+            root.querySelector<HTMLElement>(".mt-toc-item a")!
+          ).borderBottomWidth
+        ).toBe("0px");
       } finally {
         root.remove();
         style.remove();

@@ -177,12 +177,6 @@
   line-height: var(--mt-line-height-base);
 }
 
-.milkdown .editor {
-  margin: 0 auto;
-  padding: 24px 0 80px;
-  box-sizing: border-box;
-}
-
 .milkdown ::selection {
   background: var(--mt-color-selection);
 }
@@ -238,6 +232,11 @@
 }
 .milkdown a:hover {
   border-bottom-color: currentColor;
+}
+
+/* 目录链接保持内置几何高度，不叠加普通链接的透明下边框。 */
+.milkdown .mt-toc-item a {
+  border-bottom: 0;
 }
 
 .milkdown strong {
