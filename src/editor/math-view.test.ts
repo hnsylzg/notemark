@@ -756,6 +756,71 @@ describe("inline math source insertion", () => {
     }
   );
 
+  it("uses the caret boundary when text follows inline math", () => {
+    const math = schema.nodes.math_inline.create(
+      null,
+      schema.text("x")
+    );
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [math, schema.text("。")]),
+    ]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView(host, {
+      state: EditorState.create({
+        schema,
+        doc,
+        selection: TextSelection.create(doc, 1),
+        plugins: [createMathInlineCursorPlugin()],
+      }),
+      nodeViews: {
+        math_inline: createMathInlineNodeView,
+      },
+    });
+
+    try {
+      const mathDom = view.dom.querySelector<HTMLElement>(
+        ".milkdown-math-inline"
+      )!;
+      const input = mathDom.querySelector<HTMLInputElement>(
+        ".milkdown-math-inline-input"
+      )!;
+      let mathEnd = -1;
+      view.state.doc.descendants((node, nodePos) => {
+        if (node.type.name !== "math_inline") return true;
+        mathEnd = nodePos + node.nodeSize;
+        return false;
+      });
+      const paragraph = view.dom.querySelector("p")!;
+      expect(mathEnd).toBeGreaterThan(0);
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, mathEnd + 1, {
+            button: 0,
+            target: paragraph,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBeFalsy();
+      expect(input.style.display).toBe("none");
+
+      expect(
+        view.someProp("handleClick", (handler) =>
+          handler(view, mathEnd, {
+            button: 0,
+            target: paragraph,
+            preventDefault() {},
+          } as unknown as MouseEvent)
+        )
+      ).toBe(true);
+      expect(input.style.display).not.toBe("none");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   it.each([
     ["before", 100, 0, "X$x$", "Xx"],
     ["after", 200, 3, "$x$X", "xX"],

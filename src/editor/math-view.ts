@@ -689,6 +689,11 @@ export function createMathInlineCursorPlugin(): Plugin {
         if (!range) return false;
         const dom = view.nodeDOM(range.from);
         if (!(dom instanceof HTMLElement)) return false;
+        const clickedInsideMath =
+          event.target instanceof Node && dom.contains(event.target);
+        const clickedAtMathBoundary =
+          pos === range.from || pos === range.to;
+        if (!clickedInsideMath && !clickedAtMathBoundary) return false;
         const rect = dom.getBoundingClientRect();
         const edge = rect.width * MATH_INLINE_EDGE_HIT_RATIO;
         const atLeftEdge =
